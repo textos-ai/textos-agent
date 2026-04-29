@@ -1,0 +1,43 @@
+name = "textos-agent-dev"
+main = "src/index.ts"
+compatibility_date = "2026-04-29"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+ENVIRONMENT = "dev"
+
+# ----------------------------------------------------------------------
+# Bindings below are commented placeholders, wired in subsequent sprints.
+# Uncomment + fill IDs as we provision the resources.
+# ----------------------------------------------------------------------
+
+# Cloudflare KV — rate limits, magic-link tokens, agent prompt cache.
+# [[kv_namespaces]]
+# binding = "CACHE"
+# id = "<kv-namespace-id>"
+
+# Cloudflare D1 — per-business activity logs and cache.
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "textos-activity"
+# database_id = "<d1-database-id>"
+
+# Cloudflare Queues — long-running task dispatch.
+# [[queues.producers]]
+# binding = "TASK_QUEUE"
+# queue = "tasks"
+#
+# [[queues.consumers]]
+# queue = "tasks"
+# max_batch_size = 10
+# max_batch_timeout = 30
+
+# Cloudflare R2 — generated documents, hero images, exports.
+# [[r2_buckets]]
+# binding = "ASSETS"
+# bucket_name = "textos-assets"
+
+# Production environment — same Worker, separate name + secrets.
+# [env.prod]
+# name = "textos-agent-prod"
+# vars = { ENVIRONMENT = "prod" }
