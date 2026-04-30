@@ -93,10 +93,11 @@ export async function isHandleAvailable(
   client: SupabaseClient,
   handle: string,
 ): Promise<boolean> {
+  // Case-insensitive check so "Rob" and "rob" are treated as the same handle.
   const { count, error } = await client
     .from("users")
     .select("*", { count: "exact", head: true })
-    .eq("handle", handle);
+    .ilike("handle", handle);
   if (error) throw error;
   return (count ?? 0) === 0;
 }
