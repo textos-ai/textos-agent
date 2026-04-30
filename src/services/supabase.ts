@@ -216,3 +216,178 @@ export async function countBusinessContextByUser(
   if (error) throw error;
   return count ?? 0;
 }
+
+// ── businesses ────────────────────────────────────────────────────────
+
+export interface BusinessRow {
+  id: string;
+  user_id: string;
+  slug: string;
+  name: string;
+  kind: "new_idea" | "find_for_me" | "existing";
+  existing_business_url: string | null;
+  existing_business_data: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export async function getBusinessesByUser(
+  client: SupabaseClient,
+  userId: string,
+): Promise<(BusinessRow & { has_context: boolean })[]> {
+  const { data: businesses, error } = await client
+    .from("businesses")
+    .select("id, user_id, slug, name, kind, existing_business_url, created_at")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false });
+
+  if (error) throw error;
+  if (!businesses || businesses.length === 0) return [];
+
+  const { data: contexts, error: ctxError } = await client
+    .from("business_context")
+    .select("business_id")
+    .eq("user_id", userId);
+
+  if (ctxError) throw ctxError;
+
+  const contextSet = new Set(
+    (contexts ?? []).map((c: { business_id: string }) => c.business_id),
+  );
+
+  return (businesses as BusinessRow[]).map((b) => ({
+    ...b,
+    existing_business_data: null,
+    has_context: contextSet.has(b.id),
+  }));
+}
+
+export async function getBusinessBySlug(
+  client: SupabaseClient,
+  userId: string,
+  slug: string,
+): Promise<BusinessRow | null> {
+  const { data, error } = await client
+    .from("businesses")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("slug", slug)
+    .maybeSingle();
+
+  if (error) throw error;
+  return (data as BusinessRow | null) ?? null;
+}
+
+export async function createBusiness(
+  client: SupabaseClient,
+  payload: {
+    user_id: string;
+    slug: string;
+    name: string;
+    kind: "new_idea" | "find_for_me" | "existing";
+    existing_business_url?: string;
+    existing_business_data?: Record<string, unknown>;
+  },
+): Promise<BusinessRow> {
+  const { data, error } = await client
+    .from("businesses")
+    .insert(payload)
+    .select("*")
+    .single();
+
+  if (error) throw error;
+  return data as BusinessRow;
+}
+
+export async function createEmptyBusinessContext(
+  client: SupabaseClient,
+  businessId: string,
+  userId: string,
+): Promise<void> {
+  const { error } = await client
+    .from("business_context")
+    .insert({ business_id: businessId, user_id: userId });
+
+  if (error) throw error;
+}
+
+export async function countUserBusinesses(
+  client: SupabaseClient,
+  userId: string,
+): Promise<number> {
+  const { count, error } = await client
+    .from("businesses")
+    .select("*", { count: "exact", head: true })
+    .eq("user_id", userId);
+
+  if (error) throw error;
+  return count ?? 0;
+}
+
+export async function getUserSubscriptionPlan(
+  client: SupabaseClient,
+  userId: string,
+): Promise<SubscriptionPlanRow | null> {
+  const { data: sub, error: subError } = await client
+    .from("user_subscriptions")
+    .select("plan_id")
+    .eq("user_id", userId)
+    .eq("status", "active")
+    .maybeSingle();
+
+  if (subError) throw subError;
+  if (!sub) return null;
+
+  const { data: plan, error: planError } = await client
+    .from("subscription_plans")
+    .select("*")
+    .eq("id", (sub as { plan_id: string }).plan_id)
+    .single();
+
+  if (planError) throw planError;
+  return plan as SubscriptionPlanRow;
+}
+
+// ── task_runs ─────────────────────────────────────────────────────────
+
+export interface TaskRunRow {
+  id: string;
+  user_id: string;
+  business_id: string | null;
+  task_id: string;
+  status: "queued" | "running" | "completed" | "failed";
+  started_at: string;
+  completed_at: string | null;
+  output_data: Record<string, unknown> | null;
+  paid_amount_cents: number;
+  error: string | null;
+}
+
+export async function getTaskRunsForBusiness(
+  client: SupabaseClient,
+  businessId: string,
+): Promise<TaskRunRow[]> {
+  const { data, error } = await client
+    .from("task_runs")
+    .select(
+      "id, user_id, business_id, task_id, status, started_at, completed_at, output_data, paid_amount_cents, error",
+    )
+    .eq("business_id", businessId)
+    .order("started_at", { ascending: false });
+
+  if (error) throw error;
+  return (data as TaskRunRow[]) ?? [];
+}
+
+export async function getAllActiveTasks(
+  client: SupabaseClient,
+): Promise<TaskRow[]> {
+  const { data, error } = await client
+    .from("tasks")
+    .select(
+      "id, slug, name, description_short, description_long, area, is_default, plan_required, visibility, price_cents, output_type, status",
+    )
+    .eq("status", "active");
+
+  if (error) throw error;
+  return (data as TaskRow[]) ?? [];
+}

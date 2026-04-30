@@ -46,10 +46,7 @@ app.post("/callback", async (c) => {
 
   let auth;
   try {
-    auth = await verifySupabaseJwt(
-      parsed.access_token,
-      c.env.SUPABASE_JWT_SECRET,
-    );
+    auth = await verifySupabaseJwt(parsed.access_token, c.env);
   } catch (err) {
     return c.json(
       errBody(

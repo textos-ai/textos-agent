@@ -1,5 +1,5 @@
 import type { MiddlewareHandler } from "hono";
-import { verify } from "hono/jwt";
+import { jwtVerify, createRemoteJWKSet, type JWTPayload } from "jose";
 import type { Env } from "../env";
 import { errBody } from "./errors";
 
@@ -15,17 +15,46 @@ declare module "hono" {
   }
 }
 
-/**
- * Hono middleware that verifies a Supabase-issued JWT in the
- * `Authorization: Bearer <jwt>` header and exposes `{user_id, email}`
- * via `c.get("auth")`.
+/*
+ * Supabase signs user JWTs with ES256 against an EC P-256 key whose
+ * public half lives at:
+ *   <SUPABASE_URL>/auth/v1/.well-known/jwks.json
  *
- * Returns 401 if the header is missing/malformed or the JWT fails
- * signature/claim verification.
- *
- * Supabase JWTs are HS256 with the project JWT secret as the symmetric
- * key. `hono/jwt`'s `verify` defaults to HS256 + checks `exp`.
+ * `jose`'s createRemoteJWKSet returns a function that resolves the
+ * right key by `kid` header on every verify call, with internal
+ * caching + automatic refetch on rotation. We memoize the factory
+ * itself across requests within the same Worker isolate.
  */
+let _jwks: ReturnType<typeof createRemoteJWKSet> | null = null;
+
+function getJwks(env: Env) {
+  if (_jwks) return _jwks;
+  const url = new URL(`${env.SUPABASE_URL}/auth/v1/.well-known/jwks.json`);
+  _jwks = createRemoteJWKSet(url, {
+    // Min ms between fetch retries on a key miss (e.g., new kid seen).
+    cooldownDuration: 30_000,
+    // Refetch keys at most this often even if no miss has occurred.
+    cacheMaxAge: 600_000, // 10 minutes
+  });
+  return _jwks;
+}
+
+async function verifyAndExtract(
+  token: string,
+  env: Env,
+): Promise<AuthContext> {
+  const { payload }: { payload: JWTPayload } = await jwtVerify(
+    token,
+    getJwks(env),
+    { algorithms: ["ES256"] },
+  );
+  const sub = typeof payload.sub === "string" ? payload.sub : null;
+  const email = typeof payload.email === "string" ? payload.email : "";
+  if (!sub) throw new Error("token missing sub claim");
+  return { user_id: sub, email };
+}
+
+/** Hono middleware: require + verify an Authorization: Bearer <jwt> header. */
 export const requireAuth: MiddlewareHandler<{ Bindings: Env }> = async (
   c,
   next,
@@ -40,13 +69,9 @@ export const requireAuth: MiddlewareHandler<{ Bindings: Env }> = async (
     return c.json(errBody("unauthorized", "empty bearer token"), 401);
   }
 
-  let payload: Record<string, unknown>;
+  let auth: AuthContext;
   try {
-    payload = (await verify(
-      token,
-      c.env.SUPABASE_JWT_SECRET,
-      "HS256",
-    )) as Record<string, unknown>;
+    auth = await verifyAndExtract(token, c.env);
   } catch (err) {
     return c.json(
       errBody(
@@ -58,27 +83,14 @@ export const requireAuth: MiddlewareHandler<{ Bindings: Env }> = async (
     );
   }
 
-  const sub = typeof payload.sub === "string" ? payload.sub : null;
-  const email = typeof payload.email === "string" ? payload.email : "";
-  if (!sub) {
-    return c.json(errBody("unauthorized", "token missing sub claim"), 401);
-  }
-
-  c.set("auth", { user_id: sub, email });
+  c.set("auth", auth);
   return next();
 };
 
-/** Verify a token without the middleware shape — used by /auth/callback. */
+/** Verify a token outside the middleware shape — used by /auth/callback. */
 export async function verifySupabaseJwt(
   token: string,
-  secret: string,
+  env: Env,
 ): Promise<AuthContext> {
-  const payload = (await verify(token, secret, "HS256")) as Record<
-    string,
-    unknown
-  >;
-  const sub = typeof payload.sub === "string" ? payload.sub : null;
-  const email = typeof payload.email === "string" ? payload.email : "";
-  if (!sub) throw new Error("token missing sub claim");
-  return { user_id: sub, email };
+  return verifyAndExtract(token, env);
 }
