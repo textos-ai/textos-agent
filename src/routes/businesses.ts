@@ -13,6 +13,7 @@ import {
   getUserSubscriptionPlan,
   createBusiness,
   createEmptyBusinessContext,
+  setAgentName,
   type TaskRow,
   type TaskRunRow,
 } from "../services/supabase";
@@ -165,6 +166,44 @@ app.get("/:slug", async (c) => {
     context,
     agent_name: context?.agent_name ?? null,
   });
+});
+
+// ── PATCH /:slug/agent-name ────────────────────────────────────────────
+const AgentNameBody = z.object({
+  agent_name: z
+    .string()
+    .min(1)
+    .max(30)
+    .regex(/^[\w\s']+$/, "agent name may only contain letters, numbers, spaces, underscores, apostrophes"),
+});
+
+app.patch("/:slug/agent-name", async (c) => {
+  const auth = c.get("auth");
+  const slug = c.req.param("slug");
+  const supabase = createSupabaseClient(c.env);
+
+  let parsed;
+  try {
+    parsed = AgentNameBody.parse(await c.req.json());
+  } catch (err) {
+    return c.json(errBody("bad_request", "invalid body", err instanceof Error ? err.message : err), 400);
+  }
+
+  let business;
+  try {
+    business = await getBusinessBySlug(supabase, auth.user_id, slug);
+  } catch (err) {
+    return c.json(errBody("upstream_error", String(err)), 502);
+  }
+  if (!business) return c.json(errBody("not_found", `business '${slug}' not found`), 404);
+
+  try {
+    await setAgentName(supabase, business.id, parsed.agent_name.trim());
+  } catch (err) {
+    return c.json(errBody("upstream_error", String(err)), 502);
+  }
+
+  return c.json({ agent_name: parsed.agent_name.trim() });
 });
 
 // ── POST / ────────────────────────────────────────────────────────────

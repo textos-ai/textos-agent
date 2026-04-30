@@ -314,6 +314,18 @@ export async function createEmptyBusinessContext(
   if (error) throw error;
 }
 
+export async function setAgentName(
+  client: SupabaseClient,
+  businessId: string,
+  agentName: string,
+): Promise<void> {
+  const { error } = await client
+    .from("business_context")
+    .update({ agent_name: agentName })
+    .eq("business_id", businessId);
+  if (error) throw error;
+}
+
 export async function countUserBusinesses(
   client: SupabaseClient,
   userId: string,
