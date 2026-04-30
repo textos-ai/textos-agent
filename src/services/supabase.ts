@@ -141,3 +141,78 @@ export async function getActivePlans(
   if (error) throw error;
   return (data as SubscriptionPlanRow[]) ?? [];
 }
+
+// ── business_context ──────────────────────────────────────────────────
+
+export interface BusinessContextRow {
+  id: string;
+  business_id: string;
+  user_id: string;
+  // User research
+  user_profile: Record<string, unknown>;
+  user_research_log: unknown[];
+  // Business research
+  business_summary: string | null;
+  industry: string | null;
+  business_model: string | null;
+  target_customer: Record<string, unknown>;
+  value_proposition: string | null;
+  // Market intelligence
+  market_size: Record<string, unknown>;
+  competitors: unknown[];
+  market_trends: unknown[];
+  // Strategic positioning
+  positioning_statement: string | null;
+  brand_voice: string | null;
+  key_differentiators: unknown[];
+  // Operational signals (V2)
+  financial_snapshot: Record<string, unknown>;
+  customer_signals: Record<string, unknown>;
+  // Agent follow-up
+  open_questions: unknown[];
+  // Telegram (V1 schema-ready, integration Sprint 8)
+  telegram_chat_id: string | null;
+  // Provenance
+  last_research_run_at: string | null;
+  research_confidence_score: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function getBusinessContext(
+  client: SupabaseClient,
+  businessId: string,
+): Promise<BusinessContextRow | null> {
+  const { data, error } = await client
+    .from("business_context")
+    .select("*")
+    .eq("business_id", businessId)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as BusinessContextRow | null) ?? null;
+}
+
+export async function upsertBusinessContext(
+  client: SupabaseClient,
+  ctx: Partial<BusinessContextRow> & { business_id: string; user_id: string },
+): Promise<BusinessContextRow> {
+  const { data, error } = await client
+    .from("business_context")
+    .upsert(ctx, { onConflict: "business_id" })
+    .select("*")
+    .single();
+  if (error) throw error;
+  return data as BusinessContextRow;
+}
+
+export async function countBusinessContextByUser(
+  client: SupabaseClient,
+  userId: string,
+): Promise<number> {
+  const { count, error } = await client
+    .from("business_context")
+    .select("*", { count: "exact", head: true })
+    .eq("user_id", userId);
+  if (error) throw error;
+  return count ?? 0;
+}
