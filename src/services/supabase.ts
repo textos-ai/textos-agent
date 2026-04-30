@@ -171,6 +171,8 @@ export interface BusinessContextRow {
   customer_signals: Record<string, unknown>;
   // Agent follow-up
   open_questions: unknown[];
+  // Agent identity
+  agent_name: string | null;
   // Telegram (V1 schema-ready, integration Sprint 8)
   telegram_chat_id: string | null;
   // Provenance
@@ -303,10 +305,11 @@ export async function createEmptyBusinessContext(
   client: SupabaseClient,
   businessId: string,
   userId: string,
+  agentName?: string,
 ): Promise<void> {
   const { error } = await client
     .from("business_context")
-    .insert({ business_id: businessId, user_id: userId });
+    .insert({ business_id: businessId, user_id: userId, agent_name: agentName ?? null });
 
   if (error) throw error;
 }

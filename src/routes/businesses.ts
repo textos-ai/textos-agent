@@ -18,6 +18,7 @@ import {
 } from "../services/supabase";
 import { errBody } from "../lib/errors";
 import { log } from "../lib/logger";
+import { pickRandomAgentName } from "../lib/agentNames";
 
 const app = new Hono<{ Bindings: Env }>();
 app.use("*", requireAuth);
@@ -159,7 +160,11 @@ app.get("/:slug", async (c) => {
     });
   }
 
-  return c.json({ business, context });
+  return c.json({
+    business,
+    context,
+    agent_name: context?.agent_name ?? null,
+  });
 });
 
 // ── POST / ────────────────────────────────────────────────────────────
@@ -245,8 +250,9 @@ app.post("/", async (c) => {
     return c.json(errBody("upstream_error", msg), 502);
   }
 
+  const agentName = pickRandomAgentName();
   try {
-    await createEmptyBusinessContext(supabase, business.id, auth.user_id);
+    await createEmptyBusinessContext(supabase, business.id, auth.user_id, agentName);
   } catch (err) {
     log.warn("create_empty_context_failed", {
       err: String(err),
@@ -259,7 +265,7 @@ app.post("/", async (c) => {
     () => null,
   );
 
-  return c.json({ business, context }, 201);
+  return c.json({ business, context, agent_name: agentName }, 201);
 });
 
 function extractOutputSummary(
