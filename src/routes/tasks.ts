@@ -5,8 +5,11 @@ import { createSupabaseClient, getTaskBySlug } from "../services/supabase";
 import { stubRun } from "../agent/loop";
 import { errBody } from "../lib/errors";
 import { log } from "../lib/logger";
+import { requireAuth } from "../lib/jwt";
 
 const app = new Hono<{ Bindings: Env }>();
+
+app.use("*", requireAuth);
 
 const RunBody = z.object({
   taskSlug: z.string().min(1).max(120),

@@ -4,6 +4,9 @@ import type { Env } from "./env";
 import healthRoutes from "./routes/health";
 import chatRoutes from "./routes/chat";
 import taskRoutes from "./routes/tasks";
+import meRoutes from "./routes/me";
+import authRoutes from "./routes/auth";
+import handleRoutes from "./routes/handles";
 import { errBody } from "./lib/errors";
 import { log } from "./lib/logger";
 
@@ -28,6 +31,9 @@ app.use(
 
 app.route("/healthz", healthRoutes);
 app.route("/version", healthRoutes);
+app.route("/me", meRoutes);
+app.route("/auth", authRoutes);
+app.route("/handles", handleRoutes);
 app.route("/chat", chatRoutes);
 app.route("/tasks", taskRoutes);
 

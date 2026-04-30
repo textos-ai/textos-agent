@@ -1,6 +1,7 @@
 export type ErrorCode =
   | "bad_request"
   | "not_found"
+  | "conflict"
   | "internal"
   | "upstream_error"
   | "unauthorized";

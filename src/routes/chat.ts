@@ -4,8 +4,11 @@ import type { Env } from "../env";
 import { createAnthropicClient, chatWithClaude } from "../services/anthropic";
 import { errBody } from "../lib/errors";
 import { log } from "../lib/logger";
+import { requireAuth } from "../lib/jwt";
 
 const app = new Hono<{ Bindings: Env }>();
+
+app.use("*", requireAuth);
 
 const ChatBody = z.object({
   message: z.string().min(1).max(10_000),

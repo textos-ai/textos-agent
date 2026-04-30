@@ -55,6 +55,67 @@ export async function getTaskBySlug(
   return (data as TaskRow | null) ?? null;
 }
 
+export interface UserRow {
+  id: string;
+  email: string;
+  handle: string | null;
+  created_at: string;
+}
+
+/** Insert-or-no-op. Email is updated on conflict so renamed addresses sync. */
+export async function upsertUser(
+  client: SupabaseClient,
+  user: { id: string; email: string },
+): Promise<void> {
+  const { error } = await client
+    .from("users")
+    .upsert(
+      { id: user.id, email: user.email },
+      { onConflict: "id", ignoreDuplicates: false },
+    );
+  if (error) throw error;
+}
+
+export async function getUserById(
+  client: SupabaseClient,
+  id: string,
+): Promise<UserRow | null> {
+  const { data, error } = await client
+    .from("users")
+    .select("id, email, handle, created_at")
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as UserRow | null) ?? null;
+}
+
+export async function isHandleAvailable(
+  client: SupabaseClient,
+  handle: string,
+): Promise<boolean> {
+  const { count, error } = await client
+    .from("users")
+    .select("*", { count: "exact", head: true })
+    .eq("handle", handle);
+  if (error) throw error;
+  return (count ?? 0) === 0;
+}
+
+export async function setUserHandle(
+  client: SupabaseClient,
+  user_id: string,
+  handle: string,
+): Promise<UserRow> {
+  const { data, error } = await client
+    .from("users")
+    .update({ handle })
+    .eq("id", user_id)
+    .select("id, email, handle, created_at")
+    .single();
+  if (error) throw error;
+  return data as UserRow;
+}
+
 export interface SubscriptionPlanRow {
   id: string;
   slug: string;
