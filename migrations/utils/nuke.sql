@@ -159,6 +159,166 @@ DELETE FROM public.businesses
 COMMIT;
 
 
+-- ── SECTION 4: NUKE ALL EXCEPT ADMIN-OWNED BUSINESSES ─────────────────────
+-- Preserves every business whose owner is in admin_users.
+-- Safe to run on prod during testing — keeps Rob's data, wipes everyone else.
+
+-- 4a. PREVIEW: businesses that would be wiped (non-admin owned)
+SELECT
+  b.slug,
+  b.name,
+  u.email AS owner,
+  b.created_at
+FROM public.businesses b
+JOIN public.users u ON b.user_id = u.id
+WHERE b.user_id NOT IN (SELECT user_id FROM public.admin_users)
+ORDER BY b.created_at;
+
+-- 4b. DELETE: wipe all non-admin businesses + their descendants
+BEGIN;
+DELETE FROM public.stream_events
+  WHERE business_id IN (
+    SELECT b.id FROM public.businesses b
+    WHERE b.user_id NOT IN (SELECT user_id FROM public.admin_users)
+  );
+DELETE FROM public.free_build_runs
+  WHERE business_id IN (
+    SELECT b.id FROM public.businesses b
+    WHERE b.user_id NOT IN (SELECT user_id FROM public.admin_users)
+  );
+DELETE FROM public.business_assets
+  WHERE business_id IN (
+    SELECT b.id FROM public.businesses b
+    WHERE b.user_id NOT IN (SELECT user_id FROM public.admin_users)
+  );
+DELETE FROM public.email_queue
+  WHERE business_id IN (
+    SELECT b.id FROM public.businesses b
+    WHERE b.user_id NOT IN (SELECT user_id FROM public.admin_users)
+  );
+DELETE FROM public.task_runs
+  WHERE business_id IN (
+    SELECT b.id FROM public.businesses b
+    WHERE b.user_id NOT IN (SELECT user_id FROM public.admin_users)
+  );
+DELETE FROM public.business_context
+  WHERE business_id IN (
+    SELECT b.id FROM public.businesses b
+    WHERE b.user_id NOT IN (SELECT user_id FROM public.admin_users)
+  );
+DELETE FROM public.businesses
+  WHERE user_id NOT IN (SELECT user_id FROM public.admin_users);
+COMMIT;
+
+
+-- ── SECTION 5: FULL USER DELETION (user row + all their data) ──────────────
+-- Nukes the user row itself. Use when a test account needs to be fully reset
+-- so they can re-register. Replace 'USER_EMAIL' with the target.
+-- ⚠️  This also deletes Supabase auth.users — see note below.
+
+-- 5a. PREVIEW: confirm who you're deleting
+SELECT
+  u.id AS user_id,
+  u.email,
+  u.handle,
+  u.created_at,
+  (SELECT COUNT(*) FROM public.businesses WHERE user_id = u.id) AS businesses
+FROM public.users u
+WHERE u.email = 'USER_EMAIL';
+
+-- 5b. DELETE: all businesses + descendants + user row
+--     Note: auth.users row (Supabase Auth) must be deleted separately via
+--     the Supabase Dashboard → Authentication → Users → Delete, OR via:
+--     DELETE FROM auth.users WHERE email = 'USER_EMAIL';
+BEGIN;
+WITH uid AS (SELECT id FROM public.users WHERE email = 'USER_EMAIL'),
+     bids AS (SELECT id FROM public.businesses WHERE user_id = (SELECT id FROM uid))
+DELETE FROM public.stream_events WHERE business_id IN (SELECT id FROM bids);
+
+WITH uid AS (SELECT id FROM public.users WHERE email = 'USER_EMAIL'),
+     bids AS (SELECT id FROM public.businesses WHERE user_id = (SELECT id FROM uid))
+DELETE FROM public.free_build_runs WHERE business_id IN (SELECT id FROM bids);
+
+WITH uid AS (SELECT id FROM public.users WHERE email = 'USER_EMAIL'),
+     bids AS (SELECT id FROM public.businesses WHERE user_id = (SELECT id FROM uid))
+DELETE FROM public.business_assets WHERE business_id IN (SELECT id FROM bids);
+
+WITH uid AS (SELECT id FROM public.users WHERE email = 'USER_EMAIL'),
+     bids AS (SELECT id FROM public.businesses WHERE user_id = (SELECT id FROM uid))
+DELETE FROM public.email_queue WHERE business_id IN (SELECT id FROM bids);
+
+WITH uid AS (SELECT id FROM public.users WHERE email = 'USER_EMAIL'),
+     bids AS (SELECT id FROM public.businesses WHERE user_id = (SELECT id FROM uid))
+DELETE FROM public.task_runs WHERE business_id IN (SELECT id FROM bids);
+
+WITH uid AS (SELECT id FROM public.users WHERE email = 'USER_EMAIL'),
+     bids AS (SELECT id FROM public.businesses WHERE user_id = (SELECT id FROM uid))
+DELETE FROM public.business_context WHERE business_id IN (SELECT id FROM bids);
+
+DELETE FROM public.businesses
+  WHERE user_id = (SELECT id FROM public.users WHERE email = 'USER_EMAIL');
+
+DELETE FROM public.profiles
+  WHERE user_id = (SELECT id FROM public.users WHERE email = 'USER_EMAIL');
+
+DELETE FROM public.users WHERE email = 'USER_EMAIL';
+-- Then manually delete from auth.users via Dashboard or:
+-- DELETE FROM auth.users WHERE email = 'USER_EMAIL';
+COMMIT;
+
+
+-- ── SECTION 6: ZOMBIE CLEANUP ──────────────────────────────────────────────
+-- Fixes rows stuck in state='running' or status='running' after a Worker crash.
+-- Safe to run any time — only touches rows that have been running > 10 minutes.
+
+-- 6a. PREVIEW: see all stuck rows
+SELECT
+  'task_runs' AS tbl,
+  id,
+  business_id,
+  slug,
+  state,
+  status,
+  started_at,
+  NOW() - started_at AS running_for
+FROM public.task_runs
+WHERE state = 'running'
+  AND started_at < NOW() - INTERVAL '10 minutes'
+UNION ALL
+SELECT
+  'free_build_runs' AS tbl,
+  id,
+  business_id,
+  NULL AS slug,
+  NULL AS state,
+  status,
+  started_at,
+  NOW() - started_at AS running_for
+FROM public.free_build_runs
+WHERE status = 'running'
+  AND started_at < NOW() - INTERVAL '10 minutes'
+ORDER BY running_for DESC;
+
+-- 6b. FIX: mark stuck rows as failed
+BEGIN;
+UPDATE public.task_runs
+SET
+  state  = 'failed',
+  status = 'failed',
+  output_data = COALESCE(output_data, '{}') || '{"error":"zombie: Worker died mid-task"}'::jsonb
+WHERE state = 'running'
+  AND started_at < NOW() - INTERVAL '10 minutes';
+
+UPDATE public.free_build_runs
+SET
+  status       = 'failed',
+  error        = 'zombie: Worker died mid-build',
+  completed_at = NOW()
+WHERE status = 'running'
+  AND started_at < NOW() - INTERVAL '10 minutes';
+COMMIT;
+
+
 -- ── HOW TO VERIFY AFTER ANY NUKE ───────────────────────────────────────────
 
 SELECT slug, name, created_at FROM public.businesses ORDER BY created_at DESC;
