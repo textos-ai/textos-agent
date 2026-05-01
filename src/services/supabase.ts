@@ -407,3 +407,181 @@ export async function getAllActiveTasks(
   if (error) throw error;
   return (data as TaskRow[]) ?? [];
 }
+
+// ── free_build_runs ───────────────────────────────────────────────────
+
+export interface FreeBuildRunRow {
+  id: string;
+  business_id: string;
+  user_id: string;
+  status: "pending" | "running" | "completed" | "failed";
+  tasks_total: number;
+  tasks_completed: number;
+  started_at: string;
+  completed_at: string | null;
+  failed_at: string | null;
+  error: string | null;
+  created_at: string;
+}
+
+export async function getFreeBuildRunByBusiness(
+  client: SupabaseClient,
+  businessId: string,
+): Promise<FreeBuildRunRow | null> {
+  const { data, error } = await client
+    .from("free_build_runs")
+    .select("*")
+    .eq("business_id", businessId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as FreeBuildRunRow | null) ?? null;
+}
+
+export async function createFreeBuildRun(
+  client: SupabaseClient,
+  businessId: string,
+  userId: string,
+  tasksTotal: number,
+): Promise<FreeBuildRunRow> {
+  const { data, error } = await client
+    .from("free_build_runs")
+    .insert({ business_id: businessId, user_id: userId, tasks_total: tasksTotal, status: "pending" })
+    .select("*")
+    .single();
+  if (error) throw error;
+  return data as FreeBuildRunRow;
+}
+
+export async function updateFreeBuildRun(
+  client: SupabaseClient,
+  runId: string,
+  updates: Partial<Pick<FreeBuildRunRow, "status" | "tasks_total" | "tasks_completed" | "completed_at" | "failed_at" | "error">>,
+): Promise<void> {
+  const { error } = await client
+    .from("free_build_runs")
+    .update(updates)
+    .eq("id", runId);
+  if (error) throw error;
+}
+
+// ── stream_events ─────────────────────────────────────────────────────
+
+export async function persistStreamEvent(
+  client: SupabaseClient,
+  runId: string,
+  businessId: string,
+  seq: number,
+  eventType: string,
+  eventData: Record<string, unknown>,
+): Promise<void> {
+  const { error } = await client.from("stream_events").insert({
+    run_id: runId,
+    business_id: businessId,
+    seq,
+    event_type: eventType,
+    event_data: eventData,
+  });
+  if (error) {
+    // Non-fatal — log but don't crash the stream
+    console.error("[stream_events] persist failed:", error.message);
+  }
+}
+
+export async function getStreamEventsForRun(
+  client: SupabaseClient,
+  runId: string,
+): Promise<Array<{ seq: number; event_type: string; event_data: Record<string, unknown> }>> {
+  const { data, error } = await client
+    .from("stream_events")
+    .select("seq, event_type, event_data")
+    .eq("run_id", runId)
+    .order("seq", { ascending: true });
+  if (error) throw error;
+  return (data ?? []) as Array<{ seq: number; event_type: string; event_data: Record<string, unknown> }>;
+}
+
+// ── task_run CRUD (used by orchestrator) ─────────────────────────────
+
+export async function createTaskRunForBuild(
+  client: SupabaseClient,
+  payload: {
+    user_id: string;
+    business_id: string;
+    task_id: string;
+  },
+): Promise<string> {
+  const now = new Date().toISOString();
+  const { data, error } = await client
+    .from("task_runs")
+    .insert({
+      ...payload,
+      status: "running",
+      state: "running",
+      started_at: now,
+      proposed_at: now,
+      work_log: [],
+    })
+    .select("id")
+    .single();
+  if (error) throw error;
+  return (data as { id: string }).id;
+}
+
+export async function completeTaskRun(
+  client: SupabaseClient,
+  id: string,
+  outputData: Record<string, unknown>,
+): Promise<void> {
+  const { error } = await client
+    .from("task_runs")
+    .update({
+      status: "completed",
+      state: "complete",
+      completed_at: new Date().toISOString(),
+      output_data: outputData,
+    })
+    .eq("id", id);
+  if (error) throw error;
+}
+
+export async function failTaskRun(
+  client: SupabaseClient,
+  id: string,
+  message: string,
+): Promise<void> {
+  const { error } = await client
+    .from("task_runs")
+    .update({
+      status: "failed",
+      state: "failed",
+      failed_at: new Date().toISOString(),
+      error: message,
+    })
+    .eq("id", id);
+  if (error) throw error;
+}
+
+export async function getCompletedTaskRunSlugs(
+  client: SupabaseClient,
+  businessId: string,
+): Promise<Set<string>> {
+  // Returns slugs of tasks that already have a completed run for this business
+  const { data, error } = await client
+    .from("task_runs")
+    .select("task_id")
+    .eq("business_id", businessId)
+    .eq("status", "completed");
+  if (error || !data || data.length === 0) return new Set();
+
+  const taskIds = (data as { task_id: string }[]).map((r) => r.task_id);
+
+  const { data: tasks, error: te } = await client
+    .from("tasks")
+    .select("slug")
+    .in("id", taskIds);
+  if (te || !tasks) return new Set();
+
+  return new Set((tasks as { slug: string }[]).map((t) => t.slug));
+}

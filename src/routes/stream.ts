@@ -2,9 +2,17 @@ import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { Env } from "../env";
 import { requireAuth } from "../lib/jwt";
-import { createSupabaseClient, getBusinessBySlug, getTaskRunsForBusiness } from "../services/supabase";
+import {
+  createSupabaseClient,
+  getBusinessBySlug,
+  getTaskRunsForBusiness,
+  getFreeBuildRunByBusiness,
+  getStreamEventsForRun,
+  getUserById,
+} from "../services/supabase";
 import { errBody } from "../lib/errors";
 import { sseEvent, type StreamEvent } from "../lib/stream-events";
+import { runFreeBuild } from "../lib/free-build-orchestrator";
 
 const app = new Hono<{ Bindings: Env }>();
 app.use("*", requireAuth);
@@ -12,18 +20,19 @@ app.use("*", requireAuth);
 /**
  * GET /stream/business/:slug[?mode=simulate]
  *
- * SSE stream for a business build.
+ * SSE stream for a business free build.
  *
  * Modes:
- *   default   — emits current status; idles if build is already complete.
- *               Sprint 5 Phase 3 will replace idle with live agent events.
- *   simulate  — plays back a scripted ~90-second build sequence useful for
- *               UI development and demos. Triggered by ?mode=simulate.
+ *   default   — runs (or resumes) the real free-build pipeline.
+ *               Already-completed tasks are skipped; the build picks up
+ *               where it left off if the connection was interrupted.
+ *   simulate  — plays back a scripted ~90-second sequence for UI dev/demos.
+ *               Triggered by ?mode=simulate.
  */
 app.get("/business/:slug", async (c) => {
   const auth = c.get("auth");
   const slug = c.req.param("slug");
-  const mode = c.req.query("mode"); // "simulate" | undefined
+  const mode = c.req.query("mode");
   const supabase = createSupabaseClient(c.env);
 
   const business = await getBusinessBySlug(supabase, auth.user_id, slug).catch(() => null);
@@ -31,138 +40,125 @@ app.get("/business/:slug", async (c) => {
     return c.json(errBody("not_found", `business '${slug}' not found`), 404);
   }
 
-  const runs = await getTaskRunsForBusiness(supabase, business.id).catch(() => []);
-  const hasActiveRun = runs.some(r => r.status === "running" || r.status === "queued");
-  const allDone = runs.length > 0 && runs.every(r => r.status === "completed");
-
   return streamSSE(c, async (stream) => {
     const send = async (evt: StreamEvent) => {
       await stream.writeSSE({ event: evt.type, data: JSON.stringify(evt) });
     };
 
-    // ── Keepalive ──────────────────────────────────────────────────────
     await send({ type: "status", message: "connected", ts: Date.now() });
 
-    if (allDone && mode !== "simulate") {
+    // ── Simulation mode ──────────────────────────────────────────────
+    if (mode === "simulate") {
+      await runSimulation(business.name, auth.user_id, send);
+      return;
+    }
+
+    // ── Check if build is already complete ───────────────────────────
+    const existingRun = await getFreeBuildRunByBusiness(supabase, business.id).catch(() => null);
+
+    if (existingRun?.status === "completed") {
+      // Replay the last N events so the terminal shows something meaningful on reconnect
+      try {
+        const events = await getStreamEventsForRun(supabase, existingRun.id);
+        const last20 = events.slice(-20);
+        for (const e of last20) {
+          await send(e.event_data as unknown as StreamEvent);
+        }
+      } catch {
+        // Non-fatal — fall through to build_already_complete
+      }
       await send({ type: "status", message: "build_already_complete", ts: Date.now() });
       return;
     }
 
-    if (!hasActiveRun && mode !== "simulate") {
-      await send({ type: "status", message: "idle_no_active_run", ts: Date.now() });
+    // ── Check legacy task_runs for backward compat (seed data) ───────
+    const runs = await getTaskRunsForBusiness(supabase, business.id).catch(() => []);
+    const allDone = runs.length > 0 && runs.every((r) => r.status === "completed");
+    if (allDone && !existingRun) {
+      await send({ type: "status", message: "build_already_complete", ts: Date.now() });
       return;
     }
 
-    // ── Simulation sequence ────────────────────────────────────────────
-    // Used for: ?mode=simulate, or when the real agent loop wires in.
-    // Plays a realistic 9-task free build to validate the streaming UX.
-    const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
+    // ── Run or resume the free build ─────────────────────────────────
+    const user = await getUserById(supabase, auth.user_id).catch(() => null);
+    if (!user) {
+      await send({ type: "error", message: "User not found", ts: Date.now() });
+      return;
+    }
 
-    await send({ type: "narrative", text: `Initializing agent for ${business.name}…`, ts: Date.now() });
-    await delay(800);
-    await send({ type: "cmd", text: "Spinning up research sandbox", ts: Date.now() });
-    await delay(600);
-
-    // Task 1: research-strategy
-    await send({ type: "task_start", task_slug: "research-strategy", task_name: "Research Strategy", task_run_id: "sim-1", ts: Date.now() });
-    await delay(400);
-    await send({ type: "cmd", text: `Searching web for: ${business.name} market size 2025`, ts: Date.now() });
-    await delay(1200);
-    await send({ type: "cmd", text: `Deep searching: ${business.name} competitors funding`, ts: Date.now() });
-    await delay(1000);
-    await send({ type: "narrative", text: "Market is larger than expected — found 3 underserved segments.", ts: Date.now() });
-    await delay(800);
-    await send({ type: "cmd", text: "Saving strategy: Novel Idea", ts: Date.now() });
-    await delay(400);
-    await send({ type: "task_complete", task_slug: "research-strategy", task_name: "Research Strategy", task_run_id: "sim-1", output_summary: "Strategy locked: Novel Idea. Confidence 78%.", ts: Date.now() });
-    await delay(600);
-
-    // Task 2: welcome-email
-    await send({ type: "task_start", task_slug: "welcome-email", task_name: "Welcome Email", task_run_id: "sim-2", ts: Date.now() });
-    await delay(400);
-    await send({ type: "cmd", text: "Drafting welcome email from agent context", ts: Date.now() });
-    await delay(1200);
-    await send({ type: "cmd", text: "Queuing email via SendGrid", ts: Date.now() });
-    await delay(600);
-    await send({ type: "task_complete", task_slug: "welcome-email", task_name: "Welcome Email", task_run_id: "sim-2", output_summary: "Welcome email dispatched.", ts: Date.now() });
-    await delay(500);
-
-    // Task 3: launch-tweet
-    await send({ type: "task_start", task_slug: "launch-tweet", task_name: "Launch Tweet", task_run_id: "sim-3", ts: Date.now() });
-    await delay(400);
-    await send({ type: "cmd", text: "Drafting launch tweet with brand voice", ts: Date.now() });
-    await delay(900);
-    await send({ type: "task_complete", task_slug: "launch-tweet", task_name: "Launch Tweet", task_run_id: "sim-3", output_summary: "Tweet drafted and ready to post.", ts: Date.now() });
-    await delay(500);
-
-    // Task 4: personal-landing-page
-    await send({ type: "task_start", task_slug: "personal-landing-page", task_name: "Personal Landing Page", task_run_id: "sim-4", ts: Date.now() });
-    await delay(400);
-    await send({ type: "cmd", text: "Generating personal website from profile", ts: Date.now() });
-    await delay(1500);
-    await send({ type: "cmd", text: `Deploying to ${auth.user_id.slice(0, 8)}.app.textos.ai`, ts: Date.now() });
-    await delay(800);
-    await send({ type: "task_complete", task_slug: "personal-landing-page", task_name: "Personal Landing Page", task_run_id: "sim-4", output_summary: "Personal site deployed.", ts: Date.now() });
-    await delay(500);
-
-    // Task 5: mission-document
-    await send({ type: "task_start", task_slug: "mission-document", task_name: "Mission Document", task_run_id: "sim-5", ts: Date.now() });
-    await delay(400);
-    await send({ type: "narrative", text: "Writing the mission — this is the part that defines everything downstream.", ts: Date.now() });
-    await delay(1200);
-    await send({ type: "cmd", text: "Saving mission document to business context", ts: Date.now() });
-    await delay(600);
-    await send({ type: "task_complete", task_slug: "mission-document", task_name: "Mission Document", task_run_id: "sim-5", output_summary: "Mission + vision + values documented.", ts: Date.now() });
-    await delay(500);
-
-    // Task 6: task-queue-built
-    await send({ type: "task_start", task_slug: "task-queue-built", task_name: "Task Queue", task_run_id: "sim-6", ts: Date.now() });
-    await delay(400);
-    await send({ type: "cmd", text: "Proposing 3 immediate tasks from strategy", ts: Date.now() });
-    await delay(600);
-    await send({ type: "cmd", text: "Staging 21 paid-bundle tasks for subscription", ts: Date.now() });
-    await delay(400);
-    await send({ type: "task_complete", task_slug: "task-queue-built", task_name: "Task Queue", task_run_id: "sim-6", output_summary: "24 tasks staged.", ts: Date.now() });
-    await delay(500);
-
-    // Task 7: dashboard-briefing
-    await send({ type: "task_start", task_slug: "dashboard-briefing", task_name: "Dashboard Briefing", task_run_id: "sim-7", ts: Date.now() });
-    await delay(400);
-    await send({ type: "cmd", text: "Generating executive briefing from all context", ts: Date.now() });
-    await delay(1000);
-    await send({ type: "task_complete", task_slug: "dashboard-briefing", task_name: "Dashboard Briefing", task_run_id: "sim-7", output_summary: "Briefing ready.", ts: Date.now() });
-    await delay(500);
-
-    // Task 8: personalized-pitch-email
-    await send({ type: "task_start", task_slug: "personalized-pitch-email", task_name: "Personalized Pitch Email", task_run_id: "sim-8", ts: Date.now() });
-    await delay(400);
-    await send({ type: "narrative", text: "Writing a pitch email that actually knows who you are.", ts: Date.now() });
-    await delay(1200);
-    await send({ type: "cmd", text: `Sending pitch email to ${auth.user_id.slice(0, 8)}@…`, ts: Date.now() });
-    await delay(600);
-    await send({ type: "task_complete", task_slug: "personalized-pitch-email", task_name: "Personalized Pitch Email", task_run_id: "sim-8", output_summary: "Personalized pitch delivered.", ts: Date.now() });
-    await delay(500);
-
-    // Task 9: tam-sam-som
-    await send({ type: "task_start", task_slug: "tam-sam-som", task_name: "Market Sizing", task_run_id: "sim-9", ts: Date.now() });
-    await delay(400);
-    await send({ type: "cmd", text: "Calculating TAM/SAM/SOM from research data", ts: Date.now() });
-    await delay(1000);
-    await send({ type: "narrative", text: "Market is real and measurable. Numbers ready.", ts: Date.now() });
-    await delay(600);
-    await send({ type: "task_complete", task_slug: "tam-sam-som", task_name: "Market Sizing", task_run_id: "sim-9", output_summary: "Market sizing complete. TAM visible; SAM/SOM unlock on subscription.", ts: Date.now() });
-    await delay(800);
-
-    // Build complete
-    await send({ type: "narrative", text: "Free build complete. Your business is ready to run.", ts: Date.now() });
-    await delay(600);
-    await send({
-      type: "build_complete",
-      completed_count: 9,
-      summary: "9 tasks complete. Unlock paid bundle to continue building.",
-      ts: Date.now(),
-    });
+    try {
+      await runFreeBuild(c.env, supabase, business, user, send);
+    } catch (err) {
+      await send({ type: "error", message: String(err), ts: Date.now() });
+    }
   });
 });
+
+// ── Simulation fallback ────────────────────────────────────────────────────
+// Kept for ?mode=simulate so the frontend can be tested independently
+// of the real Anthropic API.
+
+async function runSimulation(
+  businessName: string,
+  userId: string,
+  send: (evt: StreamEvent) => Promise<void>,
+): Promise<void> {
+  const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  await send({ type: "narrative", text: `Initializing agent for ${businessName}…`, ts: Date.now() });
+  await delay(800);
+  await send({ type: "cmd", text: "Spinning up research sandbox", ts: Date.now() });
+  await delay(600);
+
+  const tasks: Array<[string, string, string, string]> = [
+    ["research-strategy",        "Research Strategy",       "sim-1", "Strategy locked. Confidence 78%."],
+    ["welcome-email",            "Welcome Email",           "sim-2", "Welcome email dispatched."],
+    ["launch-tweet",             "Launch Tweet",            "sim-3", "Tweet drafted and ready to post."],
+    ["personal-landing-page",    "Personal Landing Page",   "sim-4", "Personal site planned."],
+    ["mission-document",         "Mission Document",        "sim-5", "Mission + vision + values documented."],
+    ["task-queue-built",         "Task Queue",              "sim-6", "24 tasks staged."],
+    ["dashboard-briefing",       "Dashboard Briefing",      "sim-7", "Briefing ready."],
+    ["personalized-pitch-email", "Personalized Pitch Email","sim-8", "Personalized pitch delivered."],
+    ["tam-sam-som",              "Market Sizing",           "sim-9", "TAM visible; SAM/SOM unlock on subscription."],
+  ];
+
+  const cmds: Record<string, string[]> = {
+    "research-strategy":        [`Searching: "${businessName}" market size 2025`, `Deep searching: ${businessName} competitors`],
+    "welcome-email":            ["Drafting welcome email", "Queuing via SendGrid"],
+    "launch-tweet":             ["Drafting tweet with brand voice"],
+    "personal-landing-page":    ["Generating personal website", `Deploying to ${userId.slice(0, 8)}.app.textos.ai`],
+    "mission-document":         ["Writing mission document", "Saving to business context"],
+    "task-queue-built":         ["Proposing 3 immediate tasks", "Staging 21 paid-bundle tasks"],
+    "dashboard-briefing":       ["Generating executive briefing"],
+    "personalized-pitch-email": [`Sending pitch to ${userId.slice(0, 8)}@…`],
+    "tam-sam-som":              ["Calculating TAM/SAM/SOM from research"],
+  };
+
+  const narratives: Record<string, string> = {
+    "research-strategy":  "Market is larger than expected — found 3 underserved segments.",
+    "mission-document":   "Writing the mission — this defines everything downstream.",
+    "personalized-pitch-email": "Writing a pitch email that actually knows who you are.",
+    "tam-sam-som":        "Market is real and measurable.",
+  };
+
+  for (const [taskSlug, taskName, taskRunId, summary] of tasks) {
+    await send({ type: "task_start", task_slug: taskSlug, task_name: taskName, task_run_id: taskRunId, ts: Date.now() });
+    await delay(400);
+    for (const cmd of cmds[taskSlug] ?? []) {
+      await send({ type: "cmd", text: cmd, ts: Date.now() });
+      await delay(900);
+    }
+    if (narratives[taskSlug]) {
+      await send({ type: "narrative", text: narratives[taskSlug], ts: Date.now() });
+      await delay(700);
+    }
+    await send({ type: "task_complete", task_slug: taskSlug, task_name: taskName, task_run_id: taskRunId, output_summary: summary, ts: Date.now() });
+    await delay(500);
+  }
+
+  await send({ type: "narrative", text: "Free build complete. Your business is ready to run.", ts: Date.now() });
+  await delay(600);
+  await send({ type: "build_complete", completed_count: 9, summary: "9 tasks complete. Unlock paid bundle to continue building.", ts: Date.now() });
+}
 
 export default app;
