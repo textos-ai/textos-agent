@@ -19,7 +19,7 @@ import {
 } from "../services/supabase";
 import { errBody } from "../lib/errors";
 import { log } from "../lib/logger";
-import { pickRandomAgentName } from "../lib/agentNames";
+import { pickAgentName } from "../lib/agentNames";
 
 const app = new Hono<{ Bindings: Env }>();
 app.use("*", requireAuth);
@@ -289,7 +289,7 @@ app.post("/", async (c) => {
     return c.json(errBody("upstream_error", msg), 502);
   }
 
-  const agentName = pickRandomAgentName();
+  const agentName = await pickAgentName(supabase, auth.user_id);
   try {
     await createEmptyBusinessContext(supabase, business.id, auth.user_id, agentName);
   } catch (err) {
