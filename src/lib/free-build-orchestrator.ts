@@ -78,6 +78,24 @@ export async function runFreeBuild(
   // ── Mark run as running ───────────────────────────────────────────
   await updateFreeBuildRun(supabase, runId, { status: "running" });
 
+  // ── Janitor: fix zombie task_runs from prior Worker crashes ───────
+  // Any task_run for this business still in state='running' after 10 minutes
+  // is a zombie (Worker died before the state transition completed).
+  // Mark them failed now so they don't pollute getCompletedTaskRunSlugs.
+  {
+    const zombieCutoff = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    await supabase
+      .from("task_runs")
+      .update({ state: "failed", status: "failed" })
+      .eq("business_id", business.id)
+      .eq("state", "running")
+      .lt("created_at", zombieCutoff)
+      .then(
+        () => {},  // non-fatal success
+        () => {},  // non-fatal error
+      );
+  }
+
   // ── Load business context (may have partial data from prior tasks) ─
   let ctx: BusinessContextRow;
   {
@@ -123,7 +141,8 @@ export async function runFreeBuild(
 
   let completedCount = run.tasks_completed;
 
-  // ── Execute each task ─────────────────────────────────────────────
+  // ── Execute each task (outer try guarantees free_build_run is never left running) ──
+  try {
   for (const step of PIPELINE) {
     const taskDef = await getTaskBySlug(supabase, step.slug).catch(() => null);
     if (!taskDef) {
@@ -196,7 +215,13 @@ export async function runFreeBuild(
       });
     } catch (err) {
       const errMsg = String(err);
-      await failTaskRun(supabase, taskRunId, errMsg);
+      // Wrap failTaskRun: if it throws, the task_run stays 'running' but
+      // the build continues. The janitor in the next session cleans it up.
+      try {
+        await failTaskRun(supabase, taskRunId, errMsg);
+      } catch {
+        // zombie — cleaned up by janitor on next connect
+      }
       await emit({
         type: "task_failed",
         task_slug: step.slug,
@@ -228,6 +253,23 @@ export async function runFreeBuild(
     summary: `${completedCount} tasks complete. Unlock paid bundle to continue building.`,
     ts: Date.now(),
   });
+
+  } catch (fatalErr) {
+    // A crash outside the per-task catch (e.g., DB error loading context,
+    // fatal emit failure). Mark the free_build_run failed so it isn't
+    // stuck in 'running' forever.
+    await updateFreeBuildRun(supabase, runId, {
+      status: "failed",
+      error: String(fatalErr).slice(0, 500),
+      completed_at: new Date().toISOString(),
+    }).catch(() => {});
+    await sseEmit({
+      type: "error" as StreamEvent["type"],
+      message: `Build failed: ${String(fatalErr)}`,
+      ts: Date.now(),
+    } as unknown as StreamEvent).catch(() => {});
+    throw fatalErr;
+  }
 }
 
 function extractSummary(slug: string, data: Record<string, unknown>): string {
