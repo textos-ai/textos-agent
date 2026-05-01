@@ -34,16 +34,17 @@ ALTER TABLE task_runs
   ADD COLUMN IF NOT EXISTS work_log JSONB NOT NULL DEFAULT '[]'::jsonb;
 
 -- ── 5. Backfill BeatPilot's 9 completed task_runs ────────────────────────────
+-- Note: task_runs has no created_at column — only started_at.
 UPDATE task_runs
-SET state         = 'complete',
-    proposed_at   = COALESCE(started_at, created_at, NOW()),
-    failed_at     = NULL
+SET state       = 'complete',
+    proposed_at = COALESCE(started_at, NOW()),
+    failed_at   = NULL
 WHERE status = 'completed';
 
 -- Queued task_runs (free tasks awaiting execution) stay at default 'proposed'
 UPDATE task_runs
 SET state       = 'proposed',
-    proposed_at = COALESCE(started_at, created_at, NOW())
+    proposed_at = COALESCE(started_at, NOW())
 WHERE status = 'queued';
 
 -- Running tasks
@@ -54,7 +55,7 @@ WHERE status = 'running';
 -- Failed tasks
 UPDATE task_runs
 SET state     = 'failed',
-    failed_at = COALESCE(completed_at, updated_at, NOW())
+    failed_at = COALESCE(completed_at, NOW())
 WHERE status = 'failed';
 
 -- ── 6. Indexes for state-based filtering ─────────────────────────────────────
