@@ -1,7 +1,11 @@
 import type { TaskCtx, TaskResult } from "./types";
 
+function stripFences(s: string): string {
+  return s.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/i, "").trim();
+}
+
 export async function runWelcomeEmail(tc: TaskCtx): Promise<TaskResult> {
-  const { business, ctx, user, anthropic, env, emit } = tc;
+  const { business, ctx, user, anthropic, env, emit, supabase, taskRunId } = tc;
 
   await emit({ type: "cmd", text: "Drafting welcome email from agent context", ts: Date.now() });
 
@@ -12,15 +16,17 @@ Industry: ${ctx.industry ?? "business"}
 Agent name (their assigned TextOS agent): ${ctx.agent_name ?? "your TextOS agent"}
 User email: ${user.email}
 Value proposition: ${ctx.value_proposition ?? ""}
+Business summary: ${ctx.business_summary ?? ""}
 
 Guidelines:
-- Subject line: punchy, personal, max 60 chars
+- Subject line: punchy, personal, max 60 chars — specific to the industry
 - Body: 3 short paragraphs — welcome them, tell them what just happened (research complete, tasks staged), what's next
 - Sign off as: ${ctx.agent_name ?? "Your TextOS Agent"}
 - Tone: ${ctx.brand_voice ?? "confident, warm, direct"}
 - NO generic filler phrases like "I hope this email finds you well"
+- Reference the specific industry and what was researched
 
-Return ONLY valid JSON:
+Return ONLY valid JSON (no markdown, no backticks):
 {
   "subject": "string",
   "body": "string — full email body, newlines as \\n",
@@ -33,15 +39,15 @@ Return ONLY valid JSON:
     messages: [{ role: "user", content: prompt }],
   });
 
-  const raw = (msg.content[0] as { type: string; text: string }).text.trim();
+  const raw = stripFences((msg.content[0] as { type: string; text: string }).text.trim());
   let parsed: { subject: string; body: string; preview: string };
   try {
     parsed = JSON.parse(raw);
   } catch {
     parsed = {
-      subject: `Welcome to TextOS — ${business.name} is live`,
-      body: `Hi there,\n\nYour business ${business.name} has been set up and ${ctx.agent_name ?? "your TextOS agent"} has completed your initial research.\n\nCheck your dashboard to see what's ready.\n\n— ${ctx.agent_name ?? "Your TextOS Agent"}`,
-      preview: `Your business ${business.name} is live and research is complete.`,
+      subject: `${business.name} is live — here's what we found`,
+      body: `Hi there,\n\n${ctx.agent_name ?? "Your TextOS agent"} just finished researching ${business.name} in the ${ctx.industry ?? "market"}. Your task queue is ready.\n\nCheck your dashboard to see what's next.\n\n— ${ctx.agent_name ?? "Your TextOS Agent"}`,
+      preview: `${business.name} research complete. Your task queue is ready.`,
     };
   }
 
@@ -49,7 +55,7 @@ Return ONLY valid JSON:
   let sendError: string | undefined;
 
   if (env.SENDGRID_API_KEY && env.SENDGRID_API_KEY !== "PLACEHOLDER") {
-    await emit({ type: "cmd", text: "Queuing email via SendGrid", ts: Date.now() });
+    await emit({ type: "cmd", text: "Sending via SendGrid", ts: Date.now() });
     try {
       const res = await fetch("https://api.sendgrid.com/v3/mail/send", {
         method: "POST",
@@ -71,6 +77,26 @@ Return ONLY valid JSON:
     }
   } else {
     await emit({ type: "cmd", text: "SendGrid not configured — email staged for later", ts: Date.now() });
+  }
+
+  // ── Write to business_assets ────────────────────────────────────────
+  try {
+    await supabase.from("business_assets").insert({
+      business_id: business.id,
+      task_run_id: taskRunId,
+      asset_type: "email",
+      asset_subtype: "welcome_email",
+      asset_text: parsed.body,
+      metadata: {
+        model: "claude-haiku-4-5-20251001",
+        subject: parsed.subject,
+        to: user.email,
+        sent,
+        send_error: sendError ?? null,
+      },
+    });
+  } catch {
+    // Non-fatal
   }
 
   return {

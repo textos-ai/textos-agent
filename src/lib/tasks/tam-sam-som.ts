@@ -1,7 +1,11 @@
 import type { TaskCtx, TaskResult } from "./types";
 
+function stripFences(s: string): string {
+  return s.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/i, "").trim();
+}
+
 export async function runTamSamSom(tc: TaskCtx): Promise<TaskResult> {
-  const { business, ctx, anthropic, emit } = tc;
+  const { business, ctx, anthropic, emit, supabase, taskRunId } = tc;
 
   await emit({ type: "cmd", text: "Calculating TAM/SAM/SOM from research data", ts: Date.now() });
 
@@ -15,14 +19,14 @@ Business model: ${ctx.business_model ?? ""}
 Competitors: ${JSON.stringify(ctx.competitors)}
 
 Guidelines:
-- Use realistic, defensible numbers from known market research (cite the logic)
-- TAM = total global/national market for this category
-- SAM = serviceable portion this business could realistically address (geography, segment, model)
+- Use realistic, defensible numbers from known market research
+- TAM = total global/national market for this specific industry category
+- SAM = serviceable portion this business could realistically address
 - SOM = realistic share in year 1-3 given competition and GTM constraints
-- Express in USD. Format large numbers as "$X billion" or "$X million"
-- Include your bottom-up reasoning in the logic fields
+- Express in USD with human-readable labels ("$5B", "$250M", "$2.5M")
+- Base reasoning on the specific industry, not generic defaults
 
-Return ONLY valid JSON:
+Return ONLY valid JSON (no markdown, no backticks):
 {
   "tam": {
     "usd": 5000000000,
@@ -39,7 +43,7 @@ Return ONLY valid JSON:
     "label": "$2.5M",
     "description": "string — year 1-3 realistic capture"
   },
-  "methodology": "string — brief explanation of the approach",
+  "methodology": "string — brief explanation of the bottom-up approach",
   "confidence": 65
 }`;
 
@@ -49,7 +53,7 @@ Return ONLY valid JSON:
     messages: [{ role: "user", content: prompt }],
   });
 
-  const raw = (msg.content[0] as { type: string; text: string }).text.trim();
+  const raw = stripFences((msg.content[0] as { type: string; text: string }).text.trim());
   let parsed: {
     tam: { usd: number; label: string; description: string };
     sam: { usd: number; label: string; description: string };
@@ -62,27 +66,50 @@ Return ONLY valid JSON:
     parsed = JSON.parse(raw);
   } catch {
     parsed = {
-      tam: { usd: 1000000000, label: "$1B", description: "Estimated total addressable market." },
+      tam: { usd: 1000000000, label: "$1B", description: `Estimated ${ctx.industry ?? "market"} TAM.` },
       sam: { usd: 50000000, label: "$50M", description: "Serviceable segment based on target customer." },
       som: { usd: 500000, label: "$500K", description: "Realistic year 1-3 capture." },
-      methodology: "Bottom-up estimate based on industry data.",
+      methodology: "Bottom-up estimate based on industry research.",
       confidence: 50,
     };
   }
 
-  await emit({ type: "narrative", text: "Market is real and measurable. TAM visible — SAM/SOM unlock on subscription.", ts: Date.now() });
+  await emit({
+    type: "narrative",
+    text: "Market is real and measurable. TAM visible — SAM/SOM unlock on subscription.",
+    ts: Date.now(),
+  });
+
+  const outputData = {
+    tam: parsed.tam,
+    sam_blurred: true,
+    som_blurred: true,
+    sam: parsed.sam,
+    som: parsed.som,
+    methodology: parsed.methodology,
+    confidence: parsed.confidence,
+  };
+
+  // ── Write to business_assets ────────────────────────────────────────
+  try {
+    await supabase.from("business_assets").insert({
+      business_id: business.id,
+      task_run_id: taskRunId,
+      asset_type: "document",
+      asset_subtype: "market_sizing",
+      asset_data: outputData,
+      metadata: {
+        model: "claude-sonnet-4-6",
+        sam_blurred: true,
+        som_blurred: true,
+      },
+    });
+  } catch {
+    // Non-fatal
+  }
 
   return {
-    output_data: {
-      tam: parsed.tam,
-      // SAM and SOM are blurred for free tier — stored but frontend masks them
-      sam_blurred: true,
-      som_blurred: true,
-      sam: parsed.sam,
-      som: parsed.som,
-      methodology: parsed.methodology,
-      confidence: parsed.confidence,
-    },
+    output_data: outputData,
     context_updates: {
       market_size: {
         tam_usd: parsed.tam.usd,
