@@ -90,6 +90,29 @@ Return ONLY valid JSON (no markdown, no backticks):
     confidence: parsed.confidence,
   };
 
+  const marketSize = {
+    tam_usd: parsed.tam.usd,
+    tam_label: parsed.tam.label,
+    sam_usd: parsed.sam.usd,
+    sam_label: parsed.sam.label,
+    som_usd: parsed.som.usd,
+    som_label: parsed.som.label,
+    methodology: parsed.methodology,
+  };
+
+  // ── Write market_size directly to business_context ─────────────────
+  // context_updates goes through upsertBusinessContext in the orchestrator,
+  // but that path uses onConflict merge which can silently skip the update.
+  // Direct .update() here guarantees market_size is persisted.
+  try {
+    await supabase
+      .from("business_context")
+      .update({ market_size: marketSize })
+      .eq("business_id", business.id);
+  } catch {
+    // Non-fatal — context_updates fallback covers it
+  }
+
   // ── Write to business_assets ────────────────────────────────────────
   try {
     await supabase.from("business_assets").insert({
@@ -110,16 +133,6 @@ Return ONLY valid JSON (no markdown, no backticks):
 
   return {
     output_data: outputData,
-    context_updates: {
-      market_size: {
-        tam_usd: parsed.tam.usd,
-        tam_label: parsed.tam.label,
-        sam_usd: parsed.sam.usd,
-        sam_label: parsed.sam.label,
-        som_usd: parsed.som.usd,
-        som_label: parsed.som.label,
-        methodology: parsed.methodology,
-      },
-    },
+    context_updates: { market_size: marketSize },
   };
 }
