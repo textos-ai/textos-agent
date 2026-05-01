@@ -13,4 +13,6 @@ export interface Env {
   /** Zone ID of the textos.ai zone. */
   CLOUDFLARE_ZONE_ID: string;
   ENVIRONMENT: "dev" | "prod";
+  /** Number of paying users required before cold emails auto-send (skipping admin approval). */
+  AUTO_APPROVE_AFTER_USER_COUNT: string;
 }

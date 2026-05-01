@@ -5,6 +5,7 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 ENVIRONMENT = "dev"
+AUTO_APPROVE_AFTER_USER_COUNT = "100"
 
 # ----------------------------------------------------------------------
 # Bindings below are commented placeholders, wired in subsequent sprints.
