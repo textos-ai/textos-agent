@@ -4,7 +4,8 @@ export type ErrorCode =
   | "conflict"
   | "internal"
   | "upstream_error"
-  | "unauthorized";
+  | "unauthorized"
+  | "forbidden";
 
 export interface ErrorBody {
   error: ErrorCode;

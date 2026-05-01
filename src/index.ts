@@ -9,6 +9,7 @@ import authRoutes from "./routes/auth";
 import handleRoutes from "./routes/handles";
 import businessRoutes from "./routes/businesses";
 import streamRoutes from "./routes/stream";
+import adminRoutes from "./routes/admin";
 import { errBody } from "./lib/errors";
 import { log } from "./lib/logger";
 
@@ -25,7 +26,7 @@ app.use(
       if (origin === "http://localhost:5173") return origin;
       return null;
     },
-    allowMethods: ["GET", "POST", "OPTIONS"],
+    allowMethods: ["GET", "POST", "PATCH", "OPTIONS"],
     allowHeaders: ["Content-Type", "Authorization"],
     credentials: true,
   }),
@@ -40,6 +41,7 @@ app.route("/chat", chatRoutes);
 app.route("/tasks", taskRoutes);
 app.route("/businesses", businessRoutes);
 app.route("/stream", streamRoutes);
+app.route("/admin", adminRoutes);
 
 app.notFound((c) =>
   c.json(

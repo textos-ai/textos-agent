@@ -307,6 +307,52 @@ app.post("/", async (c) => {
   return c.json({ business, context, agent_name: agentName }, 201);
 });
 
+// ── GET /:slug/tasks/:taskId ───────────────────────────────────────────────
+// Task detail: state, timestamps, work_log, and linked business_assets.
+// NOTE: must be registered before /:slug or Hono will treat taskId as a slug.
+app.get("/:slug/tasks/:taskId", async (c) => {
+  const auth = c.get("auth");
+  const slug = c.req.param("slug");
+  const taskId = c.req.param("taskId");
+  const supabase = createSupabaseClient(c.env);
+
+  let business;
+  try {
+    business = await getBusinessBySlug(supabase, auth.user_id, slug);
+  } catch (err) {
+    return c.json(errBody("upstream_error", String(err)), 502);
+  }
+  if (!business) {
+    return c.json(errBody("not_found", `business '${slug}' not found`), 404);
+  }
+
+  const { data: run, error } = await supabase
+    .from("task_runs")
+    .select(
+      "id, task_id, status, state, proposed_at, started_at, completed_at, failed_at, work_log, error",
+    )
+    .eq("id", taskId)
+    .eq("business_id", business.id)
+    .maybeSingle();
+
+  if (error) {
+    log.error("get_task_run_failed", { err: error.message, taskId });
+    return c.json(errBody("upstream_error", error.message), 502);
+  }
+  if (!run) {
+    return c.json(errBody("not_found", `task run '${taskId}' not found`), 404);
+  }
+
+  // Fetch linked business_assets
+  const { data: assets } = await supabase
+    .from("business_assets")
+    .select("id, asset_type, asset_subtype, asset_url, asset_text, created_at")
+    .eq("task_run_id", taskId)
+    .order("created_at", { ascending: true });
+
+  return c.json({ task: { ...run, assets: assets ?? [] } });
+});
+
 function extractOutputSummary(
   slug: string,
   data: Record<string, unknown>,
