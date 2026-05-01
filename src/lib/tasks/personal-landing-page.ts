@@ -1,36 +1,45 @@
 import type { TaskCtx, TaskResult } from "./types";
 
+function stripFences(s: string): string {
+  return s.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/i, "").trim();
+}
+
 export async function runPersonalLandingPage(tc: TaskCtx): Promise<TaskResult> {
-  const { business, ctx, user, anthropic, emit } = tc;
+  const { business, ctx, user, anthropic, emit, supabase, taskRunId } = tc;
 
-  const handle = user.handle ?? user.email.split("@")[0];
-  const plannedUrl = `https://${handle}.app.textos.ai`;
+  // This task generates the BUSINESS website, not the user's personal page.
+  // URL uses business.slug (not user.handle — personal site is a Sprint 9 deliverable).
+  const plannedUrl = `https://${business.slug}.app.textos.ai`;
 
-  await emit({ type: "cmd", text: "Generating personal website from profile", ts: Date.now() });
+  await emit({ type: "cmd", text: `Generating business website for ${business.name}`, ts: Date.now() });
 
-  const prompt = `Generate a clean, professional personal landing page HTML for a founder.
+  const prompt = `Generate a clean, professional landing page HTML for this business.
 
-Founder handle: ${handle}
-Business: ${business.name}
+Business name: ${business.name}
+Business slug: ${business.slug}
 Industry: ${ctx.industry ?? "business"}
-Brand voice: ${ctx.brand_voice ?? "professional and approachable"}
+What it does: ${ctx.business_summary ?? ""}
 Value proposition: ${ctx.value_proposition ?? ""}
-Business summary: ${ctx.business_summary ?? ""}
+Target customer: ${JSON.stringify(ctx.target_customer)}
+Brand voice: ${ctx.brand_voice ?? "professional and approachable"}
+Key differentiators: ${JSON.stringify(ctx.key_differentiators)}
+Tagline (if known): ${ctx.positioning_statement ?? ""}
 
 Requirements:
 - Self-contained HTML file (no external CSS/JS except Google Fonts)
 - Mobile-responsive, dark background (#0a0a0a), clean typography
-- Sections: Hero (name + tagline), About (2-3 sentences), Business (card for ${business.name}), Contact (link to email)
-- Use Inter or Space Grotesk from Google Fonts
+- Sections: Hero (business name + tagline), Problem/Solution (2-3 sentences), About the Founder, CTA
+- Use Space Grotesk from Google Fonts
 - Accent color: #f59e0b (amber)
 - NO placeholder images — text-based hero only
-- CTA button: "See what I'm building →" linking to /business/${business.slug}/
+- Industry-specific content — references "${ctx.industry ?? "the industry"}" specifically
+- CTA button: "Get Started →" or industry-appropriate call to action
 - Footer: Powered by TextOS
 
-Return ONLY valid JSON:
+Return ONLY valid JSON (no markdown, no backticks):
 {
-  "html": "string — full HTML document (escape quotes properly)",
-  "title": "string — page title",
+  "html": "string — full HTML document",
+  "title": "string — page title (under 60 chars)",
   "description": "string — meta description under 160 chars"
 }`;
 
@@ -40,38 +49,45 @@ Return ONLY valid JSON:
     messages: [{ role: "user", content: prompt }],
   });
 
-  const raw = (msg.content[0] as { type: string; text: string }).text.trim();
+  const raw = stripFences((msg.content[0] as { type: string; text: string }).text.trim());
   let parsed: { html: string; title: string; description: string };
   try {
     parsed = JSON.parse(raw);
   } catch {
     parsed = {
-      html: `<!DOCTYPE html><html><head><title>${handle} | TextOS</title></head><body><h1>${handle}</h1><p>Building ${business.name}</p><p>Powered by TextOS</p></body></html>`,
-      title: `${handle} | TextOS`,
-      description: `${handle} is building ${business.name} with TextOS.`,
+      html: `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>${business.name}</title><style>body{background:#0a0a0a;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}</style></head><body><div style="text-align:center;padding:2rem"><h1 style="color:#f59e0b;font-size:3rem">${business.name}</h1><p>${ctx.value_proposition ?? business.name}</p><p style="color:#666;font-size:0.8rem">Powered by TextOS</p></div></body></html>`,
+      title: `${business.name}`,
+      description: ctx.value_proposition ?? `${business.name} — powered by TextOS.`,
     };
   }
 
-  // Store in business_assets for later deployment (wildcard subdomain — Sprint 9)
+  await emit({ type: "cmd", text: `Deploying to ${business.slug}.app.textos.ai`, ts: Date.now() });
+
+  // Store HTML in business_assets (live deploy pending Sprint 9 wildcard subdomain routing)
   try {
-    await tc.supabase.from("business_assets").insert({
+    await supabase.from("business_assets").insert({
       business_id: business.id,
-      user_id: user.id,
-      asset_type: "personal_website",
-      asset_subtype: "html",
-      asset_text: parsed.html,
+      task_run_id: taskRunId,
+      asset_type: "website",
+      asset_subtype: "business_landing_page",
       asset_url: plannedUrl,
+      asset_text: parsed.html,
+      metadata: {
+        model: "claude-sonnet-4-6",
+        title: parsed.title,
+        description: parsed.description,
+        deployed: false,
+        deploy_note: "Live deployment Sprint 9 — wildcard subdomain routing pending.",
+      },
     });
   } catch {
     // Non-fatal
   }
 
-  await emit({ type: "cmd", text: `Deploying to ${handle}.app.textos.ai`, ts: Date.now() });
-
   return {
     output_data: {
       url: plannedUrl,
-      handle,
+      slug: business.slug,
       title: parsed.title,
       description: parsed.description,
       deployed: false,
