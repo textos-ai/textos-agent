@@ -16,6 +16,7 @@ export interface TaskCtx {
   ctx: BusinessContextRow;
   user: UserRow;
   runId: string;
+  taskRunId: string;
   nextSeq: () => number;
   emit: (evt: StreamEvent) => Promise<void>;
 }

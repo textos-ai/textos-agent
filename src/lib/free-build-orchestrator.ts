@@ -162,6 +162,7 @@ export async function runFreeBuild(
       ctx,
       user,
       runId,
+      taskRunId,
       nextSeq,
       emit,
     };
