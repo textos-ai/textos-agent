@@ -163,6 +163,28 @@ export async function runFreeBuild(
       continue;
     }
 
+    // Idempotency guard: if a task_run for this task is already 'running' on
+    // this business (from a concurrent or interrupted SSE connection that the
+    // janitor hasn't aged out yet), skip rather than create a duplicate row.
+    // The janitor at build-start ages out runs > 10 min, so this only catches
+    // genuinely in-flight concurrent connections.
+    {
+      const inFlightResult = await supabase
+        .from("task_runs")
+        .select("id")
+        .eq("business_id", business.id)
+        .eq("task_id", taskDef.id)
+        .eq("is_current", true)
+        .eq("status", "running")
+        .maybeSingle();
+      const inFlight = inFlightResult.data;
+
+      if (inFlight?.id) {
+        await emit({ type: "cmd", text: `[skip] ${step.slug} already in-flight — skipping duplicate`, ts: Date.now() });
+        continue;
+      }
+    }
+
     // Create task_run row
     let taskRunId: string;
     try {
