@@ -7,20 +7,28 @@ export function createAnthropicClient(env: Env): Anthropic {
 }
 
 /**
- * Stream a single chat completion. Caller forwards events as SSE.
+ * Stream a single chat completion with optional system prompt.
+ * Used by the dashboard chat panel — the system prompt carries
+ * business context (agent name, industry, value proposition, etc.)
+ * so the agent responds in-character for the user's business.
  *
- * Sprint 5 replaces this with the real agent loop (system prompts,
- * prompt caching for cached task templates, tool use). For Sprint 2 we
- * just need a working pipe end-to-end.
+ * Future: prompt caching for repeated business contexts, tool
+ * use for agent-driven actions from chat.
  */
 export function chatWithClaude(
   client: Anthropic,
   message: string,
   tier: ModelTier = "sonnet",
+  systemPrompt?: string,
 ) {
-  return client.messages.stream({
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const params: any = {
     model: MODEL_IDS[tier],
     max_tokens: 1024,
     messages: [{ role: "user", content: message }],
-  });
+  };
+  if (systemPrompt && systemPrompt.trim().length > 0) {
+    params.system = systemPrompt;
+  }
+  return client.messages.stream(params);
 }

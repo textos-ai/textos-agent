@@ -53,10 +53,10 @@ app.get("/business/:slug", async (c) => {
       return;
     }
 
-    // ── Check if build is already complete ───────────────────────────
+    // ── Check if build is already complete or running ────────────────
     const existingRun = await getFreeBuildRunByBusiness(supabase, business.id).catch(() => null);
 
-    if (existingRun?.status === "completed") {
+    if (existingRun?.status === "completed" || existingRun?.status === "running") {
       // Replay the last N events so the terminal shows something meaningful on reconnect
       try {
         const events = await getStreamEventsForRun(supabase, existingRun.id);
@@ -65,9 +65,12 @@ app.get("/business/:slug", async (c) => {
           await send(e.event_data as unknown as StreamEvent);
         }
       } catch {
-        // Non-fatal — fall through to build_already_complete
+        // Non-fatal — fall through to status message
       }
-      await send({ type: "status", message: "build_already_complete", ts: Date.now() });
+      const statusMsg = existingRun.status === "running"
+        ? "build_already_running"
+        : "build_already_complete";
+      await send({ type: "status", message: statusMsg, ts: Date.now() });
       return;
     }
 

@@ -3,6 +3,10 @@ main = "src/index.ts"
 compatibility_date = "2026-04-29"
 compatibility_flags = ["nodejs_compat"]
 
+[limits]
+cpu_ms = 30000
+subrequests = 1000
+
 [vars]
 ENVIRONMENT = "dev"
 AUTO_APPROVE_AFTER_USER_COUNT = "100"

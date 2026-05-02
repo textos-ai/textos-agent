@@ -149,9 +149,17 @@ export async function runFreeBuild(
   // ── Execute each task (outer try guarantees free_build_run is never left running) ──
   try {
   for (const step of PIPELINE) {
-    const taskDef = await getTaskBySlug(supabase, step.slug).catch(() => null);
+    let taskDef;
+    try {
+      taskDef = await getTaskBySlug(supabase, step.slug);
+    } catch (lookupErr: unknown) {
+      const e = lookupErr as Record<string, unknown> | null;
+      const errMsg = (e?.message as string) || (e?.code as string) || JSON.stringify(lookupErr) || String(lookupErr);
+      await emit({ type: "cmd", text: `[skip] task '${step.slug}' lookup failed: ${errMsg}`, ts: Date.now() });
+      continue;
+    }
     if (!taskDef) {
-      await emit({ type: "cmd", text: `[skip] task '${step.slug}' not found in catalog`, ts: Date.now() });
+      await emit({ type: "cmd", text: `[skip] task '${step.slug}' truly not in catalog`, ts: Date.now() });
       continue;
     }
 
@@ -285,11 +293,17 @@ export async function runFreeBuild(
   const finalCount = dbCount ?? completedCount;
 
   // ── Mark build complete ───────────────────────────────────────────
-  await updateFreeBuildRun(supabase, runId, {
-    status: "completed",
-    tasks_completed: finalCount,
-    completed_at: new Date().toISOString(),
-  });
+  try {
+    await updateFreeBuildRun(supabase, runId, {
+      status: "completed",
+      tasks_completed: finalCount,
+      completed_at: new Date().toISOString(),
+    });
+  } catch (updateErr: unknown) {
+    const e = updateErr as Record<string, unknown> | null;
+    const msg = (e?.message as string) || (e?.code as string) || JSON.stringify(updateErr) || String(updateErr);
+    await emit({ type: "cmd", text: `[warn] final status update failed: ${msg}`, ts: Date.now() }).catch(() => {});
+  }
 
   await emit({
     type: "narrative",
@@ -304,18 +318,22 @@ export async function runFreeBuild(
     ts: Date.now(),
   });
 
-  } catch (fatalErr) {
+  } catch (fatalErr: unknown) {
     // A crash outside the per-task catch (e.g., DB error loading context,
     // fatal emit failure). Mark the free_build_run failed so it isn't
     // stuck in 'running' forever.
+    const fe = fatalErr as Record<string, unknown> | null;
+    const errMsg = (fe?.message as string)
+      || (fe?.code as string)
+      || (typeof fatalErr === "object" ? JSON.stringify(fatalErr) : String(fatalErr));
     await updateFreeBuildRun(supabase, runId, {
       status: "failed",
-      error: String(fatalErr).slice(0, 500),
+      error: errMsg.slice(0, 500),
       completed_at: new Date().toISOString(),
     }).catch(() => {});
     await sseEmit({
       type: "error" as StreamEvent["type"],
-      message: `Build failed: ${String(fatalErr)}`,
+      message: `Build failed: ${errMsg}`,
       ts: Date.now(),
     } as unknown as StreamEvent).catch(() => {});
     throw fatalErr;
