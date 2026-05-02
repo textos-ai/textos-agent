@@ -26,6 +26,7 @@ import { runTaskQueueBuilt } from "./tasks/task-queue-built";
 import { runDashboardBriefing } from "./tasks/dashboard-briefing";
 import { runPersonalizedPitchEmail } from "./tasks/personalized-pitch-email";
 import { runTamSamSom } from "./tasks/tam-sam-som";
+import { runDaycycleConnect } from "./tasks/daycycle-connect";
 
 // The 9 free-build tasks in execution order.
 // research-strategy runs first because all other tasks read from business_context.
@@ -39,6 +40,7 @@ const PIPELINE: Array<{ slug: string; name: string; fn: TaskFn }> = [
   { slug: "dashboard-briefing",      name: "Dashboard Briefing",     fn: runDashboardBriefing },
   { slug: "personalized-pitch-email",name: "Personalized Pitch Email",fn: runPersonalizedPitchEmail },
   { slug: "tam-sam-som",             name: "Market Sizing",          fn: runTamSamSom },
+  { slug: "daycycle-connect",        name: "DayCycle Setup",         fn: runDaycycleConnect },
 ];
 
 /**
@@ -186,18 +188,27 @@ export async function runFreeBuild(
       emit,
     };
 
+    // Guard: only call failTaskRun if completeTaskRun hasn't fired yet.
+    // Without this, a upsertBusinessContext throw after completeTaskRun would
+    // overwrite state='complete' back to 'failed'.
+    let taskCompleted = false;
     try {
       const result = await step.fn(taskCtx);
 
-      // Persist task_run output
+      // Persist task_run output — after this succeeds, task is done
       await completeTaskRun(supabase, taskRunId, result.output_data);
+      taskCompleted = true;
 
-      // Apply context updates from this task so the next task sees them
+      // Apply context updates so the next task sees them
       if (result.context_updates && Object.keys(result.context_updates).length > 0) {
         ctx = await upsertBusinessContext(supabase, {
           business_id: business.id,
           user_id: user.id,
           ...result.context_updates,
+        }).catch((e) => {
+          // Non-fatal: context update failure must not revert a completed task_run
+          emit({ type: "cmd", text: `[warn] context update failed: ${String(e)}`, ts: Date.now() }).catch(() => {});
+          return ctx; // keep current ctx so build continues
         });
       }
 
@@ -215,22 +226,23 @@ export async function runFreeBuild(
       });
     } catch (err) {
       const errMsg = String(err);
-      // Wrap failTaskRun: if it throws, the task_run stays 'running' but
-      // the build continues. The janitor in the next session cleans it up.
-      try {
-        await failTaskRun(supabase, taskRunId, errMsg);
-      } catch {
-        // zombie — cleaned up by janitor on next connect
+      if (!taskCompleted) {
+        // Task itself failed — transition task_run to failed
+        try {
+          await failTaskRun(supabase, taskRunId, errMsg);
+        } catch {
+          // zombie — cleaned up by janitor on next connect
+        }
+        await emit({
+          type: "task_failed",
+          task_slug: step.slug,
+          task_name: step.name,
+          task_run_id: taskRunId,
+          error: errMsg,
+          ts: Date.now(),
+        });
       }
-      await emit({
-        type: "task_failed",
-        task_slug: step.slug,
-        task_name: step.name,
-        task_run_id: taskRunId,
-        error: errMsg,
-        ts: Date.now(),
-      });
-      // Non-fatal: continue with the next task
+      // Non-fatal either way: continue with the next task
     }
   }
 
