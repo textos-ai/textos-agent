@@ -16,6 +16,7 @@ import {
   upsertBusinessContext,
 } from "../services/supabase";
 import type { TaskCtx, TaskFn } from "./tasks/types";
+import { extractErrorMessage } from "./extract-error";
 
 import { runResearchStrategy } from "./tasks/research-strategy";
 import { runWelcomeEmail } from "./tasks/welcome-email";
@@ -258,7 +259,7 @@ export async function runFreeBuild(
         ts: Date.now(),
       });
     } catch (err) {
-      const errMsg = String(err);
+      const errMsg = extractErrorMessage(err);
       if (!taskCompleted) {
         // Task itself failed — transition task_run to failed
         try {

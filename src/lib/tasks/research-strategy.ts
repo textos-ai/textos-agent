@@ -1,4 +1,5 @@
 import type { TaskCtx, TaskResult } from "./types";
+import { extractErrorMessage } from "../extract-error";
 
 const SYSTEM = `You are the TextOS research agent — a world-class business strategist and market researcher.
 Your output feeds every downstream task, so be thorough and precise.
@@ -92,7 +93,7 @@ export async function runResearchStrategy(tc: TaskCtx): Promise<TaskResult> {
       pageContent = await fetchPageText(business.existing_business_url);
       await emit({ type: "cmd", text: `Page fetched — ${pageContent.length} chars of content`, ts: Date.now() });
     } catch (err) {
-      await emit({ type: "cmd", text: `Fetch failed (${String(err)}) — using Claude knowledge only`, ts: Date.now() });
+      await emit({ type: "cmd", text: `Fetch failed (${extractErrorMessage(err)}) — using Claude knowledge only`, ts: Date.now() });
     }
   }
 
@@ -153,7 +154,7 @@ export async function runResearchStrategy(tc: TaskCtx): Promise<TaskResult> {
       parsed = candidate;
       break;
     } catch (err) {
-      lastErr = (err as Error).message;
+      lastErr = extractErrorMessage(err);
       await emit({
         type: "cmd",
         text: `> parse attempt ${attempt}/3 failed: ${lastErr}`,

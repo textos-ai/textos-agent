@@ -1,4 +1,5 @@
 import type { TaskCtx, TaskResult } from "./types";
+import { extractErrorMessage } from "../extract-error";
 
 function stripFences(s: string): string {
   return s.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/i, "").trim();
@@ -73,7 +74,7 @@ Return ONLY valid JSON (no markdown, no backticks):
       sent = res.ok;
       if (!res.ok) sendError = `SendGrid ${res.status}`;
     } catch (err) {
-      sendError = String(err);
+      sendError = extractErrorMessage(err);
     }
   } else {
     await emit({ type: "cmd", text: "SendGrid not configured — email staged for later", ts: Date.now() });
