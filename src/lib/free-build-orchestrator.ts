@@ -141,7 +141,10 @@ export async function runFreeBuild(
   await emit({ type: "narrative", text: `Initializing ${ctx.agent_name ?? "TextOS agent"} for ${business.name}…`, ts: Date.now() });
   await emit({ type: "cmd", text: "Spinning up research sandbox", ts: Date.now() });
 
-  let completedCount = run.tasks_completed;
+  // Base count from the actual number of already-completed tasks (not the stored
+  // tasks_completed, which can drift high if the orchestrator runs multiple times
+  // on the same partially-finished build).
+  let completedCount = doneTaskSlugs.size;
 
   // ── Execute each task (outer try guarantees free_build_run is never left running) ──
   try {
@@ -152,11 +155,11 @@ export async function runFreeBuild(
       continue;
     }
 
-    // Skip if this task already completed in a prior run
+    // Skip if this task already completed in a prior run — do NOT increment
+    // completedCount here; the skip is already reflected in doneTaskSlugs.size above.
     if (doneTaskSlugs.has(step.slug)) {
       await emit({ type: "task_start", task_slug: step.slug, task_name: step.name, task_run_id: "prior", ts: Date.now() });
       await emit({ type: "task_complete", task_slug: step.slug, task_name: step.name, task_run_id: "prior", output_summary: "Previously completed.", ts: Date.now() });
-      completedCount++;
       continue;
     }
 
@@ -246,10 +249,23 @@ export async function runFreeBuild(
     }
   }
 
+  // ── Derive final completed count from DB — source of truth ──────────
+  // completedCount may lag if tasks were already done before this run started.
+  const { count: dbCount } = await supabase
+    .from("task_runs")
+    .select("id", { count: "exact", head: true })
+    .eq("business_id", business.id)
+    .eq("status", "completed")
+    .eq("is_current", true)
+    .gte("started_at", run.started_at)
+    .then((r) => r, () => ({ count: completedCount }));
+
+  const finalCount = dbCount ?? completedCount;
+
   // ── Mark build complete ───────────────────────────────────────────
   await updateFreeBuildRun(supabase, runId, {
     status: "completed",
-    tasks_completed: completedCount,
+    tasks_completed: finalCount,
     completed_at: new Date().toISOString(),
   });
 
@@ -261,8 +277,8 @@ export async function runFreeBuild(
 
   await emit({
     type: "build_complete",
-    completed_count: completedCount,
-    summary: `${completedCount} tasks complete. Unlock paid bundle to continue building.`,
+    completed_count: finalCount,
+    summary: `${finalCount} tasks complete. Unlock paid bundle to continue building.`,
     ts: Date.now(),
   });
 
