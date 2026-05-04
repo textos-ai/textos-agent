@@ -59,6 +59,7 @@ export async function runFreeBuild(
   business: BusinessRow,
   user: UserRow,
   sseEmit: (evt: StreamEvent) => Promise<void>,
+  cfLocation?: { lat: number; lng: number } | null,
 ): Promise<void> {
   const anthropic = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
 
@@ -220,6 +221,7 @@ export async function runFreeBuild(
       taskRunId,
       nextSeq,
       emit,
+      cfLocation,
     };
 
     // Guard: only call failTaskRun if completeTaskRun hasn't fired yet.

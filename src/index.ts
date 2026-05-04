@@ -11,6 +11,9 @@ import businessRoutes from "./routes/businesses";
 import streamRoutes from "./routes/stream";
 import adminRoutes from "./routes/admin";
 import anonymousRoutes from "./routes/anonymous";
+import catalogRoutes from "./routes/catalog";
+import checkoutRoutes from "./routes/checkout";
+import stripeRoutes from "./routes/stripe";
 import { errBody } from "./lib/errors";
 import { log } from "./lib/logger";
 
@@ -44,6 +47,9 @@ app.route("/businesses", businessRoutes);
 app.route("/stream", streamRoutes);
 app.route("/admin", adminRoutes);
 app.route("/api/anonymous", anonymousRoutes);
+app.route("/api/catalog", catalogRoutes);
+app.route("/api/checkout", checkoutRoutes);
+app.route("/api/stripe", stripeRoutes);
 
 app.notFound((c) =>
   c.json(

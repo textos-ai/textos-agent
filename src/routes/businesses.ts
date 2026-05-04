@@ -227,12 +227,11 @@ app.post("/", async (c) => {
   try {
     parsed = CreateBusinessBody.parse(await c.req.json());
   } catch (err) {
+    log.warn("businesses_validation_failed", {
+      error: err instanceof z.ZodError ? err.format() : String(err),
+    });
     return c.json(
-      errBody(
-        "bad_request",
-        "invalid request body",
-        err instanceof Error ? err.message : err,
-      ),
+      errBody("bad_request", "invalid request body", err instanceof Error ? err.message : err),
       400,
     );
   }

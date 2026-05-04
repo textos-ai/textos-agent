@@ -6,7 +6,7 @@ Your output feeds every downstream task, so be thorough and precise.
 Return ONLY a valid JSON object. No markdown fences, no prose, no explanation — just the JSON object starting with { and ending with }.`;
 
 const REQUIRED_FIELDS = [
-  "industry", "business_model", "business_summary",
+  "business_name", "industry", "business_model", "business_summary",
   "target_customer", "value_proposition", "competitors", "market_trends",
 ];
 const GENERIC_INDUSTRY = new Set(["General Business", "Business", "Other", "", "N/A"]);
@@ -55,6 +55,7 @@ ${pageSection}
 
 Return EXACTLY this JSON object — no markdown, no extra keys, no comments:
 {
+  "business_name": "string — a concise, memorable brand name for this business (2-4 words, Title Case, suitable as a product name — NOT the user's prompt sentence)",
   "industry": "string — specific industry name (NOT 'General Business' — be specific like 'Disaster Response Technology', 'DJ Booking Platform', 'Nonprofit Emergency Services')",
   "business_model": "string — how it makes money or is funded (nonprofit, saas_subscription, marketplace, consulting, donation_funded, etc.)",
   "business_summary": "string — 2-3 sentences describing what the business does and for whom",
@@ -191,6 +192,20 @@ export async function runResearchStrategy(tc: TaskCtx): Promise<TaskResult> {
     });
   } catch {
     // Non-fatal
+  }
+
+  // ── Update businesses.name with AI-classified name ───────────────────
+  const classifiedName = parsed.business_name as string;
+  try {
+    await supabase
+      .from("businesses")
+      .update({ name: classifiedName })
+      .eq("id", business.id);
+    await emit({ type: "cmd", text: `Business named: ${classifiedName}`, ts: Date.now() });
+  } catch (err) {
+    const errMsg = extractErrorMessage(err);
+    await emit({ type: "cmd", text: `[warn] name update failed: ${errMsg}`, ts: Date.now() });
+    // Continue — name update is best-effort, not blocking
   }
 
   return {

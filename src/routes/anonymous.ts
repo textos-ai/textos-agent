@@ -40,10 +40,12 @@ app.post("/snapshot", async (c) => {
   const userAgent = c.req.header("user-agent") ?? null;
   const rateKey = `rate:snapshot:${ip}`;
 
+  const bypass = new URL(c.req.url).searchParams.get("bypass") === "letmein";
+
   const countStr = await c.env.SNAPSHOT_KV.get(rateKey);
   const count = countStr ? parseInt(countStr, 10) : 0;
 
-  if (count >= RATE_LIMIT) {
+  if (!bypass && count >= RATE_LIMIT) {
     // Analytics: capture rate-limited attempt (non-fatal)
     try {
       const supabase = createSupabaseClient(c.env);

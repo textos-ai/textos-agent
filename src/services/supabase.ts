@@ -59,6 +59,7 @@ export interface UserRow {
   id: string;
   email: string;
   handle: string | null;
+  handle_confirmed_at: string | null;
   created_at: string;
 }
 
@@ -82,7 +83,7 @@ export async function getUserById(
 ): Promise<UserRow | null> {
   const { data, error } = await client
     .from("users")
-    .select("id, email, handle, created_at")
+    .select("id, email, handle, handle_confirmed_at, created_at")
     .eq("id", id)
     .maybeSingle();
   if (error) throw error;
@@ -102,6 +103,7 @@ export async function isHandleAvailable(
   return (count ?? 0) === 0;
 }
 
+/** Sets the user's handle and marks it as explicitly confirmed. */
 export async function setUserHandle(
   client: SupabaseClient,
   user_id: string,
@@ -109,9 +111,9 @@ export async function setUserHandle(
 ): Promise<UserRow> {
   const { data, error } = await client
     .from("users")
-    .update({ handle })
+    .update({ handle, handle_confirmed_at: new Date().toISOString() })
     .eq("id", user_id)
-    .select("id, email, handle, created_at")
+    .select("id, email, handle, handle_confirmed_at, created_at")
     .single();
   if (error) throw error;
   return data as UserRow;

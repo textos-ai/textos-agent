@@ -19,6 +19,7 @@ export interface TaskCtx {
   taskRunId: string;
   nextSeq: () => number;
   emit: (evt: StreamEvent) => Promise<void>;
+  cfLocation?: { lat: number; lng: number } | null;
 }
 
 export interface TaskResult {

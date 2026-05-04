@@ -89,8 +89,18 @@ app.get("/business/:slug", async (c) => {
       return;
     }
 
+    // Extract Cloudflare IP geolocation headers for tasks that need location
+    const cfLatRaw = c.req.raw.headers.get("cf-iplatitude");
+    const cfLngRaw = c.req.raw.headers.get("cf-iplongitude");
+    let cfLocation: { lat: number; lng: number } | null = null;
+    if (cfLatRaw && cfLngRaw) {
+      const lat = parseFloat(cfLatRaw);
+      const lng = parseFloat(cfLngRaw);
+      if (!isNaN(lat) && !isNaN(lng)) cfLocation = { lat, lng };
+    }
+
     try {
-      await runFreeBuild(c.env, supabase, business, user, send);
+      await runFreeBuild(c.env, supabase, business, user, send, cfLocation);
     } catch (err) {
       await send({ type: "error", message: String(err), ts: Date.now() });
     }

@@ -29,4 +29,12 @@ export interface Env {
   DAYCYCLE_PLACES_ENABLED: string;
   /** KV namespace for anonymous snapshot tokens (C-Lite flow). */
   SNAPSHOT_KV: KVNamespace;
+  /** Stripe secret key — set via `wrangler secret put STRIPE_SECRET_KEY`. */
+  STRIPE_SECRET_KEY: string;
+  /** Stripe webhook signing secret — set via `wrangler secret put STRIPE_WEBHOOK_SECRET`. */
+  STRIPE_WEBHOOK_SECRET: string;
+  /** Stripe price ID for Core Monthly ($29.99/mo). */
+  STRIPE_PRICE_ID_CORE_MONTHLY: string;
+  /** Stripe price ID for Founder Lifetime ($49.99 one-time). */
+  STRIPE_PRICE_ID_FOUNDER_LIFETIME: string;
 }

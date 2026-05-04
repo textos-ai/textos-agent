@@ -15,6 +15,17 @@ import { log } from "../lib/logger";
 
 const app = new Hono<{ Bindings: Env }>();
 
+/** Derives a handle suggestion from an email prefix for the handle-picker pre-fill. */
+function suggestHandleFromEmail(email: string): string {
+  const prefix = email.split("@")[0] ?? "";
+  const base = prefix
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, "")   // keep only alphanumeric + hyphens
+    .replace(/^-+|-+$/g, "")       // trim leading/trailing hyphens
+    .slice(0, 28);
+  return base || "user";
+}
+
 function slugifyName(name: string): string {
   const base = (name || "business")
     .toLowerCase()
@@ -164,6 +175,10 @@ app.post("/callback", async (c) => {
     email: auth.email,
     has_handle: Boolean(user?.handle),
     handle: user?.handle ?? null,
+    handle_confirmed: Boolean(user?.handle_confirmed_at),
+    // Pre-fill suggestion for the handle picker: existing handle takes priority,
+    // then email prefix. Frontend shows this as an editable default, not a locked value.
+    suggested_handle: user?.handle ?? suggestHandleFromEmail(auth.email),
     claimed_business_slug,
   });
 });
