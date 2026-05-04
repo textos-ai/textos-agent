@@ -4,7 +4,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { Env } from "../env";
 import { errBody } from "../lib/errors";
 import { log } from "../lib/logger";
-import { runAnonymousResearch, type AnonymousInput } from "../lib/anonymous-research";
+import { runAnonymousResearch, ContentRejectedError, type AnonymousInput } from "../lib/anonymous-research";
 import { createSupabaseClient } from "../services/supabase";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -118,6 +118,20 @@ app.post("/snapshot", async (c) => {
     snapshot = await runAnonymousResearch(input, anthropic);
   } catch (err) {
     const generationMs = Date.now() - genStart;
+
+    if (err instanceof ContentRejectedError) {
+      if (analyticsId) {
+        try {
+          await supabase.from("anonymous_snapshots").update({ status: "content_rejected", generation_ms: generationMs }).eq("id", analyticsId);
+        } catch (e) { log.warn("anon_snapshot_content_rejected_update_error", { err: String(e) }); }
+      }
+      log.info("anonymous_research_content_rejected", { kind: input.kind, source });
+      return c.json({
+        status: "content_rejected",
+        message: "We weren't able to research that idea. Try describing the business angle differently — for example, focus on the product category or the customer you're serving.",
+      }, 200);
+    }
+
     if (analyticsId) {
       try {
         await supabase.from("anonymous_snapshots").update({ status: "failed", generation_ms: generationMs }).eq("id", analyticsId);

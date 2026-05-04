@@ -5,6 +5,28 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { extractErrorMessage } from "./extract-error";
 
+export class ContentRejectedError extends Error {
+  constructor(reason: string) {
+    super(reason);
+    this.name = "ContentRejectedError";
+  }
+}
+
+const REFUSAL_PATTERNS = [
+  /i(?:'m| am) (?:unable|not able)/i,
+  /i (?:can't|cannot|won't|will not) (?:help|assist|provide|create|generate|research)/i,
+  /i (?:apologize|understand) but/i,
+  /this (?:request|content|topic) (?:involves|contains|is not something)/i,
+  /instead,? (?:i |let me |i can )/i,
+  /i (?:don't|do not) (?:feel comfortable|think I should)/i,
+  /not (?:able|appropriate) to/i,
+];
+
+function looksLikeRefusal(text: string): boolean {
+  const head = text.slice(0, 500);
+  return REFUSAL_PATTERNS.some(p => p.test(head));
+}
+
 const SYSTEM = `You are the TextOS research agent — a world-class business strategist and market researcher.
 Your output feeds every downstream task, so be thorough and precise.
 Return ONLY a valid JSON object. No markdown fences, no prose, no explanation — just the JSON object starting with { and ending with }.`;
@@ -124,14 +146,28 @@ export async function runAnonymousResearch(
       ? ""
       : `\n\n⚠️ Attempt ${attempt}/3. Previous response caused a parse error: "${lastErr}". Return ONLY the JSON object.`;
 
-    const msg = await anthropic.messages.create({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 1500,
-      system: SYSTEM,
-      messages: [{ role: "user", content: buildPrompt(input, idea, pageContent, retryNote) }],
-    });
+    let msg: Awaited<ReturnType<typeof anthropic.messages.create>>;
+    try {
+      msg = await anthropic.messages.create({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 1500,
+        system: SYSTEM,
+        messages: [{ role: "user", content: buildPrompt(input, idea, pageContent, retryNote) }],
+      });
+    } catch (err) {
+      // Anthropic SDK throws on 4xx — treat input-level rejections as content_rejected
+      if (err instanceof Anthropic.APIError && err.status >= 400 && err.status < 500) {
+        throw new ContentRejectedError(`API rejected input (${err.status}): ${err.message}`);
+      }
+      throw err;
+    }
 
     const raw = stripFences((msg.content[0] as { type: string; text: string }).text.trim());
+
+    // Model returned a refusal rather than JSON — no point retrying
+    if (looksLikeRefusal(raw)) {
+      throw new ContentRejectedError("Model declined to research this input");
+    }
 
     try {
       const candidate = JSON.parse(raw) as Record<string, unknown>;
