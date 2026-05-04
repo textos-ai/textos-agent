@@ -15,6 +15,18 @@ import { log } from "../lib/logger";
 
 const app = new Hono<{ Bindings: Env }>();
 
+function slugifyName(name: string): string {
+  const base = (name || "business")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, "")   // strip non-alphanumeric
+    .trim()
+    .replace(/[\s-]+/g, "-")         // spaces/dashes → single dash
+    .replace(/^-+|-+$/g, "")         // trim leading/trailing dashes
+    .slice(0, 40);
+  const suffix = Math.random().toString(36).slice(2, 6);
+  return `${base || "business"}-${suffix}`;
+}
+
 const CallbackBody = z.object({
   access_token: z.string().min(1),
   refresh_token: z.string().min(1),
@@ -90,7 +102,7 @@ app.post("/callback", async (c) => {
           input: AnonymousInput;
           snapshot: AnonymousSnapshot;
         };
-        const slug = `idea-${Math.random().toString(16).slice(2, 8).padStart(6, "0")}`;
+        const slug = slugifyName(snapshot.name);
         const biz = await createBusiness(supabase, {
           user_id: auth.user_id,
           slug,
