@@ -10,6 +10,7 @@ import handleRoutes from "./routes/handles";
 import businessRoutes from "./routes/businesses";
 import streamRoutes from "./routes/stream";
 import adminRoutes from "./routes/admin";
+import anonymousRoutes from "./routes/anonymous";
 import { errBody } from "./lib/errors";
 import { log } from "./lib/logger";
 
@@ -42,6 +43,7 @@ app.route("/tasks", taskRoutes);
 app.route("/businesses", businessRoutes);
 app.route("/stream", streamRoutes);
 app.route("/admin", adminRoutes);
+app.route("/api/anonymous", anonymousRoutes);
 
 app.notFound((c) =>
   c.json(

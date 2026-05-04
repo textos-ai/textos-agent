@@ -10,6 +10,7 @@ subrequests = 1000
 [vars]
 ENVIRONMENT = "dev"
 AUTO_APPROVE_AFTER_USER_COUNT = "100"
+DAYCYCLE_PLACES_ENABLED = "false"
 
 # ----------------------------------------------------------------------
 # Bindings below are commented placeholders, wired in subsequent sprints.
@@ -20,6 +21,12 @@ AUTO_APPROVE_AFTER_USER_COUNT = "100"
 # [[kv_namespaces]]
 # binding = "CACHE"
 # id = "<kv-namespace-id>"
+
+# KV — anonymous snapshot tokens for C-Lite claim flow (TTL 1hr).
+# Run: npx wrangler kv namespace create SNAPSHOT_KV  — then fill in the id below.
+[[kv_namespaces]]
+binding = "SNAPSHOT_KV"
+id = "198fb2847eaa45f9b9d3102311832b9b"
 
 # Cloudflare D1 — per-business activity logs and cache.
 # [[d1_databases]]

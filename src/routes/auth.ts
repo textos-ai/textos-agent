@@ -6,7 +6,10 @@ import {
   createSupabaseClient,
   upsertUser,
   getUserById,
+  createBusiness,
+  upsertBusinessContext,
 } from "../services/supabase";
+import type { AnonymousSnapshot, AnonymousInput } from "../lib/anonymous-research";
 import { errBody } from "../lib/errors";
 import { log } from "../lib/logger";
 
@@ -16,6 +19,7 @@ const CallbackBody = z.object({
   access_token: z.string().min(1),
   refresh_token: z.string().min(1),
   type: z.enum(["signup", "recovery", "magiclink"]).optional(),
+  snapshot_token: z.string().max(32).optional(),
 });
 
 /**
@@ -76,11 +80,79 @@ app.post("/callback", async (c) => {
 
   const user = await getUserById(supabase, auth.user_id);
 
+  // ── C-Lite snapshot claim ─────────────────────────────────────────
+  let claimed_business_slug: string | null = null;
+  if (parsed.snapshot_token) {
+    const raw = await c.env.SNAPSHOT_KV.get(`snapshot:${parsed.snapshot_token}`);
+    if (raw) {
+      try {
+        const { input, snapshot } = JSON.parse(raw) as {
+          input: AnonymousInput;
+          snapshot: AnonymousSnapshot;
+        };
+        const slug = `idea-${Math.random().toString(16).slice(2, 8).padStart(6, "0")}`;
+        const biz = await createBusiness(supabase, {
+          user_id: auth.user_id,
+          slug,
+          name: snapshot.name,
+          kind: input.kind === "existing" ? "existing" : input.kind === "find_for_me" ? "find_for_me" : "new_idea",
+          existing_business_url: input.url ?? undefined,
+          existing_business_data: input.description ? { idea: input.description } : undefined,
+        });
+        await upsertBusinessContext(supabase, {
+          business_id: biz.id,
+          user_id: auth.user_id,
+          business_summary: snapshot.summary,
+          industry: snapshot.industry,
+          target_customer: snapshot.target_customer,
+          value_proposition: snapshot.value_proposition,
+          competitors: snapshot.competitors,
+          positioning_statement: snapshot.positioning,
+          brand_voice: snapshot.brand_voice,
+          key_differentiators: snapshot.key_differentiators,
+          research_confidence_score: 60,
+          last_research_run_at: new Date().toISOString(),
+        });
+        // Store raw snapshot as a business_asset so the builder can render it immediately
+        await supabase.from("business_assets").insert({
+          business_id: biz.id,
+          asset_type: "research_snapshot",
+          asset_subtype: "anonymous",
+          asset_data: { snapshot, input },
+          is_current: true,
+        });
+        // One-time-use: delete token so it can't be claimed twice
+        await c.env.SNAPSHOT_KV.delete(`snapshot:${parsed.snapshot_token}`);
+
+        // Analytics: mark snapshot as claimed. IS NULL guard is idempotent —
+        // double-clicking a magic link won't overwrite the first-click timestamp.
+        try {
+          await supabase
+            .from("anonymous_snapshots")
+            .update({
+              claimed_at: new Date().toISOString(),
+              claimed_user_id: auth.user_id,
+              claimed_business_id: biz.id,
+            })
+            .eq("token", parsed.snapshot_token)
+            .is("claimed_at", null);
+        } catch (e) { log.warn("snapshot_claim_analytics_update_failed", { err: String(e) }); }
+
+        claimed_business_slug = slug;
+        log.info("snapshot_claimed", { user_id: auth.user_id, slug });
+      } catch (err) {
+        // Non-fatal — user still signs in successfully; business just isn't pre-seeded
+        log.warn("snapshot_claim_failed", { err: String(err) });
+      }
+    }
+  }
+
   return c.json({
     user_id: auth.user_id,
     email: auth.email,
     has_handle: Boolean(user?.handle),
     handle: user?.handle ?? null,
+    claimed_business_slug,
   });
 });
 

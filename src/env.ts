@@ -25,4 +25,8 @@ export interface Env {
   SENDGRID_API_KEY: string;
   /** Google Places API key — used by DayCycle location lookups. */
   GOOGLE_PLACES_API_KEY: string;
+  /** Feature flag: enable Google Places API calls in daycycle-connect. */
+  DAYCYCLE_PLACES_ENABLED: string;
+  /** KV namespace for anonymous snapshot tokens (C-Lite flow). */
+  SNAPSHOT_KV: KVNamespace;
 }
