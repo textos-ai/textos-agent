@@ -3,6 +3,9 @@ main = "src/index.ts"
 compatibility_date = "2026-04-29"
 compatibility_flags = ["nodejs_compat"]
 
+[triggers]
+crons = ["* * * * *"]
+
 [limits]
 cpu_ms = 30000
 subrequests = 1000

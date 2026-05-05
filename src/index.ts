@@ -16,6 +16,9 @@ import checkoutRoutes from "./routes/checkout";
 import stripeRoutes from "./routes/stripe";
 import { errBody } from "./lib/errors";
 import { log } from "./lib/logger";
+import buildsRoutes from "./routes/builds";
+import { runHeartbeatWatchdog } from "./cron/heartbeatWatchdog";
+import { createClient } from "@supabase/supabase-js";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -50,6 +53,7 @@ app.route("/api/anonymous", anonymousRoutes);
 app.route("/api/catalog", catalogRoutes);
 app.route("/api/checkout", checkoutRoutes);
 app.route("/api/stripe", stripeRoutes);
+app.route("/api/builds", buildsRoutes);
 
 app.notFound((c) =>
   c.json(
@@ -65,4 +69,11 @@ app.onError((err, c) => {
   return c.json(errBody("internal", String(err)), 500);
 });
 
-export default app;
+export default {
+  fetch: app.fetch.bind(app),
+
+  async scheduled(_event: ScheduledEvent, env: Env, _ctx: ExecutionContext): Promise<void> {
+    const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+    await runHeartbeatWatchdog(supabase);
+  },
+};
