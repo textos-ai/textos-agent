@@ -1,10 +1,9 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 export const AGENT_NAME_POOL = [
-  'Atlas', 'Pilot', 'Compass', 'Ranger', 'Scout', 'Aero',
-  'Iris', 'Echo', 'Nova', 'Vega', 'Luna', 'Nyx',
-  'Phoenix', 'Onyx', 'Ember', 'Zephyr', 'Cipher', 'Orion',
-  'Sable', 'Halo', 'Forge', 'Tempo', 'Quill', 'Vale',
+  'Iris', 'Linnea', 'Theia', 'Mira', 'Solène',
+  'Atlas', 'Orin', 'Soren', 'Caspian', 'Aldo',
+  'Sage', 'Wren',
 ];
 
 export function pickRandomAgentName(): string {

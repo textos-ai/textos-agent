@@ -6,7 +6,8 @@ export type ErrorCode =
   | "upstream_error"
   | "unauthorized"
   | "forbidden"
-  | "rate_limited";
+  | "rate_limited"
+  | "not_configured";
 
 export interface ErrorBody {
   error: ErrorCode;

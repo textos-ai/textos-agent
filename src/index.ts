@@ -12,11 +12,13 @@ import streamRoutes from "./routes/stream";
 import adminRoutes from "./routes/admin";
 import anonymousRoutes from "./routes/anonymous";
 import catalogRoutes from "./routes/catalog";
+import sitesRoutes from "./routes/sites";
 import checkoutRoutes from "./routes/checkout";
 import stripeRoutes from "./routes/stripe";
 import { errBody } from "./lib/errors";
 import { log } from "./lib/logger";
 import buildsRoutes from "./routes/builds";
+import businessManagerRoutes from "./routes/business-manager";
 import { runHeartbeatWatchdog } from "./cron/heartbeatWatchdog";
 import { createClient } from "@supabase/supabase-js";
 
@@ -51,9 +53,11 @@ app.route("/stream", streamRoutes);
 app.route("/admin", adminRoutes);
 app.route("/api/anonymous", anonymousRoutes);
 app.route("/api/catalog", catalogRoutes);
+app.route("/api/sites", sitesRoutes);
 app.route("/api/checkout", checkoutRoutes);
 app.route("/api/stripe", stripeRoutes);
 app.route("/api/builds", buildsRoutes);
+app.route("/api/businesses", businessManagerRoutes);
 
 app.notFound((c) =>
   c.json(
