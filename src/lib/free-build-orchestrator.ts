@@ -94,21 +94,35 @@ export async function runFreeBuild(
   }, 10_000);
 
   // ── Janitor: fix zombie task_runs from prior Worker crashes ───────
-  // Any task_run for this business still in state='running' after 10 minutes
-  // is a zombie (Worker died before the state transition completed).
-  // Mark them failed now so they don't pollute getCompletedTaskRunSlugs.
+  // If the existing run's heartbeat is stale (>30s), the previous Worker
+  // process died — clean up ALL its running task_runs so the in-flight
+  // check doesn't skip them on resume. If the heartbeat is fresh (Worker
+  // genuinely alive on a concurrent connection), only clean up runs older
+  // than 10 minutes as a safety net.
   {
-    const zombieCutoff = new Date(Date.now() - 10 * 60 * 1000).toISOString();
-    await supabase
-      .from("task_runs")
-      .update({ state: "failed", status: "failed" })
-      .eq("business_id", business.id)
-      .eq("state", "running")
-      .lt("created_at", zombieCutoff)
-      .then(
-        () => {},  // non-fatal success
-        () => {},  // non-fatal error
-      );
+    const prevHeartbeatAge = run.last_heartbeat_at
+      ? Date.now() - new Date(run.last_heartbeat_at).getTime()
+      : Infinity;
+    const zombieUpdate = { state: "failed", status: "failed", failed_at: new Date().toISOString() };
+
+    if (prevHeartbeatAge > 30_000) {
+      // Previous Worker is dead — all running task_runs are orphans
+      await supabase
+        .from("task_runs")
+        .update(zombieUpdate)
+        .eq("business_id", business.id)
+        .eq("state", "running")
+        .then(() => {}, () => {});
+    } else {
+      // Worker may still be alive — only clean up ancient zombies as a safety net
+      await supabase
+        .from("task_runs")
+        .update(zombieUpdate)
+        .eq("business_id", business.id)
+        .eq("state", "running")
+        .lt("created_at", new Date(Date.now() - 10 * 60 * 1000).toISOString())
+        .then(() => {}, () => {});
+    }
   }
 
   // ── Load business context (may have partial data from prior tasks) ─

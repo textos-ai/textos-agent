@@ -53,25 +53,36 @@ app.get("/business/:slug", async (c) => {
       return;
     }
 
-    // ── Check if build is already complete or running ────────────────
+    // ── Check if build is already complete or genuinely running ────────
     const existingRun = await getFreeBuildRunByBusiness(supabase, business.id).catch(() => null);
 
-    if (existingRun?.status === "completed" || existingRun?.status === "running") {
-      // Replay the last N events so the terminal shows something meaningful on reconnect
+    if (existingRun?.status === "completed") {
       try {
         const events = await getStreamEventsForRun(supabase, existingRun.id);
-        const last20 = events.slice(-20);
-        for (const e of last20) {
-          await send(e.event_data as unknown as StreamEvent);
-        }
-      } catch {
-        // Non-fatal — fall through to status message
-      }
-      const statusMsg = existingRun.status === "running"
-        ? "build_already_running"
-        : "build_already_complete";
-      await send({ type: "status", message: statusMsg, ts: Date.now() });
+        for (const e of events.slice(-20)) await send(e.event_data as unknown as StreamEvent);
+      } catch { /* non-fatal */ }
+      await send({ type: "status", message: "build_already_complete", ts: Date.now() });
       return;
+    }
+
+    if (existingRun?.status === "running") {
+      // Only bail if the heartbeat is fresh — the Worker process is genuinely alive.
+      // A stale heartbeat (>30s) means the Worker died mid-build; fall through to
+      // re-enter the orchestrator so it resumes from where it left off.
+      const heartbeatAge = existingRun.last_heartbeat_at
+        ? Date.now() - new Date(existingRun.last_heartbeat_at).getTime()
+        : Infinity;
+      const heartbeatFresh = heartbeatAge < 30_000;
+
+      if (heartbeatFresh) {
+        try {
+          const events = await getStreamEventsForRun(supabase, existingRun.id);
+          for (const e of events.slice(-20)) await send(e.event_data as unknown as StreamEvent);
+        } catch { /* non-fatal */ }
+        await send({ type: "status", message: "build_already_running", ts: Date.now() });
+        return;
+      }
+      // Heartbeat stale — fall through to re-run orchestrator below
     }
 
     // ── Check legacy task_runs for backward compat (seed data) ───────
