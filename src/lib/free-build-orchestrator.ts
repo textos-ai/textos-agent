@@ -79,8 +79,19 @@ export async function runFreeBuild(
     await persistStreamEvent(supabase, runId, business.id, seq, evt.type, evt as unknown as Record<string, unknown>);
   };
 
-  // ── Mark run as running ───────────────────────────────────────────
-  await updateFreeBuildRun(supabase, runId, { status: "running" });
+  // ── Mark run as running + start heartbeat ────────────────────────
+  await updateFreeBuildRun(supabase, runId, {
+    status: "running",
+    last_heartbeat_at: new Date().toISOString(),
+  });
+
+  // Heartbeat: update last_heartbeat_at every 10 s so the watchdog cron
+  // knows this orchestrator is still alive. Cleared in finally{} below.
+  const heartbeatInterval = setInterval(() => {
+    const ts = new Date().toISOString();
+    console.log("[heartbeat]", runId, ts);
+    updateFreeBuildRun(supabase, runId, { last_heartbeat_at: ts }).catch(() => {});
+  }, 10_000);
 
   // ── Janitor: fix zombie task_runs from prior Worker crashes ───────
   // Any task_run for this business still in state='running' after 10 minutes
@@ -340,6 +351,8 @@ export async function runFreeBuild(
       ts: Date.now(),
     } as unknown as StreamEvent).catch(() => {});
     throw fatalErr;
+  } finally {
+    clearInterval(heartbeatInterval);
   }
 }
 

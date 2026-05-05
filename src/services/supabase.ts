@@ -424,6 +424,7 @@ export interface FreeBuildRunRow {
   failed_at: string | null;
   error: string | null;
   created_at: string;
+  last_heartbeat_at: string;
 }
 
 export async function getFreeBuildRunByBusiness(
@@ -459,7 +460,7 @@ export async function createFreeBuildRun(
 export async function updateFreeBuildRun(
   client: SupabaseClient,
   runId: string,
-  updates: Partial<Pick<FreeBuildRunRow, "status" | "tasks_total" | "tasks_completed" | "completed_at" | "failed_at" | "error">>,
+  updates: Partial<Pick<FreeBuildRunRow, "status" | "tasks_total" | "tasks_completed" | "completed_at" | "failed_at" | "error" | "last_heartbeat_at">>,
 ): Promise<void> {
   const { error } = await client
     .from("free_build_runs")
