@@ -44,31 +44,11 @@ function sortLessons<T extends { task_slug: string; sort_order: number }>(
   });
 }
 
-async function assertBusinessOwner(
-  supabase: ReturnType<typeof createSupabaseClient>,
-  user_id: string,
-  business_id: string,
-): Promise<boolean> {
-  const { data } = await supabase
-    .from("businesses")
-    .select("id")
-    .eq("id", business_id)
-    .eq("user_id", user_id)
-    .maybeSingle();
-  return !!data;
-}
-
 // ── GET /api/operator-school ──────────────────────────────────────────────────
 // Returns the full curriculum tree with per-user completion + badge state.
 app.get("/", async (c) => {
   const auth = c.get("auth");
-  const business_id = c.req.query("business_id");
-  if (!business_id) return c.json(errBody("bad_request", "business_id required"), 400);
-
   const supabase = createSupabaseClient(c.env);
-
-  const owns = await assertBusinessOwner(supabase, auth.user_id, business_id);
-  if (!owns) return c.json(errBody("forbidden", "business not found or not yours"), 403);
 
   const [lessonsRes, tasksRes, completionsRes, badgesRes, earningsRes] = await Promise.all([
     supabase
@@ -82,16 +62,14 @@ app.get("/", async (c) => {
     supabase
       .from("lesson_completions")
       .select("lesson_id, completed_at")
-      .eq("user_id", auth.user_id)
-      .eq("business_id", business_id),
+      .eq("user_id", auth.user_id),
     supabase
       .from("badges")
       .select("id, slug, tier, task_slug, lesson_id, name, description, icon_emoji"),
     supabase
       .from("badge_earnings")
       .select("badge_id, earned_at")
-      .eq("user_id", auth.user_id)
-      .eq("business_id", business_id),
+      .eq("user_id", auth.user_id),
   ]);
 
   if (lessonsRes.error) {
@@ -202,13 +180,7 @@ app.get("/", async (c) => {
 app.get("/lessons/:slug", async (c) => {
   const auth = c.get("auth");
   const slug = c.req.param("slug");
-  const business_id = c.req.query("business_id");
-  if (!business_id) return c.json(errBody("bad_request", "business_id required"), 400);
-
   const supabase = createSupabaseClient(c.env);
-
-  const owns = await assertBusinessOwner(supabase, auth.user_id, business_id);
-  if (!owns) return c.json(errBody("forbidden", "business not found or not yours"), 403);
 
   const { data: lesson, error: lessonErr } = await supabase
     .from("lessons")
@@ -237,7 +209,6 @@ app.get("/lessons/:slug", async (c) => {
       .from("lesson_completions")
       .select("completed_at")
       .eq("user_id", auth.user_id)
-      .eq("business_id", business_id)
       .eq("lesson_id", lesson.id)
       .maybeSingle(),
     supabase
@@ -294,19 +265,7 @@ app.post("/lessons/:slug/complete", async (c) => {
   const auth = c.get("auth");
   const slug = c.req.param("slug");
 
-  let body: { business_id?: string };
-  try {
-    body = await c.req.json();
-  } catch {
-    return c.json(errBody("bad_request", "invalid JSON body"), 400);
-  }
-  const { business_id } = body;
-  if (!business_id) return c.json(errBody("bad_request", "business_id required"), 400);
-
   const supabase = createSupabaseClient(c.env);
-
-  const owns = await assertBusinessOwner(supabase, auth.user_id, business_id);
-  if (!owns) return c.json(errBody("forbidden", "business not found or not yours"), 403);
 
   const { data: lesson } = await supabase
     .from("lessons")
@@ -322,7 +281,6 @@ app.post("/lessons/:slug/complete", async (c) => {
     .from("lesson_completions")
     .select("completed_at")
     .eq("user_id", auth.user_id)
-    .eq("business_id", business_id)
     .eq("lesson_id", lesson.id)
     .maybeSingle();
 
@@ -336,7 +294,7 @@ app.post("/lessons/:slug/complete", async (c) => {
   // Insert completion
   const { data: newRow, error: insertErr } = await supabase
     .from("lesson_completions")
-    .insert({ user_id: auth.user_id, business_id, lesson_id: lesson.id })
+    .insert({ user_id: auth.user_id, lesson_id: lesson.id })
     .select("completed_at")
     .single();
 
@@ -360,8 +318,7 @@ app.post("/lessons/:slug/complete", async (c) => {
   const { data: existingEarnings } = await supabase
     .from("badge_earnings")
     .select("badge_id")
-    .eq("user_id", auth.user_id)
-    .eq("business_id", business_id);
+    .eq("user_id", auth.user_id);
 
   const earnedIds = new Set((existingEarnings ?? []).map((e) => e.badge_id));
 
@@ -376,7 +333,7 @@ app.post("/lessons/:slug/complete", async (c) => {
   if (lb && !earnedIds.has(lb.id)) {
     const { error: lbErr } = await supabase
       .from("badge_earnings")
-      .insert({ user_id: auth.user_id, business_id, badge_id: lb.id });
+      .insert({ user_id: auth.user_id, badge_id: lb.id });
     if (!lbErr) {
       earnedIds.add(lb.id);
       badgesJustEarned.push({ tier: "lesson", slug: lb.slug, name: lb.name, description: lb.description, icon_emoji: lb.icon_emoji });
@@ -398,7 +355,6 @@ app.post("/lessons/:slug/complete", async (c) => {
     .from("lesson_completions")
     .select("id", { count: "exact", head: true })
     .eq("user_id", auth.user_id)
-    .eq("business_id", business_id)
     .in("lesson_id", taskLessonIds);
 
   if (taskLessonIds.length > 0 && (taskDoneCount ?? 0) >= taskLessonIds.length) {
@@ -412,7 +368,7 @@ app.post("/lessons/:slug/complete", async (c) => {
     if (tb && !earnedIds.has(tb.id)) {
       const { error: tbErr } = await supabase
         .from("badge_earnings")
-        .insert({ user_id: auth.user_id, business_id, badge_id: tb.id });
+        .insert({ user_id: auth.user_id, badge_id: tb.id });
       if (!tbErr) {
         earnedIds.add(tb.id);
         badgesJustEarned.push({ tier: "task", slug: tb.slug, name: tb.name, description: tb.description, icon_emoji: tb.icon_emoji });
@@ -436,7 +392,7 @@ app.post("/lessons/:slug/complete", async (c) => {
           if (mb && !earnedIds.has(mb.id)) {
             const { error: mbErr } = await supabase
               .from("badge_earnings")
-              .insert({ user_id: auth.user_id, business_id, badge_id: mb.id });
+              .insert({ user_id: auth.user_id, badge_id: mb.id });
             if (!mbErr) {
               badgesJustEarned.push({ tier: "master", slug: mb.slug, name: mb.name, description: mb.description, icon_emoji: mb.icon_emoji });
             } else {
@@ -457,22 +413,15 @@ app.post("/lessons/:slug/complete", async (c) => {
 });
 
 // ── GET /api/operator-school/badges ───────────────────────────────────────────
-// Returns earned badges for a business. Used by Manager left-rail strip.
+// Returns earned badges for the user. Used by Manager left-rail strip.
 app.get("/badges", async (c) => {
   const auth = c.get("auth");
-  const business_id = c.req.query("business_id");
-  if (!business_id) return c.json(errBody("bad_request", "business_id required"), 400);
-
   const supabase = createSupabaseClient(c.env);
-
-  const owns = await assertBusinessOwner(supabase, auth.user_id, business_id);
-  if (!owns) return c.json(errBody("forbidden", "business not found or not yours"), 403);
 
   const { data: earnings, error } = await supabase
     .from("badge_earnings")
     .select("badge_id, earned_at")
     .eq("user_id", auth.user_id)
-    .eq("business_id", business_id)
     .order("earned_at");
 
   if (error) {
@@ -514,13 +463,7 @@ app.get("/badges", async (c) => {
 // Used by the Manager Operator School card.
 app.get("/today", async (c) => {
   const auth = c.get("auth");
-  const business_id = c.req.query("business_id");
-  if (!business_id) return c.json(errBody("bad_request", "business_id required"), 400);
-
   const supabase = createSupabaseClient(c.env);
-
-  const owns = await assertBusinessOwner(supabase, auth.user_id, business_id);
-  if (!owns) return c.json(errBody("forbidden", "business not found or not yours"), 403);
 
   const [lessonsRes, completionsRes, tasksRes, badgesRes, earningsRes] = await Promise.all([
     supabase
@@ -530,8 +473,7 @@ app.get("/today", async (c) => {
     supabase
       .from("lesson_completions")
       .select("lesson_id")
-      .eq("user_id", auth.user_id)
-      .eq("business_id", business_id),
+      .eq("user_id", auth.user_id),
     supabase
       .from("tasks")
       .select("slug, name")
@@ -543,8 +485,7 @@ app.get("/today", async (c) => {
     supabase
       .from("badge_earnings")
       .select("badge_id, earned_at")
-      .eq("user_id", auth.user_id)
-      .eq("business_id", business_id),
+      .eq("user_id", auth.user_id),
   ]);
 
   const lessons = (lessonsRes.data ?? []) as LessonRow[];
