@@ -195,7 +195,7 @@ admin.post("/backfill-public-site", async (c) => {
       const brandVoice   = ctx?.brand_voice ?? "";
       const valueProp    = ctx?.value_proposition ?? biz.name;
 
-      const picks = pickVisualChoices(industry, summary, brandVoice);
+      const picks = await pickVisualChoices(industry, summary, brandVoice, anthropic);
 
       let heroImageUrl: string | null = null;
       let heroImageCredit: string | null = null;

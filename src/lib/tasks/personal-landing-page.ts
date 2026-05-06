@@ -13,10 +13,11 @@ export async function runPersonalLandingPage(tc: TaskCtx): Promise<TaskResult> {
   await emit({ type: "cmd", text: `Generating public site for ${business.name}`, ts: Date.now() });
 
   // ── 1. Pick visual identity ────────────────────────────────────────────────
-  const picks = pickVisualChoices(
+  const picks = await pickVisualChoices(
     ctx.industry ?? "",
     ctx.business_summary ?? "",
     ctx.brand_voice ?? "",
+    anthropic,
   );
 
   // ── 2. Fetch hero photo — every business gets one ─────────────────────────

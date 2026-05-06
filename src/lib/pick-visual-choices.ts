@@ -1,8 +1,9 @@
 /**
- * Rule-based visual identity picker for public business sites.
+ * Visual identity picker for public business sites.
+ * Haiku LLM classification with keyword fallback.
  * Maps industry + brand voice → accent color, hero font, layout, eyebrow vocabulary.
- * Called by the personal-landing-page task at free-build time.
  */
+import Anthropic from "@anthropic-ai/sdk";
 
 export type AccentColor =
   | "terracotta" | "sage" | "navy" | "charcoal"
@@ -35,10 +36,10 @@ interface UnsplashResult {
 const FOOD_WORDS = ["food", "culinary", "restaurant", "chef", "catering", "bakery", "cafe", "kitchen", "dining", "cuisine", "bistro", "farm"];
 const TECH_WORDS = ["tech", "software", "saas", "digital", "app", "platform", "ai", "data", "cloud", "developer", "automation", "api"];
 const NATURE_WORDS = ["organic", "plant", "green", "nature", "eco", "garden", "sustainable", "farm", "outdoor", "wilderness", "botanical"];
-const FINANCE_WORDS = ["finance", "financial", "accounting", "law", "legal", "consulting", "advisory", "insurance", "audit", "tax", "investment"];
+const FINANCE_WORDS = ["finance", "financial", "accounting", "law", "legal", "consulting", "consultant", "advisory", "insurance", "audit", "tax", "investment", "go-to-market"];
 const FASHION_WORDS = ["fashion", "clothing", "apparel", "jewelry", "luxury", "style", "boutique", "accessories", "beauty", "cosmetic"];
 const CREATIVE_WORDS = ["art", "design", "creative", "studio", "gallery", "photography", "film", "media", "branding", "illustration"];
-const HEALTH_WORDS = ["health", "wellness", "yoga", "fitness", "therapy", "healing", "medical", "clinical", "nutrition", "coaching", "mindfulness"];
+const HEALTH_WORDS = ["health", "wellness", "yoga", "fitness", "therapy", "healing", "medical", "clinical", "nutrition", "mindfulness"];
 const TRADE_WORDS = ["construction", "trade", "contractor", "manufacturing", "logistics", "supply", "repair", "plumbing", "electrical", "hvac"];
 
 function matchesAny(text: string, words: string[]): boolean {
@@ -46,14 +47,17 @@ function matchesAny(text: string, words: string[]): boolean {
   return words.some(w => lower.includes(w));
 }
 
-function detectBucket(industry: string, summary: string): string {
+function detectBucketKeyword(industry: string, summary: string): string {
   const corpus = `${industry} ${summary}`;
+  const industryLower = industry.toLowerCase();
   if (matchesAny(corpus, FOOD_WORDS))    return "food";
   if (matchesAny(corpus, NATURE_WORDS))  return "nature";
   if (matchesAny(corpus, HEALTH_WORDS))  return "health";
+  // Finance: standard keywords match both fields; "strategy" restricted to industry only
+  // to avoid mis-classifying SaaS companies that mention "product strategy" in their summary.
+  if (matchesAny(corpus, FINANCE_WORDS) || industryLower.includes("strategy")) return "finance";
   if (matchesAny(corpus, CREATIVE_WORDS)) return "creative";
   if (matchesAny(corpus, FASHION_WORDS)) return "fashion";
-  if (matchesAny(corpus, FINANCE_WORDS)) return "finance";
   if (matchesAny(corpus, TECH_WORDS))    return "tech";
   if (matchesAny(corpus, TRADE_WORDS))   return "trade";
   return "default";
@@ -80,12 +84,52 @@ function pickEyebrowVocab(brandVoice: string): EyebrowVocab {
   return "standard";
 }
 
-export function pickVisualChoices(
+async function classifyBucketHaiku(
+  industry: string,
+  summary: string,
+  anthropic: Anthropic,
+): Promise<string | null> {
+  const VALID_BUCKETS = ["food", "nature", "health", "creative", "fashion", "finance", "tech", "trade"];
+  try {
+    const msg = await anthropic.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 10,
+      system: "You are a business classifier. Reply with ONE word only — no explanation, no punctuation.",
+      messages: [{
+        role: "user",
+        content: `Given this business context, classify it into ONE of these visual identity buckets:
+
+food — restaurants, food production, beverages, hospitality with culinary focus
+nature — outdoor, plants, sustainability, gardening, environmental
+health — fitness, wellness, spa, beauty, medical, mental health, therapy
+creative — design, art, photography, music, entertainment, talent agencies, media production
+fashion — retail, apparel, lifestyle products, boutique goods, beauty products
+finance — financial services, legal services, accounting, advisory consulting, professional services
+tech — software, SaaS, AI, platforms, developer tools, technology products
+trade — B2B services, manufacturing, logistics, industrial, construction, real estate
+
+Industry: ${industry}
+Summary: ${summary}
+
+Reply with ONLY the bucket name (one word, lowercase).`,
+      }],
+    });
+    const result = (msg.content[0] as { text: string }).text.trim().toLowerCase();
+    return VALID_BUCKETS.includes(result) ? result : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function pickVisualChoices(
   industry: string,
   summary: string,
   brandVoice: string,
-): VisualChoices {
-  const bucket = detectBucket(industry, summary);
+  anthropic: Anthropic,
+): Promise<VisualChoices> {
+  const bucket =
+    (await classifyBucketHaiku(industry, summary, anthropic)) ??
+    detectBucketKeyword(industry, summary);
   const base = BUCKET_MAP[bucket] ?? BUCKET_MAP["default"];
   return {
     ...base,
