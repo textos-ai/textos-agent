@@ -1,240 +1,338 @@
-\# Live Schema Snapshot
+# Live Schema Snapshot
 
+**Generated:** 2026-05-05 · After: Business Manager V1 ship
 
-
-\*\*Generated:\*\* 2026-05-01
-
-\*\*After:\*\* Sprint 5 Phase 1
-
-\*\*Source:\*\* Supabase production, public schema
-
-
+**Source:** Supabase production, public schema
 
 This is a raw column dump for all tables in the public schema. Use this as a reference when writing SQL or reasoning about table relationships.
 
-
-
 Compare against:
-
-\- `/migrations/` (source-of-truth migration files)
-
-\- `SCHEMA\_NOTES.md` (curated gotchas + relationships)
-
-
+- `/migrations/` (source-of-truth migration files)
+- `SCHEMA_NOTES.md` (curated gotchas + relationships)
 
 Re-upload to Claude Project knowledge after each sprint phase that adds tables or columns.
 
-
-
-\---
-
-
-
-\## Schema dump
-
-
-
-| table\_name         | column\_name               | data\_type                | is\_nullable | column\_default                 |
-
-| ------------------ | ------------------------- | ------------------------ | ----------- | ------------------------------ |
-
-| admin\_users        | user\_id                   | uuid                     | NO          | null                           |
-
-| admin\_users        | added\_at                  | timestamp with time zone | NO          | now()                          |
-
-| admin\_users        | notes                     | text                     | YES         | null                           |
-
-| business\_assets    | id                        | uuid                     | NO          | gen\_random\_uuid()              |
-
-| business\_assets    | business\_id               | uuid                     | NO          | null                           |
-
-| business\_assets    | task\_run\_id               | uuid                     | YES         | null                           |
-
-| business\_assets    | asset\_type                | text                     | NO          | null                           |
-
-| business\_assets    | asset\_subtype             | text                     | YES         | null                           |
-
-| business\_assets    | asset\_url                 | text                     | YES         | null                           |
-
-| business\_assets    | asset\_text                | text                     | YES         | null                           |
-
-| business\_assets    | asset\_data                | jsonb                    | YES         | null                           |
-
-| business\_assets    | created\_at                | timestamp with time zone | NO          | now()                          |
-
-| business\_assets    | updated\_at                | timestamp with time zone | NO          | now()                          |
-
-| business\_assets    | metadata                  | jsonb                    | NO          | '{}'::jsonb                    |
-
-| business\_context   | id                        | uuid                     | NO          | uuid\_generate\_v4()             |
-
-| business\_context   | business\_id               | uuid                     | NO          | null                           |
-
-| business\_context   | user\_id                   | uuid                     | NO          | null                           |
-
-| business\_context   | user\_profile              | jsonb                    | NO          | '{}'::jsonb                    |
-
-| business\_context   | user\_research\_log         | jsonb                    | NO          | '\[]'::jsonb                    |
-
-| business\_context   | business\_summary          | text                     | YES         | null                           |
-
-| business\_context   | industry                  | text                     | YES         | null                           |
-
-| business\_context   | business\_model            | text                     | YES         | null                           |
-
-| business\_context   | target\_customer           | jsonb                    | NO          | '{}'::jsonb                    |
-
-| business\_context   | value\_proposition         | text                     | YES         | null                           |
-
-| business\_context   | market\_size               | jsonb                    | NO          | '{}'::jsonb                    |
-
-| business\_context   | competitors               | jsonb                    | NO          | '\[]'::jsonb                    |
-
-| business\_context   | market\_trends             | jsonb                    | NO          | '\[]'::jsonb                    |
-
-| business\_context   | positioning\_statement     | text                     | YES         | null                           |
-
-| business\_context   | brand\_voice               | text                     | YES         | null                           |
-
-| business\_context   | key\_differentiators       | jsonb                    | NO          | '\[]'::jsonb                    |
-
-| business\_context   | financial\_snapshot        | jsonb                    | NO          | '{}'::jsonb                    |
-
-| business\_context   | customer\_signals          | jsonb                    | NO          | '{}'::jsonb                    |
-
-| business\_context   | open\_questions            | jsonb                    | NO          | '\[]'::jsonb                    |
-
-| business\_context   | telegram\_chat\_id          | text                     | YES         | null                           |
-
-| business\_context   | last\_research\_run\_at      | timestamp with time zone | YES         | null                           |
-
-| business\_context   | research\_confidence\_score | integer                  | NO          | 0                              |
-
-| business\_context   | created\_at                | timestamp with time zone | NO          | now()                          |
-
-| business\_context   | updated\_at                | timestamp with time zone | NO          | now()                          |
-
-| business\_context   | agent\_name                | text                     | YES         | null                           |
-
-| businesses         | id                        | uuid                     | NO          | uuid\_generate\_v4()             |
-
-| businesses         | user\_id                   | uuid                     | NO          | null                           |
-
-| businesses         | slug                      | text                     | NO          | null                           |
-
-| businesses         | name                      | text                     | NO          | null                           |
-
-| businesses         | kind                      | USER-DEFINED             | NO          | null                           |
-
-| businesses         | existing\_business\_url     | text                     | YES         | null                           |
-
-| businesses         | existing\_business\_data    | jsonb                    | YES         | null                           |
-
-| businesses         | created\_at                | timestamp with time zone | NO          | now()                          |
-
-| email\_queue        | id                        | uuid                     | NO          | gen\_random\_uuid()              |
-
-| email\_queue        | business\_id               | uuid                     | NO          | null                           |
-
-| email\_queue        | user\_id                   | uuid                     | NO          | null                           |
-
-| email\_queue        | task\_run\_id               | uuid                     | YES         | null                           |
-
-| email\_queue        | to\_email                  | text                     | NO          | null                           |
-
-| email\_queue        | to\_name                   | text                     | YES         | null                           |
-
-| email\_queue        | to\_company                | text                     | YES         | null                           |
-
-| email\_queue        | to\_role                   | text                     | YES         | null                           |
-
-| email\_queue        | from\_email                | text                     | NO          | 'yourbusiness@textos.ai'::text |
-
-| email\_queue        | subject                   | text                     | NO          | null                           |
-
-| email\_queue        | body                      | text                     | NO          | null                           |
-
-| email\_queue        | status                    | text                     | NO          | 'pending'::text                |
-
-| email\_queue        | created\_at                | timestamp with time zone | NO          | now()                          |
-
-| email\_queue        | approved\_at               | timestamp with time zone | YES         | null                           |
-
-| email\_queue        | approved\_by               | uuid                     | YES         | null                           |
-
-| email\_queue        | sent\_at                   | timestamp with time zone | YES         | null                           |
-
-| email\_queue        | sendgrid\_message\_id       | text                     | YES         | null                           |
-
-| email\_queue        | rejection\_reason          | text                     | YES         | null                           |
-
-| email\_queue        | edited                    | boolean                  | NO          | false                          |
-
-| email\_queue        | edited\_subject            | text                     | YES         | null                           |
-
-| email\_queue        | edited\_body               | text                     | YES         | null                           |
-
-| subscription\_plans | id                        | uuid                     | NO          | uuid\_generate\_v4()             |
-
-| subscription\_plans | slug                      | text                     | NO          | null                           |
-
-| subscription\_plans | name                      | text                     | NO          | null                           |
-
-| subscription\_plans | monthly\_cents             | integer                  | NO          | null                           |
-
-| subscription\_plans | one\_time\_cents            | integer                  | NO          | 0                              |
-
-| subscription\_plans | business\_quota            | integer                  | NO          | 1                              |
-
-| subscription\_plans | includes\_premium\_tasks    | boolean                  | NO          | false                          |
-
-| subscription\_plans | is\_grandfathered          | boolean                  | NO          | false                          |
-
-| subscription\_plans | cohort\_limit              | integer                  | YES         | null                           |
-
-| subscription\_plans | is\_active                 | boolean                  | NO          | true                           |
-
-| subscription\_plans | created\_at                | timestamp with time zone | NO          | now()                          |
-
-| task\_purchases     | id                        | uuid                     | NO          | uuid\_generate\_v4()             |
-
-| task\_purchases     | user\_id                   | uuid                     | NO          | null                           |
-
-| task\_purchases     | task\_id                   | uuid                     | NO          | null                           |
-
-| task\_purchases     | business\_id               | uuid                     | YES         | null                           |
-
-| task\_purchases     | amount\_cents              | integer                  | NO          | null                           |
-
-| task\_purchases     | stripe\_payment\_intent     | text                     | YES         | null                           |
-
-| task\_purchases     | created\_at                | timestamp with time zone | NO          | now()                          |
-
-| task\_runs          | id                        | uuid                     | NO          | uuid\_generate\_v4()             |
-
-| task\_runs          | user\_id                   | uuid                     | NO          | null                           |
-
-| task\_runs          | business\_id               | uuid                     | YES         | null                           |
-
-| task\_runs          | task\_id                   | uuid                     | NO          | null                           |
-
-| task\_runs          | status                    | USER-DEFINED             | NO          | 'queued'::task\_run\_status      |
-
-| task\_runs          | started\_at                | timestamp with time zone | NO          | now()                          |
-
-| task\_runs          | completed\_at              | timestamp with time zone | YES         | null                           |
-
-| task\_runs          | output\_data               | jsonb                    | YES         | null                           |
-
-| task\_runs          | paid\_amount\_cents         | integer                  | NO          | 0                              |
-
-| task\_runs          | error                     | text                     | YES         | null                           |
-
-| task\_runs          | state                     | USER-DEFINED             | NO          | 'proposed'::task\_state         |
-
-| task\_runs          | proposed\_at               | timestamp with time zone | YES         | now()                          |
-
-| task\_runs          | failed\_at                 | timestamp with time zone | YES         | null                           |
-
-| task\_runs          | work\_log                  | jsonb                    | NO          | '\[]'::jsonb                    |
-
+---
+
+## What changed since May 3
+
+### New tables (7)
+
+| Table | Added by |
+|---|---|
+| `anonymous_snapshots` | Sprint 4/5 (anonymous free-build flow) |
+| `business_goals` | Manager V1 (per-business goal tracking) |
+| `charge_windows` | Manager V1 (Charge mode sessions) |
+| `free_build_runs` | Sprint 4/5 (orchestrator run state) |
+| `lessons` | Manager V1 (Operator School curriculum, 12 rows seeded) |
+| `milestones` | Manager V1 (business timeline) |
+| `stream_events` | Sprint 4/5 (SSE event log per run) |
+
+### New columns on existing tables
+
+| Table | Column | Notes |
+|---|---|---|
+| `business_assets` | `is_current` | boolean NOT NULL default true |
+| `businesses` | `phase` | text NOT NULL default 'founding' |
+| `businesses` | `mode` | text NOT NULL default 'cruise' |
+| `task_runs` | `is_current` | boolean NOT NULL default true |
+| `task_runs` | `retry_count` | integer NOT NULL default 0 |
+| `task_runs` | `max_retries` | integer NOT NULL default 3 |
+
+### ⚠ Migrations NOT yet run
+
+The Manager V1 brief called for `task_runs` user-action columns — these do **not** exist in the live schema:
+- `requires_user_action` (boolean)
+- `user_action_title` (text)
+- `user_action_subtitle` (text)
+- `user_action_why` (text)
+- `user_action_cta` (text)
+
+Run these before any feature that surfaces user-action prompts from task runs.
+
+---
+
+## Full schema dump
+
+### admin_users
+
+| column_name | data_type | is_nullable | column_default |
+|---|---|---|---|
+| user_id | uuid | NO | null |
+| added_at | timestamp with time zone | NO | now() |
+| notes | text | YES | null |
+
+### anonymous_snapshots ⭐ NEW
+
+| column_name | data_type | is_nullable | column_default |
+|---|---|---|---|
+| id | uuid | NO | gen_random_uuid() |
+| token | text | NO | null |
+| created_at | timestamp with time zone | NO | now() |
+| source | text | NO | null |
+| kind | USER-DEFINED | NO | null |
+| input | jsonb | NO | null |
+| output | jsonb | YES | null |
+| ip_address | inet | YES | null |
+| user_agent | text | YES | null |
+| generation_ms | integer | YES | null |
+| status | text | NO | 'pending'::text |
+| is_bot_suspected | boolean | NO | false |
+| claimed_at | timestamp with time zone | YES | null |
+| claimed_user_id | uuid | YES | null |
+| claimed_business_id | uuid | YES | null |
+
+### business_assets
+
+| column_name | data_type | is_nullable | column_default |
+|---|---|---|---|
+| id | uuid | NO | gen_random_uuid() |
+| business_id | uuid | NO | null |
+| task_run_id | uuid | YES | null |
+| asset_type | text | NO | null |
+| asset_subtype | text | YES | null |
+| asset_url | text | YES | null |
+| asset_text | text | YES | null |
+| asset_data | jsonb | YES | null |
+| created_at | timestamp with time zone | NO | now() |
+| updated_at | timestamp with time zone | NO | now() |
+| metadata | jsonb | NO | '{}'::jsonb |
+| is_current | boolean | NO | true |
+
+### business_context
+
+| column_name | data_type | is_nullable | column_default |
+|---|---|---|---|
+| id | uuid | NO | uuid_generate_v4() |
+| business_id | uuid | NO | null |
+| user_id | uuid | NO | null |
+| user_profile | jsonb | NO | '{}'::jsonb |
+| user_research_log | jsonb | NO | '[]'::jsonb |
+| business_summary | text | YES | null |
+| industry | text | YES | null |
+| business_model | text | YES | null |
+| target_customer | jsonb | NO | '{}'::jsonb |
+| value_proposition | text | YES | null |
+| market_size | jsonb | NO | '{}'::jsonb |
+| competitors | jsonb | NO | '[]'::jsonb |
+| market_trends | jsonb | NO | '[]'::jsonb |
+| positioning_statement | text | YES | null |
+| brand_voice | text | YES | null |
+| key_differentiators | jsonb | NO | '[]'::jsonb |
+| financial_snapshot | jsonb | NO | '{}'::jsonb |
+| customer_signals | jsonb | NO | '{}'::jsonb |
+| open_questions | jsonb | NO | '[]'::jsonb |
+| telegram_chat_id | text | YES | null |
+| last_research_run_at | timestamp with time zone | YES | null |
+| research_confidence_score | integer | NO | 0 |
+| created_at | timestamp with time zone | NO | now() |
+| updated_at | timestamp with time zone | NO | now() |
+| agent_name | text | YES | null |
+
+### business_goals ⭐ NEW
+
+| column_name | data_type | is_nullable | column_default |
+|---|---|---|---|
+| id | uuid | NO | gen_random_uuid() |
+| business_id | uuid | NO | null |
+| goal_text | text | NO | null |
+| created_at | timestamp with time zone | NO | now() |
+
+### businesses
+
+| column_name | data_type | is_nullable | column_default |
+|---|---|---|---|
+| id | uuid | NO | uuid_generate_v4() |
+| user_id | uuid | NO | null |
+| slug | text | NO | null |
+| name | text | NO | null |
+| kind | USER-DEFINED | NO | null |
+| existing_business_url | text | YES | null |
+| existing_business_data | jsonb | YES | null |
+| created_at | timestamp with time zone | NO | now() |
+| phase | text | NO | 'founding'::text |
+| mode | text | NO | 'cruise'::text |
+
+### charge_windows ⭐ NEW
+
+| column_name | data_type | is_nullable | column_default |
+|---|---|---|---|
+| id | uuid | NO | gen_random_uuid() |
+| business_id | uuid | NO | null |
+| opened_at | timestamp with time zone | NO | now() |
+| closes_at | timestamp with time zone | NO | null |
+| closed_at | timestamp with time zone | YES | null |
+| rule_text | text | NO | null |
+
+### email_queue
+
+| column_name | data_type | is_nullable | column_default |
+|---|---|---|---|
+| id | uuid | NO | gen_random_uuid() |
+| business_id | uuid | NO | null |
+| user_id | uuid | NO | null |
+| task_run_id | uuid | YES | null |
+| to_email | text | NO | null |
+| to_name | text | YES | null |
+| to_company | text | YES | null |
+| to_role | text | YES | null |
+| from_email | text | NO | 'yourbusiness@textos.ai'::text |
+| subject | text | NO | null |
+| body | text | NO | null |
+| status | text | NO | 'pending'::text |
+| created_at | timestamp with time zone | NO | now() |
+| approved_at | timestamp with time zone | YES | null |
+| approved_by | uuid | YES | null |
+| sent_at | timestamp with time zone | YES | null |
+| sendgrid_message_id | text | YES | null |
+| rejection_reason | text | YES | null |
+| edited | boolean | NO | false |
+| edited_subject | text | YES | null |
+| edited_body | text | YES | null |
+
+### free_build_runs ⭐ NEW
+
+| column_name | data_type | is_nullable | column_default |
+|---|---|---|---|
+| id | uuid | NO | uuid_generate_v4() |
+| business_id | uuid | NO | null |
+| user_id | uuid | NO | null |
+| status | text | NO | 'pending'::text |
+| tasks_total | integer | NO | 0 |
+| tasks_completed | integer | NO | 0 |
+| started_at | timestamp with time zone | NO | now() |
+| completed_at | timestamp with time zone | YES | null |
+| failed_at | timestamp with time zone | YES | null |
+| error | text | YES | null |
+| created_at | timestamp with time zone | NO | now() |
+| last_heartbeat_at | timestamp with time zone | NO | now() |
+
+### lessons ⭐ NEW
+
+| column_name | data_type | is_nullable | column_default |
+|---|---|---|---|
+| id | uuid | NO | gen_random_uuid() |
+| phase | text | NO | null |
+| lesson_num | integer | NO | null |
+| title | text | NO | null |
+| body | text | NO | null |
+
+### milestones ⭐ NEW
+
+| column_name | data_type | is_nullable | column_default |
+|---|---|---|---|
+| id | uuid | NO | gen_random_uuid() |
+| business_id | uuid | NO | null |
+| label | text | NO | null |
+| occurred_at | timestamp with time zone | NO | now() |
+
+### stream_events ⭐ NEW
+
+| column_name | data_type | is_nullable | column_default |
+|---|---|---|---|
+| id | uuid | NO | uuid_generate_v4() |
+| run_id | uuid | NO | null |
+| business_id | uuid | NO | null |
+| seq | integer | NO | null |
+| event_type | text | NO | null |
+| event_data | jsonb | NO | '{}'::jsonb |
+| created_at | timestamp with time zone | NO | now() |
+
+### subscription_plans
+
+| column_name | data_type | is_nullable | column_default |
+|---|---|---|---|
+| id | uuid | NO | uuid_generate_v4() |
+| slug | text | NO | null |
+| name | text | NO | null |
+| monthly_cents | integer | NO | null |
+| one_time_cents | integer | NO | 0 |
+| business_quota | integer | NO | 1 |
+| includes_premium_tasks | boolean | NO | false |
+| is_grandfathered | boolean | NO | false |
+| cohort_limit | integer | YES | null |
+| is_active | boolean | NO | true |
+| created_at | timestamp with time zone | NO | now() |
+
+### task_purchases
+
+| column_name | data_type | is_nullable | column_default |
+|---|---|---|---|
+| id | uuid | NO | uuid_generate_v4() |
+| user_id | uuid | NO | null |
+| task_id | uuid | NO | null |
+| business_id | uuid | YES | null |
+| amount_cents | integer | NO | null |
+| stripe_payment_intent | text | YES | null |
+| created_at | timestamp with time zone | NO | now() |
+
+### task_runs
+
+| column_name | data_type | is_nullable | column_default |
+|---|---|---|---|
+| id | uuid | NO | uuid_generate_v4() |
+| user_id | uuid | NO | null |
+| business_id | uuid | YES | null |
+| task_id | uuid | NO | null |
+| status | USER-DEFINED | NO | 'queued'::task_run_status |
+| started_at | timestamp with time zone | NO | now() |
+| completed_at | timestamp with time zone | YES | null |
+| output_data | jsonb | YES | null |
+| paid_amount_cents | integer | NO | 0 |
+| error | text | YES | null |
+| state | USER-DEFINED | NO | 'proposed'::task_state |
+| proposed_at | timestamp with time zone | YES | now() |
+| failed_at | timestamp with time zone | YES | null |
+| work_log | jsonb | NO | '[]'::jsonb |
+| is_current | boolean | NO | true |
+| retry_count | integer | NO | 0 |
+| max_retries | integer | NO | 3 |
+
+### tasks
+
+| column_name | data_type | is_nullable | column_default |
+|---|---|---|---|
+| id | uuid | NO | uuid_generate_v4() |
+| slug | text | NO | null |
+| name | text | NO | null |
+| description_short | text | YES | null |
+| description_long | text | YES | null |
+| area | USER-DEFINED | NO | null |
+| is_default | boolean | NO | false |
+| plan_required | USER-DEFINED | NO | 'free'::task_plan_required |
+| visibility | USER-DEFINED | NO | 'always_visible'::task_visibility |
+| price_cents | integer | NO | 0 |
+| prompt_template | text | YES | null |
+| output_type | USER-DEFINED | NO | 'document'::task_output_type |
+| inputs_required | jsonb | NO | '{}'::jsonb |
+| creator_id | uuid | YES | null |
+| status | USER-DEFINED | NO | 'active'::task_status |
+| created_at | timestamp with time zone | NO | now() |
+| updated_at | timestamp with time zone | NO | now() |
+| execution_order | integer | YES | 99 |
+
+### user_subscriptions
+
+| column_name | data_type | is_nullable | column_default |
+|---|---|---|---|
+| id | uuid | NO | uuid_generate_v4() |
+| user_id | uuid | NO | null |
+| plan_id | uuid | NO | null |
+| started_at | timestamp with time zone | NO | now() |
+| current_period_end | timestamp with time zone | YES | null |
+| stripe_subscription_id | text | YES | null |
+| status | USER-DEFINED | NO | 'active'::subscription_status |
+| created_at | timestamp with time zone | NO | now() |
+
+### users
+
+| column_name | data_type | is_nullable | column_default |
+|---|---|---|---|
+| id | uuid | NO | uuid_generate_v4() |
+| email | text | NO | null |
+| handle | text | YES | null |
+| created_at | timestamp with time zone | NO | now() |
+| handle_confirmed_at | timestamp with time zone | YES | null |
+| stripe_customer_id | text | YES | null |
+| tier | text | NO | 'free'::text |
+| tier_updated_at | timestamp with time zone | YES | null |
