@@ -21,6 +21,8 @@ import buildsRoutes from "./routes/builds";
 import businessManagerRoutes from "./routes/business-manager";
 import operatorSchoolRoutes from "./routes/operator-school";
 import settingsRoutes from "./routes/settings";
+import generateStoriesRoutes from "./routes/generate-stories";
+import marketingCarouselsRoutes from "./routes/marketing-carousels";
 import { runHeartbeatWatchdog } from "./cron/heartbeatWatchdog";
 import { createClient } from "@supabase/supabase-js";
 
@@ -62,6 +64,8 @@ app.route("/api/builds", buildsRoutes);
 app.route("/api/businesses", businessManagerRoutes);
 app.route("/api/operator-school", operatorSchoolRoutes);
 app.route("/api/settings", settingsRoutes);
+app.route("/api/generate-stories", generateStoriesRoutes);
+app.route("/api/businesses", marketingCarouselsRoutes);
 
 app.notFound((c) =>
   c.json(
