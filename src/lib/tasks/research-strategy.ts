@@ -37,7 +37,46 @@ function buildPrompt(
   idea: string,
   pageContent: string,
   retryNote: string,
+  findForMeData?: { interests: string; budget?: string } | null,
 ): string {
+  if (findForMeData) {
+    const budgetLine = findForMeData.budget
+      ? `Budget available: ${findForMeData.budget}`
+      : "Budget: not specified";
+    return `You are helping a person find and launch a business that fits their background.${retryNote}
+
+User background and skills:
+"""
+${findForMeData.interests}
+"""
+${budgetLine}
+
+Task: Propose ONE remarkable, specific business concept this person could start — something that plays to their background, fits the budget, and has real market potential. Then research the market for that concept thoroughly.
+
+Return EXACTLY this JSON object — no markdown, no extra keys, no comments:
+{
+  "business_name": "string — a concise, memorable brand name for the proposed business (2-4 words, Title Case)",
+  "industry": "string — specific industry (NOT 'General Business' — be specific)",
+  "business_model": "string — how it makes money (saas_subscription, marketplace, consulting, service, etc.)",
+  "business_summary": "string — 2-3 sentences: what the business does, for whom, and why this person is well-positioned to run it",
+  "target_customer": {
+    "description": "string — who the primary customer is",
+    "pain_points": ["string", "string", "string"],
+    "demographics": "string — relevant demographics"
+  },
+  "value_proposition": "string — one crisp sentence on the unique value (do NOT start with the company name or 'helps')",
+  "competitors": [
+    { "name": "string", "description": "string — what they do", "weakness": "string — exploitable gap" }
+  ],
+  "market_trends": ["string", "string", "string"],
+  "positioning_statement": "string — for [target] who [need], [brand] is the [category] that [benefit] unlike [alternative]",
+  "brand_voice": "string — tone and style descriptor",
+  "key_differentiators": ["string", "string", "string"],
+  "reasoning": "string — 2-3 sentences explaining why this concept fits this person's background and budget",
+  "confidence": 75
+}`;
+  }
+
   const urlSection = business.existing_business_url
     ? `Existing URL: ${business.existing_business_url}`
     : "";
@@ -79,12 +118,22 @@ Return EXACTLY this JSON object — no markdown, no extra keys, no comments:
 
 export async function runResearchStrategy(tc: TaskCtx): Promise<TaskResult> {
   const { business, ctx, anthropic, emit, supabase, taskRunId } = tc;
-  const idea =
-    (business.existing_business_data as Record<string, string> | null)?.idea ??
-    (business.existing_business_data as Record<string, string> | null)?.description ??
-    business.name;
+  const ebd = business.existing_business_data as Record<string, string> | null;
+  const isFindForMe = business.kind === "find_for_me";
+  const findForMeData = isFindForMe
+    ? { interests: ebd?.interests ?? "", budget: ebd?.budget }
+    : null;
+  const idea = isFindForMe
+    ? ""
+    : ebd?.idea ?? ebd?.description ?? business.name;
 
-  await emit({ type: "narrative", text: `Researching the market for ${business.name}…`, ts: Date.now() });
+  await emit({
+    type: "narrative",
+    text: isFindForMe
+      ? `Analyzing your background to find the right business concept…`
+      : `Researching the market for ${business.name}…`,
+    ts: Date.now(),
+  });
 
   // ── Fetch page content for existing business URLs ───────────────────
   let pageContent = "";
@@ -118,7 +167,7 @@ export async function runResearchStrategy(tc: TaskCtx): Promise<TaskResult> {
       messages: [
         {
           role: "user",
-          content: buildPrompt(business, idea, pageContent, retryNote),
+          content: buildPrompt(business, idea, pageContent, retryNote, findForMeData),
         },
       ],
     });
