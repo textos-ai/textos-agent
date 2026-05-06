@@ -24,7 +24,7 @@ app.get("/:slug/marketing/stories", async (c) => {
   const business = await getBusinessBySlug(supabase, auth.user_id, slug);
   if (!business) return c.json({ ok: false, error: "Business not found" }, 404);
 
-  const [carouselsRes, bizMetaRes, planRes] = await Promise.allSettled([
+  const [carouselsRes, bizMetaRes, ctxRes, planRes] = await Promise.allSettled([
     supabase
       .from("marketing_carousels")
       .select("id, topic, card_count, cards, created_at, saved_at, is_locked")
@@ -32,9 +32,14 @@ app.get("/:slug/marketing/stories", async (c) => {
       .order("created_at", { ascending: false }),
     supabase
       .from("businesses")
-      .select("name, accent_color, accent_color_override, hero_font")
+      .select("name, accent_color, accent_color_override, hero_font, calendly_url")
       .eq("id", business.id)
       .single(),
+    supabase
+      .from("business_context")
+      .select("industry, value_proposition, positioning_statement")
+      .eq("business_id", business.id)
+      .maybeSingle(),
     getUserSubscriptionPlan(supabase, auth.user_id),
   ]);
 
@@ -46,6 +51,11 @@ app.get("/:slug/marketing/stories", async (c) => {
   const bizMeta =
     bizMetaRes.status === "fulfilled" && !bizMetaRes.value.error
       ? bizMetaRes.value.data
+      : null;
+
+  const ctx =
+    ctxRes.status === "fulfilled" && !(ctxRes.value as any).error
+      ? (ctxRes.value as any).data
       : null;
 
   const plan = planRes.status === "fulfilled" ? planRes.value : null;
@@ -63,10 +73,24 @@ app.get("/:slug/marketing/stories", async (c) => {
     biz: bizMeta
       ? {
           name: business.name,
+          slug: business.slug,
           accent_color: (bizMeta as any).accent_color_override ?? (bizMeta as any).accent_color ?? "charcoal",
           hero_font: (bizMeta as any).hero_font ?? "space_grotesk",
+          calendly_url: (bizMeta as any).calendly_url ?? null,
+          industry: ctx?.industry ?? null,
+          value_proposition: ctx?.value_proposition ?? null,
+          positioning_statement: ctx?.positioning_statement ?? null,
         }
-      : { name: business.name, accent_color: "charcoal", hero_font: "space_grotesk" },
+      : {
+          name: business.name,
+          slug: business.slug,
+          accent_color: "charcoal",
+          hero_font: "space_grotesk",
+          calendly_url: null,
+          industry: null,
+          value_proposition: null,
+          positioning_statement: null,
+        },
   });
 });
 
