@@ -19,6 +19,7 @@ import { errBody } from "./lib/errors";
 import { log } from "./lib/logger";
 import buildsRoutes from "./routes/builds";
 import businessManagerRoutes from "./routes/business-manager";
+import operatorSchoolRoutes from "./routes/operator-school";
 import { runHeartbeatWatchdog } from "./cron/heartbeatWatchdog";
 import { createClient } from "@supabase/supabase-js";
 
@@ -58,6 +59,7 @@ app.route("/api/checkout", checkoutRoutes);
 app.route("/api/stripe", stripeRoutes);
 app.route("/api/builds", buildsRoutes);
 app.route("/api/businesses", businessManagerRoutes);
+app.route("/api/operator-school", operatorSchoolRoutes);
 
 app.notFound((c) =>
   c.json(
