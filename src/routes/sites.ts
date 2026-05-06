@@ -7,12 +7,8 @@ const app = new Hono<{ Bindings: Env }>();
 
 /**
  * Public business site data endpoint — no auth required.
- * Reads businesses + business_context using the service role key (bypasses RLS).
- * Returns only public-safe fields for rendering /sites/{slug}.
- *
- * V1 note: businesses.slug is unique per user, not globally.
- * For alpha (5–10 users) slug collisions are effectively impossible.
- * Sprint 9 wildcard DNS will replace this with real per-business domains.
+ * Returns both businesses table visual identity columns and business_context data.
+ * V1 note: slug is unique per user; collisions impossible at alpha scale.
  */
 app.get("/:slug", async (c) => {
   const slug = c.req.param("slug");
@@ -23,13 +19,19 @@ app.get("/:slug", async (c) => {
 
   const supabase = createSupabaseClient(c.env);
 
-  const { data: business, error: bizErr } = await supabase
+  const { data: businessRaw, error: bizErr } = await supabase
     .from("businesses")
-    .select("id, name, slug")
+    .select(
+      "id, name, slug, created_at, " +
+      "accent_color, accent_color_override, hero_layout, hero_font, " +
+      "hero_image_url, hero_image_credit, seo_title, seo_description, seo_keywords, " +
+      "calendly_url, show_credentials_publicly, eyebrow_vocab",
+    )
     .eq("slug", slug)
     .limit(1)
     .maybeSingle();
 
+  const business = businessRaw as Record<string, unknown> | null;
   if (bizErr || !business) {
     log.info("site_not_found", { slug });
     return c.json({ error: "not_found", message: "Business not found" }, 404);
@@ -39,25 +41,42 @@ app.get("/:slug", async (c) => {
     .from("business_context")
     .select(
       "business_summary, value_proposition, industry, business_model, " +
-      "target_customer, positioning_statement, key_differentiators, brand_voice, agent_name"
+      "target_customer, positioning_statement, key_differentiators, brand_voice, agent_name",
     )
     .eq("business_id", business.id)
     .maybeSingle();
 
-  const ctx = ctxRaw as any;
+  const ctx = ctxRaw as Record<string, unknown> | null;
 
   c.header("Cache-Control", "public, max-age=300");
   return c.json({
-    name:                  business.name,
-    slug:                  business.slug,
-    value_proposition:     ctx?.value_proposition     ?? null,
-    business_summary:      ctx?.business_summary      ?? null,
-    industry:              ctx?.industry              ?? null,
-    business_model:        ctx?.business_model        ?? null,
-    target_customer:       ctx?.target_customer       ?? null,
-    positioning_statement: ctx?.positioning_statement ?? null,
-    key_differentiators:   ctx?.key_differentiators   ?? [],
-    agent_name:            ctx?.agent_name            ?? null,
+    name:                     business.name,
+    slug:                     business.slug,
+    created_at:               business.created_at,
+    // Visual identity (agent-derived, may be null before first build)
+    accent_color:             business.accent_color     ?? null,
+    accent_color_override:    business.accent_color_override ?? null,
+    hero_layout:              business.hero_layout      ?? "type",
+    hero_font:                business.hero_font        ?? "space_grotesk",
+    hero_image_url:           business.hero_image_url   ?? null,
+    hero_image_credit:        business.hero_image_credit ?? null,
+    eyebrow_vocab:            business.eyebrow_vocab    ?? "standard",
+    // SEO (agent-derived)
+    seo_title:                business.seo_title        ?? null,
+    seo_description:          business.seo_description  ?? null,
+    seo_keywords:             business.seo_keywords     ?? [],
+    // User settings
+    calendly_url:             business.calendly_url     ?? null,
+    show_credentials_publicly: business.show_credentials_publicly ?? false,
+    // Business context
+    value_proposition:        ctx?.value_proposition    ?? null,
+    business_summary:         ctx?.business_summary     ?? null,
+    industry:                 ctx?.industry             ?? null,
+    business_model:           ctx?.business_model       ?? null,
+    target_customer:          ctx?.target_customer      ?? null,
+    positioning_statement:    ctx?.positioning_statement ?? null,
+    key_differentiators:      ctx?.key_differentiators  ?? [],
+    agent_name:               ctx?.agent_name           ?? null,
   });
 });
 

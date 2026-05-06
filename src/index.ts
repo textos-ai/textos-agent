@@ -20,6 +20,7 @@ import { log } from "./lib/logger";
 import buildsRoutes from "./routes/builds";
 import businessManagerRoutes from "./routes/business-manager";
 import operatorSchoolRoutes from "./routes/operator-school";
+import settingsRoutes from "./routes/settings";
 import { runHeartbeatWatchdog } from "./cron/heartbeatWatchdog";
 import { createClient } from "@supabase/supabase-js";
 
@@ -36,7 +37,7 @@ app.use(
       if (origin === "http://localhost:5173") return origin;
       return null;
     },
-    allowMethods: ["GET", "POST", "PATCH", "OPTIONS"],
+    allowMethods: ["GET", "POST", "PATCH", "PUT", "OPTIONS"],
     allowHeaders: ["Content-Type", "Authorization"],
     credentials: true,
   }),
@@ -60,6 +61,7 @@ app.route("/api/stripe", stripeRoutes);
 app.route("/api/builds", buildsRoutes);
 app.route("/api/businesses", businessManagerRoutes);
 app.route("/api/operator-school", operatorSchoolRoutes);
+app.route("/api/settings", settingsRoutes);
 
 app.notFound((c) =>
   c.json(

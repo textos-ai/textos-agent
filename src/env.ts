@@ -37,4 +37,6 @@ export interface Env {
   STRIPE_PRICE_ID_CORE_MONTHLY: string;
   /** Stripe price ID for Founder Lifetime ($49.99 one-time). */
   STRIPE_PRICE_ID_FOUNDER_LIFETIME: string;
+  /** Unsplash API access key — used to fetch hero images for public business sites. */
+  UNSPLASH_ACCESS_KEY: string;
 }
