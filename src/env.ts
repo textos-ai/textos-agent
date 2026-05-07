@@ -29,6 +29,9 @@ export interface Env {
   DAYCYCLE_PLACES_ENABLED: string;
   /** KV namespace for anonymous snapshot tokens (C-Lite flow). */
   SNAPSHOT_KV: KVNamespace;
+  /** Alpha-only rate limit bypass. Set to 'true' via wrangler secret put LETMEIN_BYPASS_ENABLED.
+   *  Leave unset (or 'false') in production — bypass is inert when this var is absent. */
+  LETMEIN_BYPASS_ENABLED?: string;
   /** Stripe secret key — set via `wrangler secret put STRIPE_SECRET_KEY`. */
   STRIPE_SECRET_KEY: string;
   /** Stripe webhook signing secret — set via `wrangler secret put STRIPE_WEBHOOK_SECRET`. */

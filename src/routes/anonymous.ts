@@ -40,7 +40,10 @@ app.post("/snapshot", async (c) => {
   const userAgent = c.req.header("user-agent") ?? null;
   const rateKey = `rate:snapshot:${ip}`;
 
-  const bypass = new URL(c.req.url).searchParams.get("bypass") === "letmein";
+  const urlParams = new URL(c.req.url).searchParams;
+  const hasLetmein = urlParams.has("letmein");
+  const bypassEnabled = c.env.LETMEIN_BYPASS_ENABLED === "true";
+  const bypass = hasLetmein && bypassEnabled;
 
   const countStr = await c.env.SNAPSHOT_KV.get(rateKey);
   const count = countStr ? parseInt(countStr, 10) : 0;
