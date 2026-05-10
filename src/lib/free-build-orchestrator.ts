@@ -26,12 +26,14 @@ import { runBusinessLandingPage } from "./tasks/business-landing-page";
 import { runLogo } from "./tasks/logo";
 import { runMissionDocument } from "./tasks/mission-document";
 import { runDashboardBriefing } from "./tasks/dashboard-briefing";
+import { runTamSamSom } from "./tasks/tam-sam-som";
 
 // Free-build pipeline — execution order is intentional:
 // welcome-email first (user confirmation before heavy work),
 // research-strategy second (all downstream tasks read from business_context),
 // mission-document before logo (brand voice established before visual identity),
-// business-landing-page after logo (can reference logo URL in hero).
+// business-landing-page after logo (can reference logo URL in hero),
+// tam-sam-som after landing page (needs full business context to size the market).
 const PIPELINE: Array<{ slug: string; name: string; fn: TaskFn }> = [
   { slug: "welcome-email",          name: "Welcome Email",         fn: runWelcomeEmail },
   { slug: "research-strategy",      name: "Research Strategy",     fn: runResearchStrategy },
@@ -39,6 +41,7 @@ const PIPELINE: Array<{ slug: string; name: string; fn: TaskFn }> = [
   { slug: "logo",                   name: "Logo",                  fn: runLogo },
   { slug: "business-landing-page",  name: "Business Landing Page", fn: runBusinessLandingPage },
   { slug: "launch-tweet",           name: "Launch Tweet",          fn: runLaunchTweet },
+  { slug: "tam-sam-som",            name: "Market Sizing",         fn: runTamSamSom },
   { slug: "dashboard-briefing",     name: "Dashboard Briefing",    fn: runDashboardBriefing },
 ];
 
