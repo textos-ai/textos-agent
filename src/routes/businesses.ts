@@ -292,11 +292,12 @@ app.post("/", async (c) => {
   try {
     await createEmptyBusinessContext(supabase, business.id, auth.user_id, agentName);
   } catch (err) {
+    console.error("[business-create] context creation FAILED:", err);
     log.warn("create_empty_context_failed", {
       err: String(err),
       business_id: business.id,
     });
-    // Non-fatal
+    // Non-fatal — orchestrator will seed agent_name if context row is missing
   }
 
   const context = await getBusinessContext(supabase, business.id).catch(

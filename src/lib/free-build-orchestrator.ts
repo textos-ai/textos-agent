@@ -17,6 +17,7 @@ import {
 } from "../services/supabase";
 import type { TaskCtx, TaskFn } from "./tasks/types";
 import { extractErrorMessage } from "./extract-error";
+import { pickRandomAgentName } from "./agentNames";
 
 import { runResearchStrategy } from "./tasks/research-strategy";
 import { runWelcomeEmail } from "./tasks/welcome-email";
@@ -130,33 +131,50 @@ export async function runFreeBuild(
       .select("*")
       .eq("business_id", business.id)
       .maybeSingle();
-    ctx = (data as BusinessContextRow) ?? ({
-      id: "",
-      business_id: business.id,
-      user_id: user.id,
-      agent_name: null,
-      user_profile: {},
-      user_research_log: [],
-      business_summary: null,
-      industry: null,
-      business_model: null,
-      target_customer: {},
-      value_proposition: null,
-      market_size: {},
-      competitors: [],
-      market_trends: [],
-      positioning_statement: null,
-      brand_voice: null,
-      key_differentiators: [],
-      financial_snapshot: {},
-      customer_signals: {},
-      open_questions: [],
-      telegram_chat_id: null,
-      last_research_run_at: null,
-      research_confidence_score: 0,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    } as BusinessContextRow);
+
+    if (data) {
+      ctx = data as BusinessContextRow;
+    } else {
+      // No context row — seed one with an agent name before any task upsert can
+      // create the row without it. If upsert fails, use an in-memory fallback so
+      // the build still runs (agent name won't persist but build completes).
+      const agentName = pickRandomAgentName();
+      console.log(`[orchestrator] no context found — seeding agent_name=${agentName} for business_id=${business.id}`);
+      ctx = await upsertBusinessContext(supabase, {
+        business_id: business.id,
+        user_id: user.id,
+        agent_name: agentName,
+      }).catch((err) => {
+        console.error("[orchestrator] context seed failed:", err);
+        return {
+          id: "",
+          business_id: business.id,
+          user_id: user.id,
+          agent_name: agentName,
+          user_profile: {},
+          user_research_log: [],
+          business_summary: null,
+          industry: null,
+          business_model: null,
+          target_customer: {},
+          value_proposition: null,
+          market_size: {},
+          competitors: [],
+          market_trends: [],
+          positioning_statement: null,
+          brand_voice: null,
+          key_differentiators: [],
+          financial_snapshot: {},
+          customer_signals: {},
+          open_questions: [],
+          telegram_chat_id: null,
+          last_research_run_at: null,
+          research_confidence_score: 0,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        } as BusinessContextRow;
+      });
+    }
   }
 
   // ── Which tasks already completed? ────────────────────────────────
