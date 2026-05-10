@@ -173,6 +173,7 @@ export async function runFreeBuild(
   // ── Execute each task (outer try guarantees free_build_run is never left running) ──
   try {
   for (const step of PIPELINE) {
+    console.log(`[orchestrator] starting task: ${step.slug} at ${new Date().toISOString()}`);
     let taskDef;
     try {
       taskDef = await getTaskBySlug(supabase, step.slug);
