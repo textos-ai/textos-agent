@@ -42,4 +42,7 @@ export interface Env {
   STRIPE_PRICE_ID_FOUNDER_LIFETIME: string;
   /** Unsplash API access key — used to fetch hero images for public business sites. */
   UNSPLASH_ACCESS_KEY: string;
+  /** R2 bucket for generated assets (logos, hero images, exports).
+   *  Optional until the bucket is provisioned and wired in wrangler.toml. */
+  ASSETS?: R2Bucket;
 }
