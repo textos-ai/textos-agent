@@ -12,6 +12,7 @@ import {
 import type { AnonymousSnapshot, AnonymousInput } from "../lib/anonymous-research";
 import { errBody } from "../lib/errors";
 import { log } from "../lib/logger";
+import { pickAgentName } from "../lib/agentNames";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -122,9 +123,12 @@ app.post("/callback", async (c) => {
           existing_business_url: input.url ?? undefined,
           existing_business_data: input.description ? { idea: input.description } : undefined,
         });
+        const agentName = await pickAgentName(supabase, auth.user_id);
+        log.info("snapshot_claim_agent_assigned", { user_id: auth.user_id, slug, agent_name: agentName });
         await upsertBusinessContext(supabase, {
           business_id: biz.id,
           user_id: auth.user_id,
+          agent_name: agentName,
           business_summary: snapshot.summary,
           industry: snapshot.industry,
           target_customer: snapshot.target_customer,
