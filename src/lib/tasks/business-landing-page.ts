@@ -8,7 +8,7 @@ function stripFences(s: string): string {
 export async function runBusinessLandingPage(tc: TaskCtx): Promise<TaskResult> {
   const { business, ctx, user, anthropic, emit, supabase, taskRunId, env } = tc;
 
-  const plannedUrl = `https://${business.slug}.app.textos.ai`;
+  const plannedUrl = `https://app.textos.ai/sites/${business.slug}`;
 
   await emit({ type: "cmd", text: `Generating public site for ${business.name}`, ts: Date.now() });
 

@@ -34,6 +34,7 @@ app.get("/tasks", async (c) => {
     `)
     .eq("status", "active")
     .neq("plan_required", "premium_inactive")
+    .neq("surface", "silent")
     .order("execution_order", { ascending: true, nullsFirst: false })
     .order("name", { ascending: true });
 
