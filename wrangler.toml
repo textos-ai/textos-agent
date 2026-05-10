@@ -48,9 +48,9 @@ id = "198fb2847eaa45f9b9d3102311832b9b"
 # max_batch_timeout = 30
 
 # Cloudflare R2 — generated documents, hero images, exports.
-# [[r2_buckets]]
-# binding = "ASSETS"
-# bucket_name = "textos-assets"
+[[r2_buckets]]
+binding = "ASSETS"
+bucket_name = "textos-assets"
 
 # Production environment — same Worker, separate name + secrets.
 # [env.prod]
