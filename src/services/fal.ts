@@ -94,6 +94,10 @@ export async function generateLogoImage(
   const apiKey = env.FAL_API_KEY;
   if (!apiKey || apiKey === "PLACEHOLDER") return null;
 
+  console.log(`[fal] key prefix=${apiKey?.slice(0, 8) || "MISSING"} len=${apiKey?.length || 0}`);
+  console.log(`[fal] endpoint=${FAL_ENDPOINT}`);
+  console.log(`[fal] prompt preview="${prompt.slice(0, 100)}..."`);
+
   try {
     const res = await fetch(FAL_ENDPOINT, {
       method: "POST",
@@ -109,9 +113,11 @@ export async function generateLogoImage(
       }),
     });
 
+    console.log(`[fal] response status=${res.status}`);
+
     if (!res.ok) {
-      const errText = await res.text().catch(() => "");
-      console.error(`[fal] Recraft V3 ${res.status}: ${errText.slice(0, 200)}`);
+      const errText = await res.text().catch(() => "(unable to read body)");
+      console.error(`[fal] error status=${res.status} body=${errText.slice(0, 500)}`);
       return null;
     }
 
@@ -119,6 +125,12 @@ export async function generateLogoImage(
       images?: Array<{ url: string; width?: number; height?: number }>;
       seed?: number;
     };
+
+    console.log(`[fal] response keys=${Object.keys(data).join(",")}`);
+    console.log(`[fal] images count=${data.images?.length || 0}`);
+    if (data.images?.[0]) {
+      console.log(`[fal] first image url=${data.images[0].url}`);
+    }
 
     const imageUrl = data.images?.[0]?.url;
     if (!imageUrl) return null;
