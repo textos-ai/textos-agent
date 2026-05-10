@@ -166,7 +166,7 @@ app.post("/callback", async (c) => {
         } catch (e) { log.warn("snapshot_claim_analytics_update_failed", { err: String(e) }); }
 
         claimed_business_slug = slug;
-        log.info("snapshot_claimed", { user_id: auth.user_id, slug });
+        log.info("snapshot_claimed", { user_id: auth.user_id, slug, name: snapshot.name });
       } catch (err) {
         // Non-fatal — user still signs in successfully; business just isn't pre-seeded
         log.warn("snapshot_claim_failed", { err: String(err) });

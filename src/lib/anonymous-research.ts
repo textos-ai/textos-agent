@@ -93,14 +93,16 @@ function buildIdea(input: AnonymousInput): string {
 }
 
 function buildPrompt(input: AnonymousInput, idea: string, pageContent: string, retryNote: string): string {
-  const urlSection = input.url ? `Existing URL: ${input.url}` : "";
-  const pageSection = pageContent ? `\nActual page content fetched from the URL:\n"""\n${pageContent}\n"""` : "";
+  const urlSection    = input.url    ? `Existing URL: ${input.url}`      : "";
+  const budgetSection = input.budget ? `Starting capital: ${input.budget}` : "";
+  const pageSection   = pageContent  ? `\nActual page content fetched from the URL:\n"""\n${pageContent}\n"""` : "";
 
-  return `Research this business and its market thoroughly.${retryNote}
+  const prompt = `Research this business and its market thoroughly.${retryNote}
 
 Business type: ${input.kind}
 ${urlSection}
 Idea / description: ${idea}
+${budgetSection}
 ${pageSection}
 
 Return EXACTLY this JSON object — no markdown, no extra keys, no comments:
@@ -124,6 +126,10 @@ Return EXACTLY this JSON object — no markdown, no extra keys, no comments:
   "key_differentiators": ["string", "string", "string"],
   "confidence": 75
 }`;
+
+  console.log(`[anon-research] kind=${input.kind} budget=${input.budget ?? "none"} prompt_length=${prompt.length}`);
+  if (input.budget) console.log(`[anon-research] budget injected: "${input.budget}"`);
+  return prompt;
 }
 
 export async function runAnonymousResearch(
