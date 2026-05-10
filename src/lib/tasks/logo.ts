@@ -21,8 +21,6 @@ export async function runLogo(tc: TaskCtx): Promise<TaskResult> {
   const result = await generateLogoImage(prompt, env);
 
   if (!result) {
-    // FAL_API_KEY missing or fal API error — fail the task cleanly.
-    // Orchestrator catches and continues pipeline; other tasks are unaffected.
     throw new Error(
       env.FAL_API_KEY
         ? "[logo] fal.ai Recraft V3 returned no image — check API key validity and quota"
@@ -30,59 +28,71 @@ export async function runLogo(tc: TaskCtx): Promise<TaskResult> {
     );
   }
 
-  // ── 3. Attempt R2 upload (optional — degrades to fal CDN URL if ASSETS unbound) ──
-  let assetUrl = result.image_url; // fal CDN URL (~24h TTL fallback)
-  let r2Uploaded = false;
-  const r2Key = `businesses/${business.id}/logo.png`;
+  console.log(`[logo] fal returned url=${result.image_url}`);
 
-  if (env.ASSETS) {
-    await emit({ type: "cmd", text: "Uploading logo to R2", ts: Date.now() });
-    try {
-      const imgRes = await fetch(result.image_url);
-      if (imgRes.ok) {
-        const body = await imgRes.arrayBuffer();
-        await env.ASSETS.put(r2Key, body, {
-          httpMetadata: { contentType: "image/png" },
-          customMetadata: {
-            business_id: business.id,
-            generated_at: new Date().toISOString(),
-          },
-        });
-        // R2 public URL — update once bucket has public access or a Worker serving route.
-        assetUrl = `https://assets.textos.ai/${r2Key}`;
-        r2Uploaded = true;
-        await emit({ type: "cmd", text: "Logo saved to R2", ts: Date.now() });
-      }
-    } catch (r2Err) {
-      // Non-fatal — keep fal CDN URL, log for ops visibility.
-      console.error("[logo] R2 upload failed — using fal CDN URL:", r2Err);
-      await emit({ type: "cmd", text: "[warn] R2 upload failed — using CDN URL", ts: Date.now() });
+  // ── 3. Download SVG bytes from fal CDN ────────────────────────────────────
+  let assetUrl = result.image_url; // fal CDN URL (fallback if R2 fails)
+  let r2Uploaded = false;
+  const r2Key = `businesses/${business.id}/logo.svg`;
+
+  await emit({ type: "cmd", text: "Uploading logo to R2", ts: Date.now() });
+
+  console.log(`[logo] downloading SVG bytes from fal CDN...`);
+  let svgBody: ArrayBuffer | null = null;
+  try {
+    const svgRes = await fetch(result.image_url);
+    console.log(`[logo] download status=${svgRes.status}`);
+    if (svgRes.ok) {
+      svgBody = await svgRes.arrayBuffer();
+      console.log(`[logo] downloaded bytes=${svgBody.byteLength}`);
+    } else {
+      console.error(`[logo] fal CDN download failed status=${svgRes.status}`);
     }
-  } else {
-    await emit({
-      type: "cmd",
-      text: "R2 not bound — logo URL stored as CDN reference (ephemeral)",
-      ts: Date.now(),
-    });
+  } catch (fetchErr) {
+    console.error(`[logo] fal CDN fetch threw:`, fetchErr);
   }
 
-  // ── 4. Persist to business_assets ─────────────────────────────────────────
+  // ── 4. Upload to R2 ───────────────────────────────────────────────────────
+  if (svgBody && env.ASSETS) {
+    try {
+      await env.ASSETS.put(r2Key, svgBody, {
+        httpMetadata: { contentType: "image/svg+xml" },
+        customMetadata: {
+          business_id: business.id,
+          generated_at: new Date().toISOString(),
+        },
+      });
+      console.log(`[logo] r2 upload ok key=${r2Key}`);
+      assetUrl = `https://assets.textos.ai/${r2Key}`;
+      r2Uploaded = true;
+      await emit({ type: "cmd", text: "Logo saved to R2", ts: Date.now() });
+    } catch (r2Err) {
+      console.error(`[logo] r2 upload FAILED:`, r2Err);
+      await emit({ type: "cmd", text: "[warn] R2 upload failed — using CDN URL", ts: Date.now() });
+    }
+  } else if (!env.ASSETS) {
+    console.log(`[logo] ASSETS binding not present — using fal CDN URL`);
+    await emit({ type: "cmd", text: "R2 not bound — logo URL stored as CDN reference (ephemeral)", ts: Date.now() });
+  }
+
+  // ── 5. Persist to business_assets ─────────────────────────────────────────
   await emit({ type: "cmd", text: "Saving logo to business assets", ts: Date.now() });
+  console.log(`[logo] inserting business_assets row assetUrl=${assetUrl}`);
 
   try {
-    await supabase.from("business_assets").insert({
-      business_id: business.id,
-      task_run_id: taskRunId,
+    const insertResult = await supabase.from("business_assets").insert({
+      business_id:   business.id,
+      task_run_id:   taskRunId,
       asset_type:    "logo",
       asset_subtype: "primary",
       asset_url:     assetUrl,
       asset_data: {
-        format:       "png",
+        format:       "svg",
         prompt:       result.prompt,
         generated_at: new Date().toISOString(),
       },
       metadata: {
-        model:       "recraft-v3",
+        model:       "fal-ai/recraft-v3",
         style:       result.style,
         seed:        result.seed ?? null,
         cost_cents:  8,
@@ -91,9 +101,9 @@ export async function runLogo(tc: TaskCtx): Promise<TaskResult> {
         fal_url:     result.image_url,
       },
     });
+    console.log(`[logo] business_assets insert result=${JSON.stringify(insertResult)}`);
   } catch (dbErr) {
-    // Non-fatal — log but don't fail the task over a DB write.
-    console.error("[logo] business_assets insert failed:", dbErr);
+    console.error(`[logo] business_assets insert FAILED:`, dbErr);
   }
 
   return {
