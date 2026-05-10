@@ -32,24 +32,19 @@ export function buildLogoPrompt(
   businessName: string,
   industry: string,
 ): string {
+  // Keep under Recraft V3's 1000-char limit. Template fixed portion is ~600 chars;
+  // variable hints are capped at 80 chars each by the Haiku system prompt.
   return `Professional vector logo mark for ${businessName}, a ${industry || "modern"} brand.
 
-Design brief: single abstract symbol that captures the brand's essence in one confident shape. ${brief.structure_hint}. Designed for infinite scalability — equally readable at 16px favicon and on a building facade.
+Design: single abstract symbol capturing the brand's essence in one confident shape. ${brief.structure_hint}. Scales from 16px favicon to billboard size.
 
 Visual language: ${brief.motif_hint}.
 Aesthetic: ${brief.aesthetic_hint}.
-Color palette: ${brief.color_hint}. Maximum 2 colors plus white.
+Colors: ${brief.color_hint}. Maximum 2 colors plus white.
 
-Style constraints:
-- Flat vector design, no gradients, no drop shadows, no 3D effects
-- No text, no letters, no numbers, no wordmarks
-- No clip-art conventions (no silhouettes of people, no generic icons like gears or lightbulbs unless conceptually essential)
-- Isolated on pure white background
-- Symmetric or deliberate asymmetry, never sloppy
-- Strong negative space, simple silhouette
-- Memorable at a glance, distinctive from competitors
+Constraints: Flat vector, no gradients, no shadows, no 3D. No text, letters, or numbers. No clip-art clichés (no gears, lightbulbs, globes, handshakes). Isolated on white. Strong negative space, simple silhouette, memorable at a glance.
 
-Reference quality: think Nike swoosh, Apple bitten apple, Airbnb bélo, Spotify wave — timeless marks that distill identity into geometry. Five years from now this logo should still feel right.`;
+Style: like Nike, Apple, Airbnb, Spotify marks — timeless geometry distilling identity.`;
 }
 
 // ── generateLogoImage ──────────────────────────────────────────────────────

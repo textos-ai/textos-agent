@@ -13,6 +13,14 @@ const DEFAULT_BRIEF: LogoBrief = {
   color_hint: "black mark on white",
 };
 
+// Strip markdown code fences Haiku sometimes wraps around JSON responses.
+function parseHaikuJson(text: string): Record<string, unknown> {
+  let cleaned = text.trim();
+  cleaned = cleaned.replace(/^```(?:json)?\s*/i, "");
+  cleaned = cleaned.replace(/\s*```$/i, "");
+  return JSON.parse(cleaned.trim()) as Record<string, unknown>;
+}
+
 async function generateLogoBrief(
   anthropic: Anthropic,
   businessName: string,
@@ -29,30 +37,23 @@ Given the business below, output ONLY a JSON object with 4 keys (no markdown, no
 
 {
   "structure_hint": "<one of three patterns: see below>",
-  "motif_hint": "<5-8 concrete visual words>",
-  "aesthetic_hint": "<2-4 word style tag>",
-  "color_hint": "<specific color description with hex>"
+  "motif_hint": "<5-8 concrete visual words, max 80 chars total>",
+  "aesthetic_hint": "<2-4 word style tag, max 40 chars>",
+  "color_hint": "<specific color description with hex, max 80 chars>"
 }
 
-structure_hint options (pick the one that fits the brand):
+structure_hint options (copy one exactly):
   - "Geometric construction using simple primitives (circles, triangles, lines) arranged with mathematical precision"
   - "Organic curves with natural flow, feels hand-considered but precise"
   - "Geometric foundation with one organic flourish that gives it character"
 
-motif_hint rules:
-  - 5-8 concrete visual words
-  - Avoid clichés (no lightbulbs for ideas, no globes for reach, no handshakes for partnership, no rocket ships for growth)
-  - Concrete imagery only
+motif_hint: 5-8 concrete visual words. No clichés (no lightbulbs, globes, handshakes, rocket ships).
 
-aesthetic_hint rules:
-  - 2-4 words
-  - Examples: "refined premium editorial" / "bold confident contemporary" / "warm approachable crafted" / "technical sharp precise"
+aesthetic_hint: 2-4 words. Examples: "refined premium editorial" / "bold confident contemporary" / "warm approachable crafted" / "technical sharp precise"
 
-color_hint rules:
-  - 1-2 specific colors with hex codes
-  - Max 2 colors plus white
-  - Examples: "deep forest green (#1a3a2e) with cream accent (#f5e6d3)" or "black mark, single coral accent (#ff6b4a)"
-  - Pull from accent_color if provided`;
+color_hint: 1-2 specific colors with hex codes, max 2 colors plus white. Examples: "deep forest green (#1a3a2e) with cream accent (#f5e6d3)" or "black mark, single coral accent (#ff6b4a)". Pull from accent_color if provided.
+
+CRITICAL: Output ONLY raw JSON. Do not wrap in markdown code fences. Do not include the word json as a prefix. Start your response with the opening { character.`;
 
   const diffs = Array.isArray(ctx.key_differentiators)
     ? (ctx.key_differentiators as string[]).join(", ")
@@ -75,7 +76,7 @@ color_hint rules:
     });
 
     const text = (msg.content[0] as { type: string; text: string }).text.trim();
-    const json = JSON.parse(text);
+    const json = parseHaikuJson(text);
     const brief: LogoBrief = {
       structure_hint: typeof json.structure_hint === "string" ? json.structure_hint : DEFAULT_BRIEF.structure_hint,
       motif_hint:     typeof json.motif_hint     === "string" ? json.motif_hint     : DEFAULT_BRIEF.motif_hint,
@@ -107,6 +108,7 @@ export async function runLogo(tc: TaskCtx): Promise<TaskResult> {
 
   // ── 2. Template the full Recraft prompt from brief ─────────────────────────
   const prompt = buildLogoPrompt(brief, business.name, ctx.industry ?? "");
+  console.log(`[logo] prompt length=${prompt.length}`);
   console.log(`[logo] full prompt:\n${prompt}`);
 
   // ── 3. Generate logo via fal.ai Recraft V3 ─────────────────────────────────
