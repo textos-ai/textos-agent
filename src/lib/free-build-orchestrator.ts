@@ -134,6 +134,21 @@ export async function runFreeBuild(
 
     if (data) {
       ctx = data as BusinessContextRow;
+      // Belt-and-suspenders: if the row exists but agent_name is NULL (can happen
+      // when a DB trigger pre-creates the row before createEmptyBusinessContext runs),
+      // assign a name now so the pipeline uses and persists it.
+      if (!ctx.agent_name) {
+        const agentName = pickRandomAgentName();
+        console.log(`[orchestrator] ctx exists but agent_name NULL — assigning ${agentName} for business_id=${business.id}`);
+        ctx = await upsertBusinessContext(supabase, {
+          business_id: business.id,
+          user_id: user.id,
+          agent_name: agentName,
+        }).catch((err) => {
+          console.error("[orchestrator] agent_name fill failed:", err);
+          return { ...ctx, agent_name: agentName };
+        });
+      }
     } else {
       // No context row — seed one with an agent name before any task upsert can
       // create the row without it. If upsert fails, use an in-memory fallback so

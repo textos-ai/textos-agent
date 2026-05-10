@@ -309,10 +309,18 @@ export async function createEmptyBusinessContext(
   userId: string,
   agentName?: string,
 ): Promise<void> {
-  const { error } = await client
+  console.log(`[createEmptyBusinessContext] businessId=${businessId} agentName="${agentName}"`);
+  // UPSERT so a pre-existing row (e.g. created by a DB trigger) gets agent_name
+  // set rather than causing an INSERT conflict that silently drops the name.
+  const { data, error } = await client
     .from("business_context")
-    .insert({ business_id: businessId, user_id: userId, agent_name: agentName ?? null });
-
+    .upsert(
+      { business_id: businessId, user_id: userId, agent_name: agentName ?? null },
+      { onConflict: "business_id" },
+    )
+    .select("agent_name")
+    .single();
+  console.log(`[createEmptyBusinessContext] saved agent_name="${data?.agent_name}" error=${error ? JSON.stringify(error) : "none"}`);
   if (error) throw error;
 }
 
