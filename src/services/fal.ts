@@ -5,16 +5,18 @@
  * Model: fal-ai/recraft-v3 (vector_illustration style)
  * Endpoint: https://fal.run/fal-ai/recraft-v3
  * Auth: Authorization: Key <FAL_API_KEY>
- *
- * Output is a PNG URL (vector-illustration aesthetic).
- * Store URL in business_assets; asset_type='logo' is the distinguishing field.
- * URL is ephemeral (fal CDN, ~24h TTL). R2 persistence is V1.1.
  */
 
 import type { Env } from "../env";
-import type { BusinessContextRow } from "./supabase";
 
 const FAL_ENDPOINT = "https://fal.run/fal-ai/recraft-v3";
+
+export interface LogoBrief {
+  structure_hint: string;
+  motif_hint: string;
+  aesthetic_hint: string;
+  color_hint: string;
+}
 
 export interface LogoResult {
   image_url: string;
@@ -23,66 +25,31 @@ export interface LogoResult {
   seed?: number;
 }
 
-// ── Industry bucket → style hint for prompt ────────────────────────────────
-
-const INDUSTRY_STYLE: Record<string, string> = {
-  food:     "warm earthy tones, organic flowing shapes, culinary motif",
-  nature:   "botanical illustration style, green and earth tones, leaf or plant motif",
-  health:   "clean rounded forms, calming muted palette, wellness symbol",
-  creative: "dynamic geometric shapes, bold accent color, expressive abstract mark",
-  fashion:  "elegant minimal lines, refined monochrome palette, luxury aesthetic",
-  finance:  "solid geometric forms, navy or charcoal palette, professional mark",
-  tech:     "sharp geometric, modern angular forms, navy or deep blue accent",
-  trade:    "strong bold shapes, industrial aesthetic, grounded dark palette",
-  default:  "clean minimal geometric shapes, professional, versatile mark",
-};
-
-function detectBucket(industry: string, summary: string): string {
-  const text = `${industry} ${summary}`.toLowerCase();
-  if (/food|culinary|restaurant|chef|cater|bak|cafe|kitchen|dining/.test(text)) return "food";
-  if (/organic|plant|green|nature|eco|garden|sustain|botanical/.test(text))     return "nature";
-  if (/health|wellness|yoga|fitness|therapy|medical|nutrition/.test(text))       return "health";
-  if (/art|design|creat|studio|gallery|photo|film|media|brand|illustrat/.test(text)) return "creative";
-  if (/fashion|clothing|apparel|jewelry|luxury|style|boutique/.test(text))       return "fashion";
-  if (/finance|financial|account|law|legal|consult|advisory|insurance/.test(text)) return "finance";
-  if (/tech|software|saas|digital|app|platform|ai\b|data|cloud|developer/.test(text)) return "tech";
-  if (/construct|trade|contractor|manufactur|logistic|supply|repair/.test(text)) return "trade";
-  return "default";
-}
-
 // ── buildLogoPrompt ────────────────────────────────────────────────────────
 
 export function buildLogoPrompt(
-  ctx: Pick<BusinessContextRow, "industry" | "business_summary" | "brand_voice" | "key_differentiators">,
+  brief: LogoBrief,
+  businessName: string,
+  industry: string,
 ): string {
-  const industry = ctx.industry ?? "business";
-  const summary  = ctx.business_summary ?? "";
-  const voice    = (ctx.brand_voice ?? "professional").toLowerCase();
-  const diffs    = Array.isArray(ctx.key_differentiators)
-    ? (ctx.key_differentiators as string[]).slice(0, 1).join("")
-    : "";
+  return `Professional vector logo mark for ${businessName}, a ${industry || "modern"} brand.
 
-  const bucket    = detectBucket(industry, summary);
-  const styleHint = INDUSTRY_STYLE[bucket] ?? INDUSTRY_STYLE.default;
+Design brief: single abstract symbol that captures the brand's essence in one confident shape. ${brief.structure_hint}. Designed for infinite scalability — equally readable at 16px favicon and on a building facade.
 
-  let aesthetic = "minimal and professional";
-  if (/bold|direct|confident/.test(voice))        aesthetic = "bold and confident";
-  else if (/warm|friendly|approachable/.test(voice)) aesthetic = "approachable and warm";
-  else if (/luxury|premium|refined/.test(voice))   aesthetic = "refined and premium";
-  else if (/playful|fun|energetic/.test(voice))    aesthetic = "playful and energetic";
+Visual language: ${brief.motif_hint}.
+Aesthetic: ${brief.aesthetic_hint}.
+Color palette: ${brief.color_hint}. Maximum 2 colors plus white.
 
-  const concept = diffs
-    ? `icon representing ${diffs.trim()}`
-    : `icon for a ${industry} business`;
+Style constraints:
+- Flat vector design, no gradients, no drop shadows, no 3D effects
+- No text, no letters, no numbers, no wordmarks
+- No clip-art conventions (no silhouettes of people, no generic icons like gears or lightbulbs unless conceptually essential)
+- Isolated on pure white background
+- Symmetric or deliberate asymmetry, never sloppy
+- Strong negative space, simple silhouette
+- Memorable at a glance, distinctive from competitors
 
-  return [
-    `Vector logo mark — ${concept}.`,
-    styleHint + ".",
-    `Aesthetic: ${aesthetic}.`,
-    "Clean isolated symbol on white background.",
-    "No text. No letters. No words.",
-    "Single cohesive shape, scales cleanly at any size.",
-  ].join(" ");
+Reference quality: think Nike swoosh, Apple bitten apple, Airbnb bélo, Spotify wave — timeless marks that distill identity into geometry. Five years from now this logo should still feel right.`;
 }
 
 // ── generateLogoImage ──────────────────────────────────────────────────────
