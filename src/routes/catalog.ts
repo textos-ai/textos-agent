@@ -77,7 +77,7 @@ function deriveCategory(task: any): string {
       s === "launch-tweet" || s === "social-content-plan") {
     return "Marketing & Outreach";
   }
-  if (s === "personal-landing-page" || s === "public-business-website" ||
+  if (s === "business-landing-page" || s === "public-business-website" ||
       s === "business-website") {
     return "Web Presence";
   }

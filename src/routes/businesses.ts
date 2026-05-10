@@ -370,7 +370,7 @@ function extractOutputSummary(
         : null;
     case "launch-tweet":
       return typeof data.tweet === "string" ? truncate(data.tweet) : null;
-    case "personal-landing-page":
+    case "business-landing-page":
       return typeof data.url === "string" ? `Live at ${data.url}` : null;
     case "mission-document":
       return typeof data.mission === "string"

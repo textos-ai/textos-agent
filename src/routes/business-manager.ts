@@ -195,8 +195,8 @@ app.get("/:slug/manage-data", async (c) => {
     },
     {
       name: "Business site",
-      status: completedSlugs.has("personal-landing-page") ? "live" : "paused",
-      metric: completedSlugs.has("personal-landing-page") ? "Live" : "Not started",
+      status: completedSlugs.has("business-landing-page") ? "live" : "paused",
+      metric: completedSlugs.has("business-landing-page") ? "Live" : "Not started",
     },
     {
       name: "Paid ads",

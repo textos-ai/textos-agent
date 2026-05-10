@@ -135,34 +135,26 @@ async function runSimulation(
   await delay(600);
 
   const tasks: Array<[string, string, string, string]> = [
-    ["research-strategy",        "Research Strategy",       "sim-1", "Strategy locked. Confidence 78%."],
-    ["welcome-email",            "Welcome Email",           "sim-2", "Welcome email dispatched."],
-    ["launch-tweet",             "Launch Tweet",            "sim-3", "Tweet drafted and ready to post."],
-    ["personal-landing-page",    "Personal Landing Page",   "sim-4", "Personal site planned."],
-    ["mission-document",         "Mission Document",        "sim-5", "Mission + vision + values documented."],
-    ["task-queue-built",         "Task Queue",              "sim-6", "24 tasks staged."],
-    ["dashboard-briefing",       "Dashboard Briefing",      "sim-7", "Briefing ready."],
-    ["personalized-pitch-email", "Personalized Pitch Email","sim-8", "Personalized pitch delivered."],
-    ["tam-sam-som",              "Market Sizing",           "sim-9", "TAM visible; SAM/SOM unlock on subscription."],
+    ["research-strategy",     "Research Strategy",     "sim-1", "Strategy locked. Confidence 78%."],
+    ["mission-document",      "Mission Document",      "sim-2", "Mission + vision + values documented."],
+    ["logo",                  "Logo",                  "sim-3", "SVG logo generated."],
+    ["business-landing-page", "Business Landing Page", "sim-4", "Landing page built."],
+    ["launch-tweet",          "Launch Tweet",          "sim-5", "Tweet drafted and ready to post."],
   ];
 
   const cmds: Record<string, string[]> = {
-    "research-strategy":        [`Searching: "${businessName}" market size 2025`, `Deep searching: ${businessName} competitors`],
-    "welcome-email":            ["Drafting welcome email", "Queuing via SendGrid"],
-    "launch-tweet":             ["Drafting tweet with brand voice"],
-    "personal-landing-page":    ["Generating personal website", `Deploying to ${userId.slice(0, 8)}.app.textos.ai`],
-    "mission-document":         ["Writing mission document", "Saving to business context"],
-    "task-queue-built":         ["Proposing 3 immediate tasks", "Staging 21 paid-bundle tasks"],
-    "dashboard-briefing":       ["Generating executive briefing"],
-    "personalized-pitch-email": [`Sending pitch to ${userId.slice(0, 8)}@…`],
-    "tam-sam-som":              ["Calculating TAM/SAM/SOM from research"],
+    "research-strategy":     [`Searching: "${businessName}" market size 2025`, `Deep searching: ${businessName} competitors`],
+    "mission-document":      ["Writing mission document", "Saving to business context"],
+    "logo":                  ["Generating SVG logo with Recraft V3", "Saving to business assets"],
+    "business-landing-page": ["Generating business landing page", "Writing SEO metadata"],
+    "launch-tweet":          ["Drafting tweet with brand voice"],
   };
 
   const narratives: Record<string, string> = {
-    "research-strategy":  "Market is larger than expected — found 3 underserved segments.",
-    "mission-document":   "Writing the mission — this defines everything downstream.",
-    "personalized-pitch-email": "Writing a pitch email that actually knows who you are.",
-    "tam-sam-som":        "Market is real and measurable.",
+    "research-strategy":     "Market is larger than expected — found 3 underserved segments.",
+    "mission-document":      "Writing the mission — this defines everything downstream.",
+    "logo":                  "Visual identity locked — SVG vector logo ready.",
+    "business-landing-page": "Landing page built and ready for deployment.",
   };
 
   for (const [taskSlug, taskName, taskRunId, summary] of tasks) {

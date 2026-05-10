@@ -5,7 +5,7 @@ function stripFences(s: string): string {
   return s.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/i, "").trim();
 }
 
-export async function runPersonalLandingPage(tc: TaskCtx): Promise<TaskResult> {
+export async function runBusinessLandingPage(tc: TaskCtx): Promise<TaskResult> {
   const { business, ctx, user, anthropic, emit, supabase, taskRunId, env } = tc;
 
   const plannedUrl = `https://${business.slug}.app.textos.ai`;

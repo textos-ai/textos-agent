@@ -12,12 +12,11 @@ app.use("*", requireAuth);
 // Also used as JS-side fallback so ordering is deterministic even if the
 // DB values haven't been applied yet.
 const CURRICULUM_ORDER: Record<string, number> = {
-  "research-strategy": 10,
-  "tam-sam-som": 20,
-  "mission-document": 30,
-  "personal-landing-page": 40,
-  "launch-tweet": 50,
-  "personalized-pitch-email": 60,
+  "research-strategy":    10,
+  "mission-document":     20,
+  "logo":                 30,
+  "business-landing-page": 40,
+  "launch-tweet":         50,
 };
 
 const CURRICULUM_TASK_SLUGS = Object.keys(CURRICULUM_ORDER);
@@ -434,26 +433,21 @@ app.get("/badges", async (c) => {
 
   const { data: badgeDetails } = await supabase
     .from("badges")
-    .select("id, tier, slug, name, description, icon_emoji")
+    .select("id, tier, slug, name, description, icon_emoji, display_order")
     .in("id", badgeIds);
 
-  const detailMap = new Map((badgeDetails ?? []).map((b) => [b.id, b]));
   const earnedAtMap = new Map((earnings ?? []).map((e) => [e.badge_id, e.earned_at]));
 
-  const earned = badgeIds
-    .map((id) => {
-      const b = detailMap.get(id);
-      if (!b) return null;
-      return {
-        tier: b.tier,
-        slug: b.slug,
-        name: b.name,
-        description: b.description,
-        icon_emoji: b.icon_emoji,
-        earned_at: earnedAtMap.get(id) ?? null,
-      };
-    })
-    .filter(Boolean);
+  const earned = (badgeDetails ?? [])
+    .sort((a, b) => (((a as Record<string, unknown>).display_order as number) ?? 99) - (((b as Record<string, unknown>).display_order as number) ?? 99))
+    .map((b) => ({
+      tier: b.tier,
+      slug: b.slug,
+      name: b.name,
+      description: b.description,
+      icon_emoji: b.icon_emoji,
+      earned_at: earnedAtMap.get(b.id) ?? null,
+    }));
 
   return c.json({ earned });
 });

@@ -21,7 +21,7 @@ import { extractErrorMessage } from "./extract-error";
 import { runResearchStrategy } from "./tasks/research-strategy";
 import { runWelcomeEmail } from "./tasks/welcome-email";
 import { runLaunchTweet } from "./tasks/launch-tweet";
-import { runPersonalLandingPage } from "./tasks/personal-landing-page";
+import { runBusinessLandingPage } from "./tasks/business-landing-page";
 import { runMissionDocument } from "./tasks/mission-document";
 import { runTaskQueueBuilt } from "./tasks/task-queue-built";
 import { runDashboardBriefing } from "./tasks/dashboard-briefing";
@@ -35,7 +35,7 @@ const PIPELINE: Array<{ slug: string; name: string; fn: TaskFn }> = [
   { slug: "research-strategy",       name: "Research Strategy",      fn: runResearchStrategy },
   { slug: "welcome-email",           name: "Welcome Email",          fn: runWelcomeEmail },
   { slug: "launch-tweet",            name: "Launch Tweet",           fn: runLaunchTweet },
-  { slug: "personal-landing-page",   name: "Personal Landing Page",  fn: runPersonalLandingPage },
+  { slug: "business-landing-page",   name: "Business Landing Page",  fn: runBusinessLandingPage },
   { slug: "mission-document",        name: "Mission Document",       fn: runMissionDocument },
   { slug: "task-queue-built",        name: "Task Queue",             fn: runTaskQueueBuilt },
   { slug: "dashboard-briefing",      name: "Dashboard Briefing",     fn: runDashboardBriefing },
@@ -379,7 +379,7 @@ function extractSummary(slug: string, data: Record<string, unknown>): string {
       return s(data.preview) || "Welcome email staged.";
     case "launch-tweet":
       return s(data.tweet) || "Tweet drafted.";
-    case "personal-landing-page":
+    case "business-landing-page":
       return typeof data.url === "string" ? `Site planned at ${data.url}` : "Landing page generated.";
     case "mission-document":
       return s(data.mission) || "Mission documented.";
