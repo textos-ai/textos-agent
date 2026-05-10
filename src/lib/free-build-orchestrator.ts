@@ -24,26 +24,21 @@ import { runLaunchTweet } from "./tasks/launch-tweet";
 import { runBusinessLandingPage } from "./tasks/business-landing-page";
 import { runLogo } from "./tasks/logo";
 import { runMissionDocument } from "./tasks/mission-document";
-import { runTaskQueueBuilt } from "./tasks/task-queue-built";
 import { runDashboardBriefing } from "./tasks/dashboard-briefing";
-import { runPersonalizedPitchEmail } from "./tasks/personalized-pitch-email";
-import { runTamSamSom } from "./tasks/tam-sam-som";
-import { runDaycycleConnect } from "./tasks/daycycle-connect";
 
-// The 9 free-build tasks in execution order.
-// research-strategy runs first because all other tasks read from business_context.
+// Free-build pipeline — execution order is intentional:
+// welcome-email first (user confirmation before heavy work),
+// research-strategy second (all downstream tasks read from business_context),
+// mission-document before logo (brand voice established before visual identity),
+// business-landing-page after logo (can reference logo URL in hero).
 const PIPELINE: Array<{ slug: string; name: string; fn: TaskFn }> = [
-  { slug: "research-strategy",       name: "Research Strategy",      fn: runResearchStrategy },
-  { slug: "welcome-email",           name: "Welcome Email",          fn: runWelcomeEmail },
-  { slug: "launch-tweet",            name: "Launch Tweet",           fn: runLaunchTweet },
-  { slug: "logo",                    name: "Logo",                   fn: runLogo },
-  { slug: "business-landing-page",   name: "Business Landing Page",  fn: runBusinessLandingPage },
-  { slug: "mission-document",        name: "Mission Document",       fn: runMissionDocument },
-  { slug: "task-queue-built",        name: "Task Queue",             fn: runTaskQueueBuilt },
-  { slug: "dashboard-briefing",      name: "Dashboard Briefing",     fn: runDashboardBriefing },
-  { slug: "personalized-pitch-email",name: "Personalized Pitch Email",fn: runPersonalizedPitchEmail },
-  { slug: "tam-sam-som",             name: "Market Sizing",          fn: runTamSamSom },
-  { slug: "daycycle-connect",        name: "DayCycle Setup",         fn: runDaycycleConnect },
+  { slug: "welcome-email",          name: "Welcome Email",         fn: runWelcomeEmail },
+  { slug: "research-strategy",      name: "Research Strategy",     fn: runResearchStrategy },
+  { slug: "mission-document",       name: "Mission Document",      fn: runMissionDocument },
+  { slug: "logo",                   name: "Logo",                  fn: runLogo },
+  { slug: "business-landing-page",  name: "Business Landing Page", fn: runBusinessLandingPage },
+  { slug: "launch-tweet",           name: "Launch Tweet",          fn: runLaunchTweet },
+  { slug: "dashboard-briefing",     name: "Dashboard Briefing",    fn: runDashboardBriefing },
 ];
 
 /**
