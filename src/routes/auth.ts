@@ -121,7 +121,19 @@ app.post("/callback", async (c) => {
           name: snapshot.name,
           kind: input.kind === "existing" ? "existing" : input.kind === "find_for_me" ? "find_for_me" : "new_idea",
           existing_business_url: input.url ?? undefined,
-          existing_business_data: input.description ? { idea: input.description } : undefined,
+          // find_for_me: preserve interests+budget so research-strategy has context.
+          // new_idea/existing: preserve description as idea.
+          // Without this, find_for_me snapshot claims lost interests → Sonnet generated
+          // generic "Venture Clarity"-style placeholder businesses.
+          existing_business_data:
+            input.kind === "find_for_me"
+              ? {
+                  interests: input.interests ?? "",
+                  ...(input.budget ? { budget: input.budget } : {}),
+                }
+              : input.description
+              ? { idea: input.description }
+              : undefined,
         });
         const agentName = await pickAgentName(supabase, auth.user_id);
         log.info("snapshot_claim_agent_assigned", { user_id: auth.user_id, slug, agent_name: agentName });

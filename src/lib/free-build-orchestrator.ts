@@ -198,6 +198,21 @@ export async function runFreeBuild(
   // ── Which tasks already completed? ────────────────────────────────
   const doneTaskSlugs = await getCompletedTaskRunSlugs(supabase, business.id);
 
+  // ── Diagnostic: log state before pipeline starts ─────────────────
+  console.log("[orchestrator] pipeline_start", JSON.stringify({
+    business_id: business.id,
+    business_name: business.name,
+    business_kind: business.kind,
+    business_slug: business.slug,
+    ctx_business_summary: ctx.business_summary?.slice(0, 80) ?? null,
+    ctx_industry: ctx.industry,
+    ctx_value_proposition: ctx.value_proposition?.slice(0, 80) ?? null,
+    ctx_agent_name: ctx.agent_name,
+    existing_business_data_keys: business.existing_business_data
+      ? Object.keys(business.existing_business_data as Record<string, unknown>)
+      : [],
+  }));
+
   await emit({ type: "narrative", text: `Initializing ${ctx.agent_name ?? "TextOS agent"} for ${business.name}…`, ts: Date.now() });
   await emit({ type: "cmd", text: "Spinning up research sandbox", ts: Date.now() });
 
@@ -288,6 +303,13 @@ export async function runFreeBuild(
     // overwrite state='complete' back to 'failed'.
     let taskCompleted = false;
     try {
+      console.log(`[orchestrator] task_ctx_snapshot task=${step.slug}`, JSON.stringify({
+        business_id: business.id,
+        business_name: business.name,
+        ctx_business_summary: ctx.business_summary?.slice(0, 80) ?? null,
+        ctx_industry: ctx.industry,
+        ctx_value_proposition: ctx.value_proposition?.slice(0, 80) ?? null,
+      }));
       const result = await step.fn(taskCtx);
 
       // Persist task_run output — after this succeeds, task is done

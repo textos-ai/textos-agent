@@ -245,6 +245,7 @@ export async function runResearchStrategy(tc: TaskCtx): Promise<TaskResult> {
 
   // ── Update businesses.name with AI-classified name ───────────────────
   const classifiedName = parsed.business_name as string;
+  console.log(`[research-strategy] name_reclassification business_id=${business.id} original="${business.name}" classified="${classifiedName}" industry="${parsed.industry}"`);
   try {
     await supabase
       .from("businesses")
