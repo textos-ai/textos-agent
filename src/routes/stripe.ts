@@ -3,7 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Env } from "../env";
 import { createSupabaseClient } from "../services/supabase";
 import { errBody } from "../lib/errors";
-import { log } from "../lib/logger";
+import { log, persistError } from "../lib/logger";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -164,6 +164,7 @@ async function markError(supabase: SupabaseClient, eventId: string, errMsg: stri
   if (error) {
     log.error("[stripe-webhook] mark_error_update_failed", { event_id: eventId, original_err: errMsg, update_err: error.message });
   }
+  await persistError(supabase, "error", "[stripe-webhook]", errMsg, { event_id: eventId });
 }
 
 // ── Event handlers ─────────────────────────────────────────────────────────
@@ -759,6 +760,7 @@ app.post("/webhook", async (c) => {
         event_id: eventId,
         err: insertError.message,
       });
+      await persistError(supabase, "error", "[stripe-webhook]", "stripe_events_insert_failed", { event_id: eventId, err: insertError.message });
       return c.json(errBody("internal", "stripe_events_insert_failed"), 500);
     }
   }

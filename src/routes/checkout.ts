@@ -4,7 +4,7 @@ import type { Env } from "../env";
 import { requireAuth } from "../lib/jwt";
 import { createSupabaseClient } from "../services/supabase";
 import { errBody } from "../lib/errors";
-import { log } from "../lib/logger";
+import { log, persistError } from "../lib/logger";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -97,6 +97,7 @@ app.post("/subscription", async (c) => {
 
   if (bizErr && bizErr.code !== "PGRST116") {
     log.error("[checkout] business_lookup_failed", { user_id, business_id, err: bizErr.message });
+    await persistError(supabase, "error", "[checkout]", "business_lookup_failed", { user_id, business_id, err: bizErr.message });
     return c.json(errBody("internal", "business_lookup_failed"), 500);
   }
   if (!business) {
@@ -117,6 +118,7 @@ app.post("/subscription", async (c) => {
       business_id,
       err: subCheckErr.message,
     });
+    await persistError(supabase, "error", "[checkout]", "subscription_precheck_failed", { user_id, business_id, err: subCheckErr.message });
     return c.json(errBody("internal", "subscription_precheck_failed"), 500);
   }
   if (existingSub) {
@@ -133,6 +135,7 @@ app.post("/subscription", async (c) => {
       business_id,
       err: err instanceof Error ? err.message : String(err),
     });
+    await persistError(supabase, "error", "[checkout]", "customer_create_failed", { user_id, business_id, err: err instanceof Error ? err.message : String(err) });
     return c.json(errBody("upstream_error", "customer_create_failed"), 502);
   }
 
@@ -162,6 +165,7 @@ app.post("/subscription", async (c) => {
       business_id,
       err: body,
     });
+    await persistError(supabase, "error", "[checkout]", "subscription_session_create_failed", { user_id, business_id, err: body });
     return c.json(errBody("upstream_error", "subscription_session_create_failed"), 502);
   }
 
@@ -221,6 +225,7 @@ app.post("/topup", async (c) => {
 
   if (bizErr && bizErr.code !== "PGRST116") {
     log.error("[checkout] business_lookup_failed", { user_id, business_id, err: bizErr.message });
+    await persistError(supabase, "error", "[checkout]", "business_lookup_failed", { user_id, business_id, err: bizErr.message });
     return c.json(errBody("internal", "business_lookup_failed"), 500);
   }
   if (!business) {
@@ -241,6 +246,7 @@ app.post("/topup", async (c) => {
       business_id,
       err: subCheckErr.message,
     });
+    await persistError(supabase, "error", "[checkout]", "subscription_precheck_failed", { user_id, business_id, err: subCheckErr.message });
     return c.json(errBody("internal", "subscription_precheck_failed"), 500);
   }
   if (!activeSub) {
@@ -257,6 +263,7 @@ app.post("/topup", async (c) => {
       business_id,
       err: err instanceof Error ? err.message : String(err),
     });
+    await persistError(supabase, "error", "[checkout]", "customer_create_failed", { user_id, business_id, err: err instanceof Error ? err.message : String(err) });
     return c.json(errBody("upstream_error", "customer_create_failed"), 502);
   }
 
@@ -287,6 +294,7 @@ app.post("/topup", async (c) => {
       bundle,
       err: body,
     });
+    await persistError(supabase, "error", "[checkout]", "topup_session_create_failed", { user_id, business_id, bundle, err: body });
     return c.json(errBody("upstream_error", "topup_session_create_failed"), 502);
   }
 
