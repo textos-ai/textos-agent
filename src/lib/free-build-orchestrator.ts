@@ -16,6 +16,12 @@ import {
   upsertBusinessContext,
 } from "../services/supabase";
 import type { TaskCtx, TaskFn } from "./tasks/types";
+import {
+  runTaskWithDeduction,
+  InsufficientTokensError,
+  SubscriptionRequiredError,
+} from "./withTokenDeduction";
+import { log } from "./logger";
 import { extractErrorMessage } from "./extract-error";
 import { pickRandomAgentName } from "./agentNames";
 
@@ -310,7 +316,7 @@ export async function runFreeBuild(
         ctx_industry: ctx.industry,
         ctx_value_proposition: ctx.value_proposition?.slice(0, 80) ?? null,
       }));
-      const result = await step.fn(taskCtx);
+      const result = await runTaskWithDeduction(step, taskCtx);
 
       // Persist task_run output — after this succeeds, task is done
       await completeTaskRun(supabase, taskRunId, result.output_data);
@@ -342,6 +348,92 @@ export async function runFreeBuild(
         ts: Date.now(),
       });
     } catch (err) {
+      // Billing errors halt the build entirely (return), not just this task.
+      // Extra fields on the emit are preserved in stream_events.event_data JSONB
+      // for Phase 7 frontend to read when deciding which recovery modal to show.
+      if (err instanceof InsufficientTokensError) {
+        try {
+          await failTaskRun(supabase, taskRunId, "insufficient_tokens");
+        } catch (failErr) {
+          log.error("[orchestrator] fail_task_run_during_billing_error", {
+            business_id: business.id,
+            task_run_id: taskRunId,
+            original_error: "insufficient_tokens",
+            fail_err: failErr instanceof Error ? failErr.message : String(failErr),
+          });
+        }
+        // stream_events.event_data is JSONB — extra fields beyond the StreamEvent
+        // type are preserved in storage. Phase 7 reads them from the JSONB column.
+        // V1.1: extend StreamEvent union with a billing-specific task_failed variant.
+        await emit({
+          type: "task_failed",
+          task_slug: step.slug,
+          task_name: step.name,
+          task_run_id: taskRunId,
+          error: err.message,
+          available: err.details.available,
+          requested: err.details.requested,
+          deficit: err.details.deficit,
+          bundle_suggestions: err.details.bundle_suggestions,
+          ts: Date.now(),
+        } as unknown as StreamEvent);
+        try {
+          await updateFreeBuildRun(supabase, runId, {
+            status: "failed",
+            failure_reason: "insufficient_tokens",
+            failed_at: new Date().toISOString(),
+          });
+        } catch (updateErr) {
+          log.error("[orchestrator] update_run_during_billing_error", {
+            business_id: business.id,
+            run_id: runId,
+            original_error: "insufficient_tokens",
+            update_err: updateErr instanceof Error ? updateErr.message : String(updateErr),
+          });
+        }
+        return;
+      }
+
+      if (err instanceof SubscriptionRequiredError) {
+        try {
+          await failTaskRun(supabase, taskRunId, "subscription_required");
+        } catch (failErr) {
+          log.error("[orchestrator] fail_task_run_during_billing_error", {
+            business_id: business.id,
+            task_run_id: taskRunId,
+            original_error: "subscription_required",
+            fail_err: failErr instanceof Error ? failErr.message : String(failErr),
+          });
+        }
+        // stream_events.event_data is JSONB — extra fields beyond the StreamEvent
+        // type are preserved in storage. Phase 7 reads them from the JSONB column.
+        // V1.1: extend StreamEvent union with a billing-specific task_failed variant.
+        await emit({
+          type: "task_failed",
+          task_slug: step.slug,
+          task_name: step.name,
+          task_run_id: taskRunId,
+          error: err.message,
+          token_cost: err.details.token_cost,
+          ts: Date.now(),
+        } as unknown as StreamEvent);
+        try {
+          await updateFreeBuildRun(supabase, runId, {
+            status: "failed",
+            failure_reason: "subscription_required",
+            failed_at: new Date().toISOString(),
+          });
+        } catch (updateErr) {
+          log.error("[orchestrator] update_run_during_billing_error", {
+            business_id: business.id,
+            run_id: runId,
+            original_error: "subscription_required",
+            update_err: updateErr instanceof Error ? updateErr.message : String(updateErr),
+          });
+        }
+        return;
+      }
+
       const errMsg = extractErrorMessage(err);
       if (!taskCompleted) {
         // Task itself failed — transition task_run to failed
