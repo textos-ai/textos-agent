@@ -23,6 +23,7 @@ import operatorSchoolRoutes from "./routes/operator-school";
 import settingsRoutes from "./routes/settings";
 import generateStoriesRoutes from "./routes/generate-stories";
 import marketingCarouselsRoutes from "./routes/marketing-carousels";
+import billingRoutes from "./routes/billing";
 import { runHeartbeatWatchdog } from "./cron/heartbeatWatchdog";
 import { createClient } from "@supabase/supabase-js";
 
@@ -66,6 +67,7 @@ app.route("/api/operator-school", operatorSchoolRoutes);
 app.route("/api/settings", settingsRoutes);
 app.route("/api/generate-stories", generateStoriesRoutes);
 app.route("/api/businesses", marketingCarouselsRoutes);
+app.route("/api/businesses", billingRoutes);
 
 app.notFound((c) =>
   c.json(
