@@ -40,6 +40,14 @@ export interface Env {
   STRIPE_PRICE_ID_CORE_MONTHLY: string;
   /** Stripe price ID for Founder Lifetime ($49.99 one-time). */
   STRIPE_PRICE_ID_FOUNDER_LIFETIME: string;
+  /** Stripe price ID for Standard Monthly subscription ($49.99/mo, 3-day trial). */
+  STRIPE_PRICE_STANDARD_MONTHLY: string;
+  /** Stripe price ID for Top-up bundle: 10 tokens for $9.99 (one-time). */
+  STRIPE_PRICE_TOPUP_10: string;
+  /** Stripe price ID for Top-up bundle: 30 tokens for $24.99 (one-time). */
+  STRIPE_PRICE_TOPUP_30: string;
+  /** Stripe price ID for Top-up bundle: 75 tokens for $49.99 (one-time). */
+  STRIPE_PRICE_TOPUP_75: string;
   /** Unsplash API access key — used to fetch hero images for public business sites. */
   UNSPLASH_ACCESS_KEY: string;
   /** R2 bucket for generated assets (logos, hero images, exports). */
