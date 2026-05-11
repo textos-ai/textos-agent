@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { z } from "zod";
 import type { Env } from "../env";
 import { requireAuth } from "../lib/jwt";
 import { requireAdmin } from "../lib/admin";
@@ -259,6 +260,62 @@ admin.post("/backfill-public-site", async (c) => {
   }
 
   return c.json({ ok: true, processed: results.length, results });
+});
+
+// ── POST /admin/grant-tokens ──────────────────────────────────────────────
+const GrantTokensBody = z.object({
+  business_id: z.string().uuid(),
+  tokens:      z.number().int().positive(),
+  reason:      z.string().min(1),
+});
+
+admin.post("/grant-tokens", async (c) => {
+  const auth = c.get("auth");
+
+  let parsed: z.infer<typeof GrantTokensBody>;
+  try {
+    parsed = GrantTokensBody.parse(await c.req.json());
+  } catch (err) {
+    return c.json(errBody("bad_request", "invalid body", String(err)), 400);
+  }
+  const { business_id, tokens, reason } = parsed;
+
+  const supabase = createSupabaseClient(c.env);
+
+  const { data: business, error: bizErr } = await supabase
+    .from("businesses")
+    .select("user_id")
+    .eq("id", business_id)
+    .single();
+
+  if (bizErr && bizErr.code !== "PGRST116") {
+    log.error("admin_grant_tokens_business_lookup_failed", { business_id, err: bizErr.message });
+    return c.json(errBody("internal", "business_lookup_failed"), 500);
+  }
+  if (!business) {
+    return c.json(errBody("not_found", "business not found"), 404);
+  }
+
+  const { data, error } = await supabase.rpc("admin_grant_tokens", {
+    p_business_id: business_id,
+    p_user_id:     business.user_id,
+    p_tokens:      tokens,
+    p_reason:      reason,
+    p_granted_by:  auth.email,
+  });
+
+  if (error) {
+    log.error("admin_grant_tokens_failed", { business_id, tokens, err: error.message });
+    return c.json(errBody("internal", error.message), 500);
+  }
+
+  if (!data?.ok) {
+    log.error("admin_grant_tokens_rpc_rejected", { business_id, tokens, data });
+    return c.json(errBody("upstream_error", data?.reason ?? "rpc_rejected"), 502);
+  }
+
+  log.info("admin_grant_tokens_ok", { business_id, user_id: business.user_id, tokens, granted_by: auth.email });
+  return c.json(data);
 });
 
 export default admin;
