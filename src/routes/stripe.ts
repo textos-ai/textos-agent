@@ -59,10 +59,31 @@ interface StripeInvoice {
   lines?: { data: StripeInvoiceLineItem[] };
 }
 
+interface StripeCharge {
+  id: string;
+  customer: string | null;
+  invoice: string | null;        // set for subscription invoice charges
+  payment_intent: string | null; // set for one-time payment charges
+  amount_refunded: number;       // cents; may be partial — treated as full for V1
+}
+
 interface StripeEvent {
   id: string;
   type: string;
   data: { object: unknown };
+}
+
+// ── Stripe GET helper (used by refund handler to resolve invoice → sub) ──────
+
+async function stripeGet<T>(path: string, secretKey: string): Promise<T> {
+  const res = await fetch(`https://api.stripe.com/v1${path}`, {
+    headers: { Authorization: `Bearer ${secretKey}` },
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`stripe_get_failed path=${path} status=${res.status} body=${body}`);
+  }
+  return res.json() as Promise<T>;
 }
 
 // ── Signature verification (unchanged from working implementation) ──────────
@@ -510,6 +531,158 @@ async function handleInvoiceFailed(
   return { code: 200, msg: "ok" };
 }
 
+async function handleChargeRefunded(
+  charge: StripeCharge,
+  supabase: SupabaseClient,
+  eventId: string,
+  stripeSecretKey: string,
+): Promise<HandlerResult> {
+  // ── Case 1: Subscription invoice refund ───────────────────────────────────
+  // charge.invoice is set when Stripe refunded a subscription invoice charge.
+  // Fetch the invoice to get the subscription_id, then reverse the period grant.
+  if (charge.invoice) {
+    let subscriptionId: string | null = null;
+    try {
+      const invoice = await stripeGet<{ subscription: string | null }>(
+        `/invoices/${charge.invoice}`,
+        stripeSecretKey,
+      );
+      subscriptionId = invoice.subscription;
+    } catch (err) {
+      log.error("[stripe-webhook] refund_invoice_fetch_failed", {
+        event_id: eventId,
+        charge_id: charge.id,
+        invoice_id: charge.invoice,
+        err: err instanceof Error ? err.message : String(err),
+      });
+      return { code: 500, msg: "refund_invoice_fetch_failed" };
+    }
+
+    if (!subscriptionId) {
+      // Invoice exists but has no subscription — unusual, can't reverse tokens.
+      log.warn("[stripe-webhook] refund_invoice_no_subscription", {
+        event_id: eventId,
+        charge_id: charge.id,
+        invoice_id: charge.invoice,
+      });
+      return { code: 200, msg: "refund_invoice_no_subscription" };
+    }
+
+    const bizSub = await lookupBusinessSub(supabase, subscriptionId);
+    if (!bizSub) {
+      log.warn("[stripe-webhook] refund_subscription_not_found", {
+        event_id: eventId,
+        charge_id: charge.id,
+        stripe_subscription_id: subscriptionId,
+      });
+      return { code: 200, msg: "refund_subscription_not_found" };
+    }
+
+    // Look up the actual period grant so we reverse what was given, not the
+    // current V1 constant — these diverge if plan amounts change post-launch.
+    const { data: balance, error: balanceErr } = await supabase
+      .from("token_balances")
+      .select("period_tokens_included")
+      .eq("business_id", bizSub.business_id)
+      .maybeSingle();
+
+    if (balanceErr) throw new Error(`token_balances_lookup_failed: ${balanceErr.message}`);
+
+    if (!balance || balance.period_tokens_included <= 0) {
+      log.warn("[stripe-webhook] refund_no_tokens_to_reverse", {
+        event_id: eventId,
+        charge_id: charge.id,
+        business_id: bizSub.business_id,
+        period_tokens_included: balance?.period_tokens_included ?? null,
+      });
+      return { code: 200, msg: "refund_no_tokens_to_reverse" };
+    }
+
+    const tokensToReverse = balance.period_tokens_included;
+
+    const { error: refundErr } = await supabase.rpc("refund_period_tokens", {
+      p_business_id: bizSub.business_id,
+      p_user_id:     bizSub.user_id,
+      p_tokens:      tokensToReverse,
+      p_description: `Subscription refund (charge ${charge.id})`,
+    });
+    if (refundErr) throw new Error(`refund_period_tokens_failed: ${refundErr.message}`);
+
+    log.info("[stripe-webhook] refund_subscription_period_reversed", {
+      event_id: eventId,
+      charge_id: charge.id,
+      stripe_subscription_id: subscriptionId,
+      business_id: bizSub.business_id,
+      tokens_reversed: tokensToReverse,
+    });
+    return { code: 200, msg: "ok" };
+  }
+
+  // ── Case 2: Top-up refund ─────────────────────────────────────────────────
+  // charge.payment_intent matches a row in token_purchases.
+  if (charge.payment_intent) {
+    const { data: purchase, error: lookupErr } = await supabase
+      .from("token_purchases")
+      .select("id, business_id, user_id, tokens_purchased, status")
+      .eq("stripe_payment_intent_id", charge.payment_intent)
+      .maybeSingle();
+
+    if (lookupErr) throw new Error(`topup_purchase_lookup_failed: ${lookupErr.message}`);
+
+    if (!purchase) {
+      // payment_intent not in our records — charge from outside TextOS or pre-launch.
+      log.warn("[stripe-webhook] refund_unknown_origin", {
+        event_id: eventId,
+        charge_id: charge.id,
+        payment_intent: charge.payment_intent,
+      });
+      return { code: 200, msg: "refund_unknown_origin" };
+    }
+
+    if (purchase.status === "refunded") {
+      log.info("[stripe-webhook] refund_topup_already_refunded", {
+        event_id: eventId,
+        charge_id: charge.id,
+        topup_id: purchase.id,
+      });
+      return { code: 200, msg: "refund_topup_already_refunded" };
+    }
+
+    const { error: refundErr } = await supabase.rpc("refund_topup_tokens", {
+      p_business_id: purchase.business_id,
+      p_user_id:     purchase.user_id,
+      p_tokens:      purchase.tokens_purchased,
+      p_topup_id:    purchase.id,
+      p_description: `Top-up refund (charge ${charge.id})`,
+    });
+    if (refundErr) throw new Error(`refund_topup_tokens_failed: ${refundErr.message}`);
+
+    const { error: updateErr } = await supabase
+      .from("token_purchases")
+      .update({ status: "refunded", refunded_at: new Date().toISOString() })
+      .eq("id", purchase.id);
+    if (updateErr) throw new Error(`token_purchase_refund_update_failed: ${updateErr.message}`);
+
+    log.info("[stripe-webhook] refund_topup_reversed", {
+      event_id: eventId,
+      charge_id: charge.id,
+      topup_id: purchase.id,
+      business_id: purchase.business_id,
+      tokens_reversed: purchase.tokens_purchased,
+    });
+    return { code: 200, msg: "ok" };
+  }
+
+  // ── Neither invoice nor payment_intent ────────────────────────────────────
+  log.warn("[stripe-webhook] refund_unknown_origin", {
+    event_id: eventId,
+    charge_id: charge.id,
+    invoice: charge.invoice,
+    payment_intent: charge.payment_intent,
+  });
+  return { code: 200, msg: "refund_unknown_origin" };
+}
+
 // ── POST /webhook ──────────────────────────────────────────────────────────
 
 app.post("/webhook", async (c) => {
@@ -610,6 +783,9 @@ app.post("/webhook", async (c) => {
         break;
       case "invoice.payment_failed":
         result = await handleInvoiceFailed(obj as StripeInvoice, supabase, eventId);
+        break;
+      case "charge.refunded":
+        result = await handleChargeRefunded(obj as StripeCharge, supabase, eventId, c.env.STRIPE_SECRET_KEY);
         break;
       default:
         log.info("[stripe-webhook] unhandled_event_type", { event_id: eventId, event_type: eventType });
