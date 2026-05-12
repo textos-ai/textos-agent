@@ -33,7 +33,8 @@ app.get("/tasks", async (c) => {
       execution_order,
       status,
       kind,
-      config_page_path
+      config_page_path,
+      lifecycle_phases(slug, name)
     `)
     .eq("status", "active")
     .neq("plan_required", "premium_inactive")
