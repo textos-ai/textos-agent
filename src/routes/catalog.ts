@@ -25,6 +25,7 @@ app.get("/tasks", async (c) => {
       description_long,
       area,
       is_default,
+      is_featured,
       plan_required,
       visibility,
       price_cents,

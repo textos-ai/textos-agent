@@ -359,7 +359,7 @@ admin.get("/tasks", async (c) => {
     .from("tasks")
     .select(`
       id, slug, name, description_short, plan_required, status, token_cost,
-      execution_order, is_default, output_type, prompt_template,
+      execution_order, is_default, is_featured, output_type, prompt_template,
       lifecycle_phase_id, is_regeneratable, asset_user_editable,
       kind, config_page_path,
       lifecycle_phases(slug, name),
@@ -386,6 +386,7 @@ const PostTaskBody = z.object({
   name:             z.string().min(1).max(200),
   kind:             z.enum(["autonomous", "configured", "guide", "system"]).optional(),
   config_page_path: z.string().min(1).max(500).nullable().optional(),
+  is_featured:      z.boolean().optional(),
 });
 
 admin.post("/tasks", async (c) => {
@@ -437,6 +438,7 @@ admin.post("/tasks", async (c) => {
       description_short:   null,
       ...(parsed.kind             !== undefined && { kind:             parsed.kind }),
       ...(parsed.config_page_path !== undefined && { config_page_path: parsed.config_page_path }),
+      ...(parsed.is_featured      !== undefined && { is_featured:      parsed.is_featured }),
     })
     .select("id")
     .single();
@@ -483,7 +485,7 @@ admin.post("/tasks", async (c) => {
     .from("tasks")
     .select(`
       id, slug, name, description_short, plan_required, status, token_cost,
-      execution_order, is_default, output_type, prompt_template,
+      execution_order, is_default, is_featured, output_type, prompt_template,
       lifecycle_phase_id, is_regeneratable, asset_user_editable,
       kind, config_page_path,
       lifecycle_phases(slug, name),
@@ -514,6 +516,7 @@ const PatchTaskBody = z.object({
   is_regeneratable:    z.boolean().optional(),
   asset_user_editable: z.boolean().optional(),
   is_default:          z.boolean().optional(),
+  is_featured:         z.boolean().optional(),
   prompt_template:     z.string().min(1).max(10000).optional(),
   execution_order:     z.number().int().min(0).optional(),
   kind:                z.enum(["autonomous", "configured", "guide", "system"]).optional(),
