@@ -11,8 +11,36 @@ import { pickVisualChoices, fetchUnsplashPhoto } from "../lib/pick-visual-choice
 
 const admin = new Hono<{ Bindings: Env }>();
 
+// requireAuth applies to every route in this router
 admin.use("*", requireAuth);
-admin.use("*", requireAdmin);
+
+// ── GET /admin/me ─────────────────────────────────────────────────────────────
+// No requireAdmin — intentionally returns is_admin:false for non-admins so the
+// frontend can gate gracefully without 403s.
+admin.get("/me", async (c) => {
+  const { user_id } = c.get("auth");
+  const supabase = createSupabaseClient(c.env);
+  const { data, error } = await supabase
+    .from("admin_users")
+    .select("user_id")
+    .eq("user_id", user_id)
+    .maybeSingle();
+  if (error) {
+    log.error("[admin] me_lookup_failed", { user_id, err: error.message });
+    return c.json(errBody("internal", "me_lookup_failed"), 500);
+  }
+  return c.json({ is_admin: !!data });
+});
+
+// requireAdmin for every route below — explicit per-group so /me stays un-gated
+admin.use("/email-queue", requireAdmin);
+admin.use("/email-queue/*", requireAdmin);
+admin.use("/backfill-public-site", requireAdmin);
+admin.use("/grant-tokens", requireAdmin);
+admin.use("/tasks", requireAdmin);
+admin.use("/tasks/*", requireAdmin);
+admin.use("/businesses", requireAdmin);
+admin.use("/businesses/*", requireAdmin);
 
 // ── GET /admin/email-queue ─────────────────────────────────────────────────
 // Returns pending and recent emails in the queue (latest 100).
@@ -316,6 +344,139 @@ admin.post("/grant-tokens", async (c) => {
 
   log.info("admin_grant_tokens_ok", { business_id, user_id: business.user_id, tokens, granted_by: auth.email });
   return c.json(data);
+});
+
+// ── GET /admin/tasks ─────────────────────────────────────────────────────
+// Full task catalog ordered by execution_order, all editable fields.
+admin.get("/tasks", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const { data, error } = await supabase
+    .from("tasks")
+    .select("id, slug, name, description_short, plan_required, status, token_cost, execution_order, is_default, output_type")
+    .order("execution_order", { ascending: true });
+  if (error) {
+    log.error("[admin] tasks_lookup_failed", { err: error.message });
+    return c.json(errBody("internal", "tasks_lookup_failed"), 500);
+  }
+  return c.json({ tasks: data ?? [] });
+});
+
+// ── PATCH /admin/tasks/:id ───────────────────────────────────────────────
+// Update exactly one field per request. Writes audit row to task_edits
+// (non-blocking: failure logged but does not fail the response).
+const PatchTaskBody = z.object({
+  token_cost:        z.number().int().min(0).optional(),
+  name:              z.string().min(1).max(200).optional(),
+  description_short: z.string().min(1).max(500).optional(),
+  plan_required:     z.enum(["free", "core_paid", "premium_only", "premium_inactive"]).optional(),
+  status:            z.enum(["draft", "active", "deprecated"]).optional(),
+});
+
+admin.patch("/tasks/:id", async (c) => {
+  const { user_id } = c.get("auth");
+  const taskId = c.req.param("id");
+
+  let parsed: z.infer<typeof PatchTaskBody>;
+  try {
+    parsed = PatchTaskBody.parse(await c.req.json());
+  } catch (err) {
+    return c.json(errBody("bad_request", "invalid body", String(err)), 400);
+  }
+
+  const fields = (Object.keys(parsed) as Array<keyof typeof parsed>).filter(
+    (k) => parsed[k] !== undefined,
+  );
+  if (fields.length === 0) return c.json(errBody("bad_request", "no fields to update"), 400);
+  if (fields.length > 1)  return c.json(errBody("bad_request", "send one field per request"), 400);
+
+  const field = fields[0];
+  const newValue = parsed[field];
+
+  const supabase = createSupabaseClient(c.env);
+
+  // Read old value for audit log
+  const { data: oldRow, error: readErr } = await supabase
+    .from("tasks")
+    .select(field)
+    .eq("id", taskId)
+    .maybeSingle();
+  if (readErr) {
+    log.error("[admin] task_read_failed", { taskId, err: readErr.message });
+    return c.json(errBody("internal", "task_read_failed"), 500);
+  }
+  if (!oldRow) return c.json(errBody("not_found", "task not found"), 404);
+
+  const oldValue = (oldRow as Record<string, unknown>)[field];
+
+  // Apply update
+  const { data: updated, error: updErr } = await supabase
+    .from("tasks")
+    .update({ [field]: newValue })
+    .eq("id", taskId)
+    .select()
+    .single();
+  if (updErr) {
+    log.error("[admin] task_update_failed", { taskId, field, err: updErr.message });
+    return c.json(errBody("internal", "task_update_failed"), 500);
+  }
+
+  // Audit log — non-blocking: failure logged loudly but does not roll back the update
+  const { error: auditErr } = await supabase.from("task_edits").insert({
+    task_id:    taskId,
+    edited_by:  user_id,
+    field_name: field,
+    old_value:  String(oldValue ?? ""),
+    new_value:  String(newValue ?? ""),
+  });
+  if (auditErr) {
+    log.error("[admin] audit_insert_failed", { taskId, field, err: auditErr.message });
+  }
+
+  return c.json({ task: updated });
+});
+
+// ── GET /admin/businesses ─────────────────────────────────────────────────
+// Paginated list of all businesses with owner email + subscription status.
+// Query params: limit (1-100, default 50), before (ISO timestamp cursor).
+admin.get("/businesses", async (c) => {
+  const limitRaw = parseInt(c.req.query("limit") ?? "50", 10);
+  const limit = Math.min(Math.max(Number.isNaN(limitRaw) ? 50 : limitRaw, 1), 100);
+  const before = c.req.query("before");
+
+  const supabase = createSupabaseClient(c.env);
+
+  let q = supabase
+    .from("businesses")
+    .select(`
+      id, slug, name, user_id, created_at,
+      users!inner(email),
+      business_subscriptions(status)
+    `)
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: false })
+    .limit(limit + 1);
+
+  if (before) q = q.lt("created_at", before);
+
+  const { data: rows, error } = await q;
+  if (error) {
+    log.error("[admin] businesses_lookup_failed", { err: error.message });
+    return c.json(errBody("internal", "businesses_lookup_failed"), 500);
+  }
+
+  const has_more = (rows?.length ?? 0) > limit;
+  const businesses = (rows ?? []).slice(0, limit).map((r: any) => ({
+    id:                  r.id,
+    slug:                r.slug,
+    name:                r.name,
+    user_id:             r.user_id,
+    owner_email:         r.users?.email ?? null,
+    created_at:          r.created_at,
+    subscription_status: r.business_subscriptions?.[0]?.status ?? null,
+  }));
+  const next_before = has_more ? businesses[businesses.length - 1].created_at : null;
+
+  return c.json({ businesses, has_more, next_before });
 });
 
 export default admin;
