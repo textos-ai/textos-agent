@@ -487,6 +487,7 @@ const PostTaskApiBody = z.object({
 });
 
 admin.post("/tasks/:id/apis", async (c) => {
+  const { user_id } = c.get("auth");
   const taskId = c.req.param("id");
 
   let parsed: z.infer<typeof PostTaskApiBody>;
@@ -511,11 +512,22 @@ admin.post("/tasks/:id/apis", async (c) => {
 
   if (error) {
     log.error("[admin] task_api_insert_failed", { taskId, err: error.message });
-    // 23505 = unique_violation (task+api+role combo already exists)
     if (error.code === "23505") {
       return c.json(errBody("conflict", "binding already exists for this task/api/role"), 409);
     }
     return c.json(errBody("internal", "task_api_insert_failed"), 500);
+  }
+
+  // Audit log — non-blocking
+  const { error: auditErr } = await supabase.from("task_edits").insert({
+    task_id:    taskId,
+    edited_by:  user_id,
+    field_name: "task_apis.add",
+    old_value:  "",
+    new_value:  JSON.stringify({ api_id: data.api_id, role: data.role, invocation_params: data.invocation_params }),
+  });
+  if (auditErr) {
+    log.error("[admin] audit_insert_failed", { taskId, field: "task_apis.add", err: auditErr.message });
   }
 
   return c.json({ binding: data }, 201);
@@ -524,15 +536,16 @@ admin.post("/tasks/:id/apis", async (c) => {
 // ── DELETE /admin/tasks/:id/apis/:bindingId ───────────────────────────────
 // Remove a specific API binding from a task.
 admin.delete("/tasks/:id/apis/:bindingId", async (c) => {
+  const { user_id } = c.get("auth");
   const taskId    = c.req.param("id");
   const bindingId = c.req.param("bindingId");
 
   const supabase = createSupabaseClient(c.env);
 
-  // Verify the binding belongs to this task before deleting
+  // Read binding before delete — needed for audit log and 404 guard
   const { data: existing, error: readErr } = await supabase
     .from("task_apis")
-    .select("id")
+    .select("id, api_id, role, invocation_params")
     .eq("id", bindingId)
     .eq("task_id", taskId)
     .maybeSingle();
@@ -552,6 +565,18 @@ admin.delete("/tasks/:id/apis/:bindingId", async (c) => {
   if (delErr) {
     log.error("[admin] task_api_delete_failed", { taskId, bindingId, err: delErr.message });
     return c.json(errBody("internal", "task_api_delete_failed"), 500);
+  }
+
+  // Audit log — non-blocking
+  const { error: auditErr } = await supabase.from("task_edits").insert({
+    task_id:    taskId,
+    edited_by:  user_id,
+    field_name: "task_apis.remove",
+    old_value:  JSON.stringify({ api_id: existing.api_id, role: existing.role, invocation_params: existing.invocation_params }),
+    new_value:  "",
+  });
+  if (auditErr) {
+    log.error("[admin] audit_insert_failed", { taskId, field: "task_apis.remove", err: auditErr.message });
   }
 
   return c.json({ ok: true });
