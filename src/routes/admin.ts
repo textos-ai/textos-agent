@@ -39,6 +39,10 @@ admin.use("/backfill-public-site", requireAdmin);
 admin.use("/grant-tokens", requireAdmin);
 admin.use("/tasks", requireAdmin);
 admin.use("/tasks/*", requireAdmin);
+admin.use("/lifecycle-phases", requireAdmin);
+admin.use("/lifecycle-phases/*", requireAdmin);
+admin.use("/external-apis", requireAdmin);
+admin.use("/external-apis/*", requireAdmin);
 admin.use("/businesses", requireAdmin);
 admin.use("/businesses/*", requireAdmin);
 
@@ -347,12 +351,19 @@ admin.post("/grant-tokens", async (c) => {
 });
 
 // ── GET /admin/tasks ─────────────────────────────────────────────────────
-// Full task catalog ordered by execution_order, all editable fields.
+// Full task catalog ordered by execution_order. Includes lifecycle phase
+// and API bindings via PostgREST nested joins.
 admin.get("/tasks", async (c) => {
   const supabase = createSupabaseClient(c.env);
   const { data, error } = await supabase
     .from("tasks")
-    .select("id, slug, name, description_short, plan_required, status, token_cost, execution_order, is_default, output_type")
+    .select(`
+      id, slug, name, description_short, plan_required, status, token_cost,
+      execution_order, is_default, output_type, prompt_template,
+      lifecycle_phase_id, is_regeneratable, asset_user_editable,
+      lifecycle_phases(slug, name),
+      task_apis(id, api_id, role, invocation_params, external_apis(slug, name, provider, output_kind))
+    `)
     .order("execution_order", { ascending: true });
   if (error) {
     log.error("[admin] tasks_lookup_failed", { err: error.message });
@@ -365,11 +376,15 @@ admin.get("/tasks", async (c) => {
 // Update exactly one field per request. Writes audit row to task_edits
 // (non-blocking: failure logged but does not fail the response).
 const PatchTaskBody = z.object({
-  token_cost:        z.number().int().min(0).optional(),
-  name:              z.string().min(1).max(200).optional(),
-  description_short: z.string().min(1).max(500).optional(),
-  plan_required:     z.enum(["free", "core_paid", "premium_only", "premium_inactive"]).optional(),
-  status:            z.enum(["draft", "active", "deprecated"]).optional(),
+  token_cost:          z.number().int().min(0).optional(),
+  name:                z.string().min(1).max(200).optional(),
+  description_short:   z.string().min(1).max(500).optional(),
+  plan_required:       z.enum(["free", "core_paid", "premium_only", "premium_inactive"]).optional(),
+  status:              z.enum(["draft", "active", "deprecated"]).optional(),
+  lifecycle_phase_id:  z.string().uuid().nullable().optional(),
+  is_regeneratable:    z.boolean().optional(),
+  asset_user_editable: z.boolean().optional(),
+  prompt_template:     z.string().min(1).max(10000).optional(),
 });
 
 admin.patch("/tasks/:id", async (c) => {
@@ -433,6 +448,113 @@ admin.patch("/tasks/:id", async (c) => {
   }
 
   return c.json({ task: updated });
+});
+
+// ── GET /admin/lifecycle-phases ──────────────────────────────────────────
+admin.get("/lifecycle-phases", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const { data, error } = await supabase
+    .from("lifecycle_phases")
+    .select("id, slug, name, sort_order")
+    .order("sort_order", { ascending: true });
+  if (error) {
+    log.error("[admin] lifecycle_phases_lookup_failed", { err: error.message });
+    return c.json(errBody("internal", "lifecycle_phases_lookup_failed"), 500);
+  }
+  return c.json({ lifecycle_phases: data ?? [] });
+});
+
+// ── GET /admin/external-apis ──────────────────────────────────────────────
+admin.get("/external-apis", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const { data, error } = await supabase
+    .from("external_apis")
+    .select("id, slug, name, provider, output_kind, status, metadata")
+    .order("slug", { ascending: true });
+  if (error) {
+    log.error("[admin] external_apis_lookup_failed", { err: error.message });
+    return c.json(errBody("internal", "external_apis_lookup_failed"), 500);
+  }
+  return c.json({ external_apis: data ?? [] });
+});
+
+// ── POST /admin/tasks/:id/apis ────────────────────────────────────────────
+// Add an API binding to a task.
+const PostTaskApiBody = z.object({
+  api_id:            z.string().uuid(),
+  role:              z.enum(["primary", "secondary", "fallback"]),
+  invocation_params: z.record(z.unknown()).optional(),
+});
+
+admin.post("/tasks/:id/apis", async (c) => {
+  const taskId = c.req.param("id");
+
+  let parsed: z.infer<typeof PostTaskApiBody>;
+  try {
+    parsed = PostTaskApiBody.parse(await c.req.json());
+  } catch (err) {
+    return c.json(errBody("bad_request", "invalid body", String(err)), 400);
+  }
+
+  const supabase = createSupabaseClient(c.env);
+
+  const { data, error } = await supabase
+    .from("task_apis")
+    .insert({
+      task_id:           taskId,
+      api_id:            parsed.api_id,
+      role:              parsed.role,
+      invocation_params: parsed.invocation_params ?? {},
+    })
+    .select("id, task_id, api_id, role, invocation_params, created_at")
+    .single();
+
+  if (error) {
+    log.error("[admin] task_api_insert_failed", { taskId, err: error.message });
+    // 23505 = unique_violation (task+api+role combo already exists)
+    if (error.code === "23505") {
+      return c.json(errBody("conflict", "binding already exists for this task/api/role"), 409);
+    }
+    return c.json(errBody("internal", "task_api_insert_failed"), 500);
+  }
+
+  return c.json({ binding: data }, 201);
+});
+
+// ── DELETE /admin/tasks/:id/apis/:bindingId ───────────────────────────────
+// Remove a specific API binding from a task.
+admin.delete("/tasks/:id/apis/:bindingId", async (c) => {
+  const taskId    = c.req.param("id");
+  const bindingId = c.req.param("bindingId");
+
+  const supabase = createSupabaseClient(c.env);
+
+  // Verify the binding belongs to this task before deleting
+  const { data: existing, error: readErr } = await supabase
+    .from("task_apis")
+    .select("id")
+    .eq("id", bindingId)
+    .eq("task_id", taskId)
+    .maybeSingle();
+
+  if (readErr) {
+    log.error("[admin] task_api_delete_read_failed", { taskId, bindingId, err: readErr.message });
+    return c.json(errBody("internal", "task_api_delete_failed"), 500);
+  }
+  if (!existing) return c.json(errBody("not_found", "binding not found"), 404);
+
+  const { error: delErr } = await supabase
+    .from("task_apis")
+    .delete()
+    .eq("id", bindingId)
+    .eq("task_id", taskId);
+
+  if (delErr) {
+    log.error("[admin] task_api_delete_failed", { taskId, bindingId, err: delErr.message });
+    return c.json(errBody("internal", "task_api_delete_failed"), 500);
+  }
+
+  return c.json({ ok: true });
 });
 
 // ── GET /admin/businesses ─────────────────────────────────────────────────
