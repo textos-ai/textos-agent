@@ -372,6 +372,129 @@ admin.get("/tasks", async (c) => {
   return c.json({ tasks: data ?? [] });
 });
 
+// ── POST /admin/tasks ────────────────────────────────────────────────────
+// Create a new task with slug + name. All other fields use safe defaults.
+// Automatically binds anthropic-claude-sonnet as the primary API.
+// Audit: task_edits row with field_name='task.create'.
+const PostTaskBody = z.object({
+  slug: z
+    .string()
+    .min(1)
+    .max(100)
+    .regex(/^[a-z0-9-]+$/, "slug must be lowercase alphanumeric with hyphens"),
+  name: z.string().min(1).max(200),
+});
+
+admin.post("/tasks", async (c) => {
+  const { user_id } = c.get("auth");
+
+  let parsed: z.infer<typeof PostTaskBody>;
+  try {
+    parsed = PostTaskBody.parse(await c.req.json());
+  } catch (err) {
+    return c.json(errBody("bad_request", "invalid body", String(err)), 400);
+  }
+
+  const supabase = createSupabaseClient(c.env);
+
+  // Fetch max execution_order and claude-sonnet api_id in parallel
+  const [maxOrderResult, claudeApiResult] = await Promise.all([
+    supabase
+      .from("tasks")
+      .select("execution_order")
+      .order("execution_order", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    supabase
+      .from("external_apis")
+      .select("id")
+      .eq("slug", "anthropic-claude-sonnet")
+      .maybeSingle(),
+  ]);
+
+  const nextOrder = (maxOrderResult.data?.execution_order ?? 0) + 1;
+
+  // Insert task
+  const { data: newTask, error: insertErr } = await supabase
+    .from("tasks")
+    .insert({
+      slug:                parsed.slug,
+      name:                parsed.name,
+      status:              "draft",
+      plan_required:       "free",
+      is_default:          false,
+      is_regeneratable:    false,
+      asset_user_editable: false,
+      token_cost:          0,
+      execution_order:     nextOrder,
+      area:                "business_builder",
+      output_type:         "document",
+      lifecycle_phase_id:  null,
+      prompt_template:     null,
+      description_short:   null,
+    })
+    .select("id")
+    .single();
+
+  if (insertErr) {
+    log.error("[admin] task_insert_failed", { slug: parsed.slug, err: insertErr.message });
+    if (insertErr.code === "23505") {
+      return c.json(errBody("conflict", "slug already exists"), 409);
+    }
+    return c.json(errBody("internal", "task_insert_failed"), 500);
+  }
+
+  const taskId = newTask.id;
+
+  // Bind claude-sonnet as primary API
+  if (claudeApiResult.data) {
+    const { error: bindErr } = await supabase.from("task_apis").insert({
+      task_id:           taskId,
+      api_id:            claudeApiResult.data.id,
+      role:              "primary",
+      invocation_params: {},
+    });
+    if (bindErr) {
+      log.error("[admin] task_default_api_bind_failed", { taskId, err: bindErr.message });
+    }
+  } else {
+    log.error("[admin] claude_sonnet_api_not_found", { taskId });
+  }
+
+  // Audit log — non-blocking
+  const { error: auditErr } = await supabase.from("task_edits").insert({
+    task_id:    taskId,
+    edited_by:  user_id,
+    field_name: "task.create",
+    old_value:  "",
+    new_value:  JSON.stringify({ slug: parsed.slug, name: parsed.name }),
+  });
+  if (auditErr) {
+    log.error("[admin] audit_insert_failed", { taskId, field: "task.create", err: auditErr.message });
+  }
+
+  // Fresh select with full nested joins (task_apis now populated)
+  const { data: fullTask, error: selectErr } = await supabase
+    .from("tasks")
+    .select(`
+      id, slug, name, description_short, plan_required, status, token_cost,
+      execution_order, is_default, output_type, prompt_template,
+      lifecycle_phase_id, is_regeneratable, asset_user_editable,
+      lifecycle_phases(slug, name),
+      task_apis(id, api_id, role, invocation_params, external_apis(slug, name, provider, output_kind))
+    `)
+    .eq("id", taskId)
+    .single();
+
+  if (selectErr) {
+    log.error("[admin] task_post_select_failed", { taskId, err: selectErr.message });
+    return c.json(errBody("internal", "task_post_select_failed"), 500);
+  }
+
+  log.info("[admin] task_created", { taskId, slug: parsed.slug });
+  return c.json({ task: fullTask }, 201);
+});
+
 // ── PATCH /admin/tasks/:id ───────────────────────────────────────────────
 // Update exactly one field per request. Writes audit row to task_edits
 // (non-blocking: failure logged but does not fail the response).
