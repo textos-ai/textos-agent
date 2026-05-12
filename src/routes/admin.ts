@@ -513,7 +513,9 @@ const PatchTaskBody = z.object({
   lifecycle_phase_id:  z.string().uuid().nullable().optional(),
   is_regeneratable:    z.boolean().optional(),
   asset_user_editable: z.boolean().optional(),
+  is_default:          z.boolean().optional(),
   prompt_template:     z.string().min(1).max(10000).optional(),
+  execution_order:     z.number().int().min(0).optional(),
   kind:                z.enum(["autonomous", "configured", "guide", "system"]).optional(),
   config_page_path:    z.string().min(1).max(500).nullable().optional(),
 });
