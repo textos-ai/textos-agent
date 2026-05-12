@@ -30,11 +30,14 @@ app.get("/tasks", async (c) => {
       price_cents,
       output_type,
       execution_order,
-      status
+      status,
+      kind,
+      config_page_path
     `)
     .eq("status", "active")
     .neq("plan_required", "premium_inactive")
     .neq("surface", "silent")
+    .neq("kind", "system")
     .order("execution_order", { ascending: true, nullsFirst: false })
     .order("name", { ascending: true });
 

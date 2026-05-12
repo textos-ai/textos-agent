@@ -361,6 +361,7 @@ admin.get("/tasks", async (c) => {
       id, slug, name, description_short, plan_required, status, token_cost,
       execution_order, is_default, output_type, prompt_template,
       lifecycle_phase_id, is_regeneratable, asset_user_editable,
+      kind, config_page_path,
       lifecycle_phases(slug, name),
       task_apis(id, api_id, role, invocation_params, external_apis(slug, name, provider, output_kind))
     `)
@@ -382,7 +383,9 @@ const PostTaskBody = z.object({
     .min(1)
     .max(100)
     .regex(/^[a-z0-9-]+$/, "slug must be lowercase alphanumeric with hyphens"),
-  name: z.string().min(1).max(200),
+  name:             z.string().min(1).max(200),
+  kind:             z.enum(["autonomous", "configured", "guide", "system"]).optional(),
+  config_page_path: z.string().min(1).max(500).nullable().optional(),
 });
 
 admin.post("/tasks", async (c) => {
@@ -432,6 +435,8 @@ admin.post("/tasks", async (c) => {
       lifecycle_phase_id:  null,
       prompt_template:     null,
       description_short:   null,
+      ...(parsed.kind             !== undefined && { kind:             parsed.kind }),
+      ...(parsed.config_page_path !== undefined && { config_page_path: parsed.config_page_path }),
     })
     .select("id")
     .single();
@@ -480,6 +485,7 @@ admin.post("/tasks", async (c) => {
       id, slug, name, description_short, plan_required, status, token_cost,
       execution_order, is_default, output_type, prompt_template,
       lifecycle_phase_id, is_regeneratable, asset_user_editable,
+      kind, config_page_path,
       lifecycle_phases(slug, name),
       task_apis(id, api_id, role, invocation_params, external_apis(slug, name, provider, output_kind))
     `)
@@ -508,6 +514,8 @@ const PatchTaskBody = z.object({
   is_regeneratable:    z.boolean().optional(),
   asset_user_editable: z.boolean().optional(),
   prompt_template:     z.string().min(1).max(10000).optional(),
+  kind:                z.enum(["autonomous", "configured", "guide", "system"]).optional(),
+  config_page_path:    z.string().min(1).max(500).nullable().optional(),
 });
 
 admin.patch("/tasks/:id", async (c) => {
