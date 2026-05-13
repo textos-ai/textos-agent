@@ -14,6 +14,7 @@ subrequests = 1000
 ENVIRONMENT = "dev"
 AUTO_APPROVE_AFTER_USER_COUNT = "100"
 DAYCYCLE_PLACES_ENABLED = "false"
+FRONTEND_URL = "https://app.textos.ai"
 
 # ----------------------------------------------------------------------
 # Bindings below are commented placeholders, wired in subsequent sprints.
@@ -56,3 +57,37 @@ bucket_name = "textos-assets"
 # [env.prod]
 # name = "textos-agent-prod"
 # vars = { ENVIRONMENT = "prod" }
+
+# ────────────────────────────────────────────────────────────────────
+# Test environment (textos-agent-test) — added 2026-05-13 for D-4.
+# Same code + same data layer as production, test-mode Stripe secrets.
+# Cron trigger intentionally omitted — production owns scheduled jobs.
+# Deploy:        npx wrangler deploy --env test
+# Set secret:    npx wrangler secret put NAME --env test
+# List secrets:  npx wrangler secret list --env test
+# ────────────────────────────────────────────────────────────────────
+[env.test]
+name = "textos-agent-test"
+
+# Explicit empty crons — wrangler inherits top-level [triggers] otherwise,
+# which would duplicate heartbeat-watchdog scans against shared Supabase.
+[env.test.triggers]
+crons = []
+
+[env.test.limits]
+cpu_ms = 30000
+subrequests = 1000
+
+[env.test.vars]
+ENVIRONMENT = "test"
+AUTO_APPROVE_AFTER_USER_COUNT = "100"
+DAYCYCLE_PLACES_ENABLED = "false"
+FRONTEND_URL = "https://textos-web-test.pages.dev"
+
+[[env.test.kv_namespaces]]
+binding = "SNAPSHOT_KV"
+id = "198fb2847eaa45f9b9d3102311832b9b"
+
+[[env.test.r2_buckets]]
+binding = "ASSETS"
+bucket_name = "textos-assets"

@@ -15,6 +15,7 @@ import catalogRoutes from "./routes/catalog";
 import sitesRoutes from "./routes/sites";
 import checkoutRoutes from "./routes/checkout";
 import stripeRoutes from "./routes/stripe";
+import envInfoRoutes from "./routes/env-info";
 import { errBody } from "./lib/errors";
 import { log } from "./lib/logger";
 import buildsRoutes from "./routes/builds";
@@ -36,6 +37,10 @@ app.use(
       if (!origin) return origin;
       // Allow textos.ai apex + any subdomain, plus local Astro dev ports.
       if (/^https:\/\/([a-z0-9-]+\.)*textos\.ai$/.test(origin)) return origin;
+      // Allow textos-web-test.pages.dev (test frontend) + hash-prefixed previews.
+      if (/^https:\/\/([a-z0-9-]+\.)*textos-web-test\.pages\.dev$/.test(origin)) return origin;
+      // Allow textos-web.pages.dev preview deploys (production frontend's preview URLs).
+      if (/^https:\/\/([a-z0-9-]+\.)*textos-web\.pages\.dev$/.test(origin)) return origin;
       if (origin === "http://localhost:4321") return origin;
       if (origin === "http://localhost:5173") return origin;
       return null;
@@ -61,6 +66,7 @@ app.route("/api/catalog", catalogRoutes);
 app.route("/api/sites", sitesRoutes);
 app.route("/api/checkout", checkoutRoutes);
 app.route("/api/stripe", stripeRoutes);
+app.route("/api/env", envInfoRoutes);
 app.route("/api/builds", buildsRoutes);
 app.route("/api/businesses", businessManagerRoutes);
 app.route("/api/operator-school", operatorSchoolRoutes);

@@ -10,8 +10,29 @@ const app = new Hono<{ Bindings: Env }>();
 
 app.use("*", requireAuth);
 
-const SUCCESS_URL = "https://app.textos.ai/business/builder?stripe_success=1";
-const CANCEL_URL  = "https://app.textos.ai/business/builder?stripe_cancel=1";
+// ── Slug-aware return URLs ────────────────────────────────────────────────────
+// Subscription return: ?stripe_success=1 / ?stripe_cancel=1  (Phase 7A-C handler)
+// Topup return:        ?topup=success&bundle=…&tokens=… / ?topup=canceled  (Phase 7D)
+// Base URL is per-environment via env.FRONTEND_URL (wrangler [vars]). Fallback
+// to production URL keeps things working if the var is missing on a worker.
+const DEFAULT_FRONTEND_URL = "https://app.textos.ai";
+
+function topupSuccessUrl(env: Env, slug: string, bundle: string, tokens: number): string {
+  const base = env.FRONTEND_URL ?? DEFAULT_FRONTEND_URL;
+  return `${base}/business/${slug}/builder?topup=success&bundle=${bundle}&tokens=${tokens}`;
+}
+function topupCancelUrl(env: Env, slug: string): string {
+  const base = env.FRONTEND_URL ?? DEFAULT_FRONTEND_URL;
+  return `${base}/business/${slug}/builder?topup=canceled`;
+}
+function subSuccessUrl(env: Env, slug: string): string {
+  const base = env.FRONTEND_URL ?? DEFAULT_FRONTEND_URL;
+  return `${base}/business/${slug}/builder?stripe_success=1`;
+}
+function subCancelUrl(env: Env, slug: string): string {
+  const base = env.FRONTEND_URL ?? DEFAULT_FRONTEND_URL;
+  return `${base}/business/${slug}/builder?stripe_cancel=1`;
+}
 
 // ── Stripe helper ─────────────────────────────────────────────────────────────
 
@@ -90,7 +111,7 @@ app.post("/subscription", async (c) => {
   // Verify business ownership — collapse not-found + not-owned to 404; surface real DB errors as 500
   const { data: business, error: bizErr } = await supabase
     .from("businesses")
-    .select("id")
+    .select("id, slug")
     .eq("id", business_id)
     .eq("user_id", user_id)
     .single();
@@ -152,8 +173,9 @@ app.post("/subscription", async (c) => {
       "automatic_tax[enabled]": "true",
       "metadata[textos_user_id]": user_id,
       "metadata[business_id]": business_id,
-      success_url: SUCCESS_URL,
-      cancel_url: CANCEL_URL,
+      "customer_update[address]": "auto",
+      success_url: subSuccessUrl(c.env, business.slug as string),
+      cancel_url: subCancelUrl(c.env, business.slug as string),
     },
     c.env.STRIPE_SECRET_KEY,
   );
@@ -176,10 +198,10 @@ app.post("/subscription", async (c) => {
 
 // ── POST /topup ───────────────────────────────────────────────────────────────
 
-const BUNDLE_TOKENS: Record<string, string> = {
-  topup_10: "10",
-  topup_30: "30",
-  topup_75: "75",
+const BUNDLE_TOKENS: Record<string, number> = {
+  topup_10: 10,
+  topup_30: 30,
+  topup_75: 75,
 };
 
 const TopupBody = z.object({
@@ -218,7 +240,7 @@ app.post("/topup", async (c) => {
   // Verify business ownership — collapse not-found + not-owned to 404; surface real DB errors as 500
   const { data: business, error: bizErr } = await supabase
     .from("businesses")
-    .select("id")
+    .select("id, slug")
     .eq("id", business_id)
     .eq("user_id", user_id)
     .single();
@@ -278,10 +300,11 @@ app.post("/topup", async (c) => {
       "metadata[textos_user_id]": user_id,
       "metadata[business_id]": business_id,
       "metadata[intent]": bundle,
-      "metadata[tokens]": BUNDLE_TOKENS[bundle],
+      "metadata[tokens]": String(BUNDLE_TOKENS[bundle]),
       "automatic_tax[enabled]": "true",
-      success_url: SUCCESS_URL,
-      cancel_url: CANCEL_URL,
+      "customer_update[address]": "auto",
+      success_url: topupSuccessUrl(c.env, business.slug as string, bundle, BUNDLE_TOKENS[bundle]),
+      cancel_url: topupCancelUrl(c.env, business.slug as string),
     },
     c.env.STRIPE_SECRET_KEY,
   );

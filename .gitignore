@@ -4,6 +4,9 @@ node_modules/
 .dev.vars.*
 .env
 .env.local
+# bulk wrangler secret upload files — never commit
+secrets-*.json
+*.secrets.json
 *.log
 .DS_Store
 dist/

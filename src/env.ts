@@ -12,7 +12,7 @@ export interface Env {
   CLOUDFLARE_API_TOKEN: string;
   /** Zone ID of the textos.ai zone. */
   CLOUDFLARE_ZONE_ID: string;
-  ENVIRONMENT: "dev" | "prod";
+  ENVIRONMENT: "dev" | "test" | "prod";
   /** Number of paying users required before cold emails auto-send (skipping admin approval). */
   AUTO_APPROVE_AFTER_USER_COUNT: string;
   /** Cloudflare account ID — used by the Pages deploy API. */
@@ -27,6 +27,12 @@ export interface Env {
   GOOGLE_PLACES_API_KEY: string;
   /** Feature flag: enable Google Places API calls in daycycle-connect. */
   DAYCYCLE_PLACES_ENABLED: string;
+  /** Base URL of the frontend that should receive Stripe success/cancel redirects.
+   *  Set per-environment in wrangler.toml [vars]. Falls back to "https://app.textos.ai"
+   *  for safety if unset. Examples:
+   *    prod (textos-agent-dev): https://app.textos.ai
+   *    test (textos-agent-test): https://textos-web-test.pages.dev          */
+  FRONTEND_URL?: string;
   /** KV namespace for anonymous snapshot tokens (C-Lite flow). */
   SNAPSHOT_KV: KVNamespace;
   /** Alpha-only rate limit bypass. Set to 'true' via wrangler secret put LETMEIN_BYPASS_ENABLED.
