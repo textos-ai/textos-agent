@@ -521,6 +521,8 @@ const PatchTaskBody = z.object({
   execution_order:     z.number().int().min(0).optional(),
   kind:                z.enum(["autonomous", "configured", "guide", "system"]).optional(),
   config_page_path:    z.string().min(1).max(500).nullable().optional(),
+  // Must match task_output_type enum in Supabase (pg_enum)
+  output_type:         z.enum(["document", "report", "generated_site", "dashboard_view"]).optional(),
 });
 
 admin.patch("/tasks/:id", async (c) => {
