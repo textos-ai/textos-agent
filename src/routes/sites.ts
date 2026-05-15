@@ -28,6 +28,7 @@ app.get("/:slug", async (c) => {
       "calendly_url, show_credentials_publicly, eyebrow_vocab",
     )
     .eq("slug", slug)
+    .eq("is_active", true) // public site is hidden when the business is deactivated
     .limit(1)
     .maybeSingle();
 

@@ -27,16 +27,38 @@ export interface TaskRow {
     | "fully_locked"
     | "always_visible";
   price_cents: number;
+  token_cost: number;
   prompt_template: string | null;
   output_type:
     | "document"
     | "dashboard_view"
     | "report"
     | "structured_data"
-    | "generated_site";
+    | "generated_site"
+    | "image"
+    | "image_set"
+    | "video";
   inputs_required: Record<string, unknown> | null;
   status: "draft" | "active" | "deprecated";
+  kind: "autonomous" | "configured" | "guide" | "system";
+  config_page_path: string | null;
+  lifecycle_phase_id: string | null;
+  is_regeneratable: boolean;
+  asset_user_editable: boolean;
+  // Admin flag — marks tasks that can be triggered / configured via
+  // inbound text (Telegram, SMS, etc.). V1: metadata only; consumer
+  // wiring lands in a later phase.
+  text_controllable: boolean;
 }
+
+// Columns selected for any task row read. Kept as a constant so the
+// run endpoint, catalog endpoint, and business-tasks endpoint all stay
+// in sync without drifting.
+export const TASK_SELECT_COLUMNS =
+  "id, slug, name, description_short, description_long, area, is_default, " +
+  "plan_required, visibility, price_cents, token_cost, prompt_template, " +
+  "output_type, inputs_required, status, kind, config_page_path, " +
+  "lifecycle_phase_id, is_regeneratable, asset_user_editable, text_controllable";
 
 export async function getTaskBySlug(
   client: SupabaseClient,
@@ -44,9 +66,7 @@ export async function getTaskBySlug(
 ): Promise<TaskRow | null> {
   const { data, error } = await client
     .from("tasks")
-    .select(
-      "id, slug, name, description_short, description_long, area, is_default, plan_required, visibility, price_cents, prompt_template, output_type, inputs_required, status",
-    )
+    .select(TASK_SELECT_COLUMNS)
     .eq("slug", slug)
     .eq("status", "active")
     .maybeSingle();
@@ -243,6 +263,7 @@ export async function getBusinessesByUser(
     .from("businesses")
     .select("id, user_id, slug, name, kind, existing_business_url, created_at")
     .eq("user_id", userId)
+    .eq("is_active", true) // hide soft-deleted / admin-deactivated rows
     .order("created_at", { ascending: false });
 
   if (error) throw error;
@@ -276,6 +297,7 @@ export async function getBusinessBySlug(
     .select("*")
     .eq("user_id", userId)
     .eq("slug", slug)
+    .eq("is_active", true) // deactivated business → treated as not found for user paths
     .maybeSingle();
 
   if (error) throw error;
@@ -343,7 +365,8 @@ export async function countUserBusinesses(
   const { count, error } = await client
     .from("businesses")
     .select("*", { count: "exact", head: true })
-    .eq("user_id", userId);
+    .eq("user_id", userId)
+    .eq("is_active", true); // quota only counts active businesses
 
   if (error) throw error;
   return count ?? 0;
@@ -409,9 +432,7 @@ export async function getAllActiveTasks(
 ): Promise<TaskRow[]> {
   const { data, error } = await client
     .from("tasks")
-    .select(
-      "id, slug, name, description_short, description_long, area, is_default, plan_required, visibility, price_cents, output_type, status",
-    )
+    .select(TASK_SELECT_COLUMNS)
     .eq("status", "active");
 
   if (error) throw error;

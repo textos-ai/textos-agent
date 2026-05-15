@@ -117,8 +117,19 @@ app.get("/:slug/tasks", async (c) => {
       plan_required: task.plan_required,
       visibility: task.visibility,
       price_cents: task.price_cents,
+      token_cost: task.token_cost,
+      // Redacted — frontend only needs existence
+      has_prompt_template:
+        typeof task.prompt_template === "string" &&
+        task.prompt_template.trim() !== "",
       output_type: task.output_type,
       is_default: task.is_default,
+      kind: task.kind,
+      config_page_path: task.config_page_path,
+      lifecycle_phase_id: task.lifecycle_phase_id,
+      is_regeneratable: task.is_regeneratable,
+      asset_user_editable: task.asset_user_editable,
+      text_controllable: task.text_controllable,
       status,
       started_at: run?.started_at ?? null,
       completed_at: run?.completed_at ?? null,
@@ -131,7 +142,29 @@ app.get("/:slug/tasks", async (c) => {
     };
   });
 
-  return c.json({ tasks: taskList });
+  // Free-build status — the frontend gates paid tile buttons on this (D3).
+  const FREE_BUILD_SLUGS = [
+    "welcome-email",
+    "research-strategy",
+    "mission-document",
+    "logo",
+    "business-landing-page",
+    "launch-tweet",
+    "tam-sam-som",
+    "dashboard-briefing",
+  ];
+  const freeBuildTasks = taskList.filter((t) => FREE_BUILD_SLUGS.includes(t.slug));
+  const free_build_complete =
+    freeBuildTasks.length === FREE_BUILD_SLUGS.length &&
+    freeBuildTasks.every((t) => t.status === "completed");
+  const free_build_running_task =
+    freeBuildTasks.find((t) => t.status === "running")?.slug ?? null;
+
+  return c.json({
+    tasks: taskList,
+    free_build_complete,
+    free_build_running_task,
+  });
 });
 
 app.get("/:slug", async (c) => {

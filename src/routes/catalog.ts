@@ -29,11 +29,17 @@ app.get("/tasks", async (c) => {
       plan_required,
       visibility,
       price_cents,
+      token_cost,
+      prompt_template,
       output_type,
       execution_order,
       status,
       kind,
       config_page_path,
+      lifecycle_phase_id,
+      is_regeneratable,
+      asset_user_editable,
+      text_controllable,
       lifecycle_phases(slug, name)
     `)
     .eq("status", "active")
@@ -48,11 +54,19 @@ app.get("/tasks", async (c) => {
     return c.json({ error: "catalog unavailable" }, 500);
   }
 
-  const tagged = (data as any[]).map(t => ({
-    ...t,
-    creator: { id: null, name: "TextOS" },
-    category: deriveCategory(t),
-  }));
+  // Redact prompt_template from public payload — admins author these in the
+  // admin panel; frontend only needs to know if one exists (for Coming Soon
+  // detection at the tile level).
+  const tagged = (data as any[]).map((t) => {
+    const { prompt_template, ...rest } = t;
+    return {
+      ...rest,
+      has_prompt_template:
+        typeof prompt_template === "string" && prompt_template.trim() !== "",
+      creator: { id: null, name: "TextOS" },
+      category: deriveCategory(t),
+    };
+  });
 
   const free       = tagged.filter(t => t.plan_required === "free");
   const core       = tagged.filter(t => t.plan_required === "core_paid");
@@ -66,6 +80,25 @@ app.get("/tasks", async (c) => {
     total: tagged.length,
     categories: getUniqueCategories(tagged),
   });
+});
+
+// GET /api/catalog/lifecycle-phases
+// Returns the small static list of business lifecycle phases (~6 rows).
+// Public — no auth required. Uses service-role Supabase client to bypass
+// RLS on the lifecycle_phases table, which is otherwise locked to admins
+// and would silently return null for nested joins from the frontend.
+app.get("/lifecycle-phases", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const { data, error } = await supabase
+    .from("lifecycle_phases")
+    .select("id, slug, name, sort_order")
+    .order("sort_order", { ascending: true });
+  if (error) {
+    log.error("lifecycle_phases_fetch_failed", { err: String(error) });
+    return c.json({ error: "lifecycle_phases unavailable" }, 500);
+  }
+  c.header("Cache-Control", "public, max-age=300");
+  return c.json({ phases: data ?? [] });
 });
 
 function deriveCategory(task: any): string {

@@ -23,20 +23,44 @@ app.get("/:slug/billing/balance", async (c) => {
   }
   if (!business) return c.json(errBody("not_found", "business not found"), 404);
 
-  const { data: balance, error: balErr } = await supabase
-    .from("token_balances")
-    .select("*")
-    .eq("business_id", business.id)
-    .maybeSingle();
+  const [balRes, subRes] = await Promise.all([
+    supabase
+      .from("token_balances")
+      .select("*")
+      .eq("business_id", business.id)
+      .maybeSingle(),
+    // Most recent subscription row. `subscription_status` reflects current
+    // billing state of this business — frontend uses it to gate pre-sub UI.
+    // active/trialing → subscribed. Anything else (null, canceled, past_due,
+    // expired, incomplete) → treat as pre-sub.
+    supabase
+      .from("business_subscriptions")
+      .select("status")
+      .eq("business_id", business.id)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+  ]);
 
-  if (balErr) {
+  if (balRes.error) {
     log.error("[billing] balance_lookup_failed", {
       slug,
       business_id: business.id,
-      err: balErr.message,
+      err: balRes.error.message,
     });
     return c.json(errBody("internal", "balance_lookup_failed"), 500);
   }
+  // Non-fatal: if sub lookup errors, surface null status (frontend treats as pre-sub).
+  if (subRes.error) {
+    log.error("[billing] sub_lookup_failed", {
+      slug,
+      business_id: business.id,
+      err: subRes.error.message,
+    });
+  }
+
+  const subscription_status = (subRes.data?.status as string | undefined) ?? null;
+  const balance = balRes.data;
 
   if (!balance) {
     return c.json({
@@ -49,6 +73,7 @@ app.get("/:slug/billing/balance", async (c) => {
       period_started_at: null,
       lifetime_tokens_used: 0,
       lifetime_topups_purchased: 0,
+      subscription_status,
     });
   }
 
@@ -68,6 +93,7 @@ app.get("/:slug/billing/balance", async (c) => {
     period_started_at:         balance.period_started_at,
     lifetime_tokens_used:      balance.lifetime_tokens_used,
     lifetime_topups_purchased: balance.lifetime_topups_purchased,
+    subscription_status,
   });
 });
 

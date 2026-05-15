@@ -5,6 +5,7 @@ import { requireAuth } from "../lib/jwt";
 import { createSupabaseClient } from "../services/supabase";
 import { errBody } from "../lib/errors";
 import { log, persistError } from "../lib/logger";
+import { stripeCustomerIdColumn } from "../lib/stripe-mode";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -58,14 +59,16 @@ async function getOrCreateStripeCustomer(
   userId: string,
   email: string,
   stripeSecretKey: string,
+  customerCol: "stripe_customer_id" | "stripe_customer_id_test",
 ): Promise<string> {
   const { data: user } = await supabase
     .from("users")
-    .select("stripe_customer_id")
+    .select(customerCol)
     .eq("id", userId)
     .single();
 
-  if (user?.stripe_customer_id) return user.stripe_customer_id as string;
+  const existing = user ? (user as Record<string, unknown>)[customerCol] : null;
+  if (existing) return existing as string;
 
   const res = await stripePost(
     "/customers",
@@ -80,7 +83,7 @@ async function getOrCreateStripeCustomer(
   const customer = (await res.json()) as { id: string };
   await supabase
     .from("users")
-    .update({ stripe_customer_id: customer.id })
+    .update({ [customerCol]: customer.id })
     .eq("id", userId);
   return customer.id;
 }
@@ -114,6 +117,7 @@ app.post("/subscription", async (c) => {
     .select("id, slug")
     .eq("id", business_id)
     .eq("user_id", user_id)
+    .eq("is_active", true) // can't checkout for a deactivated biz
     .single();
 
   if (bizErr && bizErr.code !== "PGRST116") {
@@ -149,7 +153,13 @@ app.post("/subscription", async (c) => {
   // Get or create Stripe customer (email from JWT auth context, no extra DB read)
   let customerId: string;
   try {
-    customerId = await getOrCreateStripeCustomer(supabase, user_id, email, c.env.STRIPE_SECRET_KEY);
+    customerId = await getOrCreateStripeCustomer(
+      supabase,
+      user_id,
+      email,
+      c.env.STRIPE_SECRET_KEY,
+      stripeCustomerIdColumn(c.env),
+    );
   } catch (err) {
     log.error("[checkout] customer_create_failed", {
       user_id,
@@ -243,6 +253,7 @@ app.post("/topup", async (c) => {
     .select("id, slug")
     .eq("id", business_id)
     .eq("user_id", user_id)
+    .eq("is_active", true) // can't checkout for a deactivated biz
     .single();
 
   if (bizErr && bizErr.code !== "PGRST116") {
@@ -278,7 +289,13 @@ app.post("/topup", async (c) => {
   // Get or create Stripe customer
   let customerId: string;
   try {
-    customerId = await getOrCreateStripeCustomer(supabase, user_id, email, c.env.STRIPE_SECRET_KEY);
+    customerId = await getOrCreateStripeCustomer(
+      supabase,
+      user_id,
+      email,
+      c.env.STRIPE_SECRET_KEY,
+      stripeCustomerIdColumn(c.env),
+    );
   } catch (err) {
     log.error("[checkout] customer_create_failed", {
       user_id,

@@ -7,7 +7,13 @@ compatibility_flags = ["nodejs_compat"]
 crons = ["* * * * *"]
 
 [limits]
-cpu_ms = 30000
+# Raised 30000 → 300000 so executionCtx.waitUntil() can complete heavier
+# paid-task Anthropic calls. The waitUntil budget is capped by cpu_ms;
+# social-content-plan and similar were hitting the 30s cap and getting
+# cancelled mid-stream ("waitUntil tasks did not complete within the
+# allowed time"). 300000 is the Workers Paid plan maximum. Cloudflare
+# bills actual CPU consumed, not the ceiling.
+cpu_ms = 300000
 subrequests = 1000
 
 [vars]
@@ -75,7 +81,8 @@ name = "textos-agent-test"
 crons = []
 
 [env.test.limits]
-cpu_ms = 30000
+# Mirror top-level — see comment in [limits].
+cpu_ms = 300000
 subrequests = 1000
 
 [env.test.vars]

@@ -27,6 +27,7 @@ async function getOwnedBusiness(
     )
     .eq("slug", slug)
     .eq("user_id", user_id)
+    .eq("is_active", true) // user-facing settings — deactivated biz hidden
     .maybeSingle();
   if (error) throw error;
   return data;
@@ -49,6 +50,7 @@ app.get("/user", async (c) => {
       .from("businesses")
       .select("id, slug, name, created_at")
       .eq("user_id", auth.user_id)
+      .eq("is_active", true)
       .order("created_at", { ascending: true }),
   ]);
 

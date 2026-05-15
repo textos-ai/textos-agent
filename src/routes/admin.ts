@@ -16,20 +16,21 @@ admin.use("*", requireAuth);
 
 // ── GET /admin/me ─────────────────────────────────────────────────────────────
 // No requireAdmin — intentionally returns is_admin:false for non-admins so the
-// frontend can gate gracefully without 403s.
+// frontend can gate gracefully without 403s. Reads users.is_admin (the new
+// canonical source post 2026-05-14 admin_users → users.is_admin migration).
 admin.get("/me", async (c) => {
   const { user_id } = c.get("auth");
   const supabase = createSupabaseClient(c.env);
   const { data, error } = await supabase
-    .from("admin_users")
-    .select("user_id")
-    .eq("user_id", user_id)
+    .from("users")
+    .select("is_admin")
+    .eq("id", user_id)
     .maybeSingle();
   if (error) {
     log.error("[admin] me_lookup_failed", { user_id, err: error.message });
     return c.json(errBody("internal", "me_lookup_failed"), 500);
   }
-  return c.json({ is_admin: !!data });
+  return c.json({ is_admin: !!data?.is_admin });
 });
 
 // requireAdmin for every route below — explicit per-group so /me stays un-gated
@@ -45,6 +46,8 @@ admin.use("/external-apis", requireAdmin);
 admin.use("/external-apis/*", requireAdmin);
 admin.use("/businesses", requireAdmin);
 admin.use("/businesses/*", requireAdmin);
+admin.use("/users", requireAdmin);
+admin.use("/users/*", requireAdmin);
 
 // ── GET /admin/email-queue ─────────────────────────────────────────────────
 // Returns pending and recent emails in the queue (latest 100).
@@ -361,6 +364,7 @@ admin.get("/tasks", async (c) => {
       id, slug, name, description_short, plan_required, status, token_cost,
       execution_order, is_default, is_featured, output_type, prompt_template,
       lifecycle_phase_id, is_regeneratable, asset_user_editable,
+      text_controllable,
       kind, config_page_path,
       lifecycle_phases(slug, name),
       task_apis(id, api_id, role, invocation_params, external_apis(slug, name, provider, output_kind))
@@ -487,6 +491,7 @@ admin.post("/tasks", async (c) => {
       id, slug, name, description_short, plan_required, status, token_cost,
       execution_order, is_default, is_featured, output_type, prompt_template,
       lifecycle_phase_id, is_regeneratable, asset_user_editable,
+      text_controllable,
       kind, config_page_path,
       lifecycle_phases(slug, name),
       task_apis(id, api_id, role, invocation_params, external_apis(slug, name, provider, output_kind))
@@ -517,6 +522,7 @@ const PatchTaskBody = z.object({
   asset_user_editable: z.boolean().optional(),
   is_default:          z.boolean().optional(),
   is_featured:         z.boolean().optional(),
+  text_controllable:   z.boolean().optional(),
   prompt_template:     z.string().min(1).max(10000).optional(),
   execution_order:     z.number().int().min(0).optional(),
   kind:                z.enum(["autonomous", "configured", "guide", "system"]).optional(),
@@ -733,7 +739,7 @@ admin.get("/businesses", async (c) => {
   let q = supabase
     .from("businesses")
     .select(`
-      id, slug, name, user_id, created_at,
+      id, slug, name, user_id, created_at, is_active,
       users!inner(email),
       business_subscriptions(status)
     `)
@@ -755,6 +761,7 @@ admin.get("/businesses", async (c) => {
     slug:                r.slug,
     name:                r.name,
     user_id:             r.user_id,
+    is_active:           r.is_active,
     owner_email:         r.users?.email ?? null,
     created_at:          r.created_at,
     subscription_status: r.business_subscriptions?.[0]?.status ?? null,
@@ -762,6 +769,391 @@ admin.get("/businesses", async (c) => {
   const next_before = has_more ? businesses[businesses.length - 1].created_at : null;
 
   return c.json({ businesses, has_more, next_before });
+});
+
+// ── PATCH /admin/businesses/:id/active ────────────────────────────────────
+// Flip a business's is_active flag. Admin-only. Used by the admin index page
+// to deactivate (hide from owner) or reactivate businesses.
+const PatchActiveBody = z.object({ is_active: z.boolean() });
+
+admin.patch("/businesses/:id/active", async (c) => {
+  const { user_id } = c.get("auth");
+  const id = c.req.param("id");
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+    return c.json(errBody("bad_request", "invalid business id"), 400);
+  }
+  let parsed;
+  try {
+    parsed = PatchActiveBody.parse(await c.req.json());
+  } catch (err) {
+    return c.json(errBody("bad_request", "invalid body", String(err)), 400);
+  }
+  const supabase = createSupabaseClient(c.env);
+  const { data, error } = await supabase
+    .from("businesses")
+    .update({ is_active: parsed.is_active })
+    .eq("id", id)
+    .select("id, is_active")
+    .maybeSingle();
+  if (error) {
+    log.error("[admin] biz_active_update_failed", { id, err: error.message });
+    return c.json(errBody("internal", "biz_active_update_failed"), 500);
+  }
+  if (!data) return c.json(errBody("not_found", "business not found"), 404);
+
+  // Best-effort audit row — non-blocking
+  await supabase.from("task_edits").insert({
+    task_id:    null,
+    edited_by:  user_id,
+    field_name: "business.is_active",
+    old_value:  String(!parsed.is_active),
+    new_value:  String(parsed.is_active),
+    metadata:   { business_id: id },
+  }).then(undefined, () => { /* table may not accept null task_id; ignore */ });
+
+  return c.json({ id: data.id, is_active: data.is_active });
+});
+
+// ── DELETE /admin/businesses/:id ──────────────────────────────────────────
+// Soft delete: flips is_active=false, mangles slug + name so the original
+// slug is free to reuse and the row is visually flagged as deleted. All
+// dependent records (token history, subscriptions, business_context, etc.)
+// are PRESERVED — hard delete is reserved for the manual purge SQL.
+admin.delete("/businesses/:id", async (c) => {
+  const { user_id } = c.get("auth");
+  const id = c.req.param("id");
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+    return c.json(errBody("bad_request", "invalid business id"), 400);
+  }
+  const supabase = createSupabaseClient(c.env);
+
+  // Read current slug + name first to compute the mangled values.
+  const { data: existing, error: readErr } = await supabase
+    .from("businesses")
+    .select("id, slug, name")
+    .eq("id", id)
+    .maybeSingle();
+  if (readErr) {
+    log.error("[admin] biz_delete_read_failed", { id, err: readErr.message });
+    return c.json(errBody("internal", "biz_delete_read_failed"), 500);
+  }
+  if (!existing) return c.json(errBody("not_found", "business not found"), 404);
+
+  const ts = Math.floor(Date.now() / 1000);
+  const newSlug = `${existing.slug}_deleted_${ts}`;
+  const newName = `[DELETED] ${existing.name}`;
+
+  const { error: updErr } = await supabase
+    .from("businesses")
+    .update({ is_active: false, slug: newSlug, name: newName })
+    .eq("id", id);
+  if (updErr) {
+    log.error("[admin] biz_delete_update_failed", { id, err: updErr.message });
+    return c.json(errBody("internal", "biz_delete_update_failed"), 500);
+  }
+
+  await supabase.from("task_edits").insert({
+    task_id:    null,
+    edited_by:  user_id,
+    field_name: "business.soft_delete",
+    old_value:  `slug=${existing.slug} name=${existing.name}`,
+    new_value:  `slug=${newSlug} name=${newName}`,
+    metadata:   { business_id: id },
+  }).then(undefined, () => { /* tolerate audit failure */ });
+
+  log.info("[admin] biz_soft_deleted", { id, original_slug: existing.slug });
+  return c.json({ id, deleted: true });
+});
+
+// ── /admin/users — list, detail, comp-month (P1-5) ──────────────────────────
+import { loadUserProfile, listUsers } from "../lib/user-profile";
+
+// GET /admin/users?q=…&page=1&page_size=50
+admin.get("/users", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const q         = c.req.query("q") ?? undefined;
+  const pageRaw   = parseInt(c.req.query("page") ?? "1", 10);
+  const sizeRaw   = parseInt(c.req.query("page_size") ?? "50", 10);
+  const page      = Number.isFinite(pageRaw) && pageRaw > 0 ? pageRaw : 1;
+  const page_size = Number.isFinite(sizeRaw) && sizeRaw > 0 ? sizeRaw : 50;
+
+  try {
+    const result = await listUsers(supabase, { q, page, page_size });
+    return c.json(result);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.error("[admin] users_list_failed", { err: msg });
+    return c.json(errBody("internal", "users_list_failed", msg), 500);
+  }
+});
+
+// GET /admin/users/:id — full profile via shared helper
+admin.get("/users/:id", async (c) => {
+  const id = c.req.param("id");
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+    return c.json(errBody("bad_request", "invalid user id"), 400);
+  }
+  const supabase = createSupabaseClient(c.env);
+  try {
+    const profile = await loadUserProfile(supabase, id);
+    if (!profile) return c.json(errBody("not_found", "user not found"), 404);
+    return c.json(profile);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.error("[admin] user_profile_load_failed", { target_user_id: id, err: msg });
+    return c.json(errBody("internal", "profile_load_failed", msg), 500);
+  }
+});
+
+// POST /admin/users/:id/comp-month
+//
+// Body: { business_id, months?: number (default 1), notes?: string }
+//
+// Three behaviors based on the business's current subscription state:
+//
+//   CASE A — No sub, or sub in canceled/expired/incomplete:
+//     - Create (or revive) a comp sub: status='active', payment_source='comp',
+//       stripe_subscription_id=NULL, period_start=now, period_end=now + N×30d
+//     - grant_period_tokens RPC → fresh 30×N tokens for the new period
+//     - mode='created', action_kind='comp_month_granted'
+//
+//   CASE B — Existing active/trialing sub with payment_source='card':
+//     - DO NOT touch the sub row (no payment_source overwrite, no period change).
+//       Spec rationale: don't disrupt a paying user's billing cycle.
+//     - add_topup_tokens RPC → 30×N tokens into the persistent topup bucket
+//       (does not reset period_tokens_used, doesn't touch period dates)
+//     - mode='tokens_only', action_kind='tokens_granted_comp'
+//
+//   CASE C — Existing active/trialing sub with payment_source='comp':
+//     - Extend current_period_end by N×30d (from later of now or existing end)
+//     - grant_period_tokens RPC → fresh 30×N tokens for the extended period
+//     - mode='extended', action_kind='comp_month_granted'
+//
+// admin_actions.action_kind soft enum (no DB constraint):
+//   'comp_month_granted'   — sub row created or extended with payment_source='comp'
+//   'tokens_granted_comp'  — tokens-only grant to a paying user, sub untouched
+//   (extend this list when new admin actions are added)
+const CompMonthBody = z.object({
+  business_id: z.string().uuid(),
+  months:      z.number().int().min(1).max(12).optional(),
+  notes:       z.string().max(1000).optional(),
+}).strict();
+
+const STANDARD_MONTHLY_TOKEN_GRANT = 30;
+
+admin.post("/users/:id/comp-month", async (c) => {
+  const target_user_id = c.req.param("id");
+  const { user_id: admin_user_id } = c.get("auth");
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(target_user_id)) {
+    return c.json(errBody("bad_request", "invalid user id"), 400);
+  }
+
+  let body: z.infer<typeof CompMonthBody>;
+  try {
+    body = CompMonthBody.parse(await c.req.json());
+  } catch (err) {
+    return c.json(errBody("bad_request", "invalid body", String(err)), 400);
+  }
+  const months = body.months ?? 1;
+
+  const supabase = createSupabaseClient(c.env);
+
+  // 1. Verify business belongs to target user
+  const { data: biz, error: bizErr } = await supabase
+    .from("businesses")
+    .select("id, slug, name, user_id")
+    .eq("id", body.business_id)
+    .eq("user_id", target_user_id)
+    .maybeSingle();
+  if (bizErr) {
+    log.error("[admin] comp_business_lookup_failed", { target_user_id, business_id: body.business_id, err: bizErr.message });
+    return c.json(errBody("internal", "business_lookup_failed"), 500);
+  }
+  if (!biz) {
+    return c.json(errBody("not_found", "business not found for that user"), 404);
+  }
+
+  // 2. Look up most recent subscription row
+  const { data: existingSub } = await supabase
+    .from("business_subscriptions")
+    .select("id, status, current_period_end, payment_source")
+    .eq("business_id", biz.id)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  // 3. Determine which case we're in
+  const subIsActive =
+    !!existingSub &&
+    (existingSub.status === "active" || existingSub.status === "trialing");
+
+  let mode: "created" | "extended" | "tokens_only";
+  let actionKind: "comp_month_granted" | "tokens_granted_comp";
+
+  if (!subIsActive) {
+    mode       = "created";
+    actionKind = "comp_month_granted";
+  } else if (existingSub!.payment_source === "card") {
+    mode       = "tokens_only";
+    actionKind = "tokens_granted_comp";
+  } else {
+    // payment_source === 'comp' (or unexpected like 'connect_revenue_share' —
+    // treat as extend since the sub is active/trialing). Default to extend.
+    mode       = "extended";
+    actionKind = "comp_month_granted";
+  }
+
+  // 4. Compute period dates for sub-touching modes (created / extended)
+  const now     = new Date();
+  const monthMs = 30 * 24 * 60 * 60 * 1000;
+  let newPeriodStart: Date = now;
+  let newPeriodEnd:   Date = new Date(now.getTime() + months * monthMs);
+
+  if (mode === "extended") {
+    const existingEnd = new Date(existingSub!.current_period_end as string);
+    newPeriodStart = existingEnd > now ? existingEnd : now;
+    newPeriodEnd   = new Date(newPeriodStart.getTime() + months * monthMs);
+  }
+
+  // 5. Apply sub change (CASE A inserts/revives, CASE C extends, CASE B is no-op)
+  if (mode === "created") {
+    if (existingSub) {
+      // Revive an existing inactive row
+      const { error: updErr } = await supabase
+        .from("business_subscriptions")
+        .update({
+          status:               "active",
+          payment_source:       "comp",
+          current_period_start: newPeriodStart.toISOString(),
+          current_period_end:   newPeriodEnd.toISOString(),
+          cancel_at_period_end: false,
+          canceled_at:          null,
+          updated_at:           now.toISOString(),
+        })
+        .eq("id", existingSub.id as string);
+      if (updErr) {
+        log.error("[admin] comp_sub_revive_failed", { target_user_id, business_id: biz.id, err: updErr.message });
+        return c.json(errBody("internal", "comp_sub_revive_failed"), 500);
+      }
+    } else {
+      // Fresh insert
+      const { error: insErr } = await supabase
+        .from("business_subscriptions")
+        .insert({
+          business_id:            biz.id,
+          user_id:                target_user_id,
+          plan_slug:              "standard_monthly",
+          status:                 "active",
+          current_period_start:   newPeriodStart.toISOString(),
+          current_period_end:     newPeriodEnd.toISOString(),
+          payment_source:         "comp",
+          stripe_subscription_id: null,
+          stripe_customer_id:     null,
+        });
+      if (insErr) {
+        log.error("[admin] comp_sub_insert_failed", { target_user_id, business_id: biz.id, err: insErr.message });
+        return c.json(errBody("internal", "comp_sub_insert_failed"), 500);
+      }
+    }
+  } else if (mode === "extended") {
+    const { error: updErr } = await supabase
+      .from("business_subscriptions")
+      .update({
+        current_period_end: newPeriodEnd.toISOString(),
+        updated_at:         now.toISOString(),
+      })
+      .eq("id", existingSub!.id as string);
+    if (updErr) {
+      log.error("[admin] comp_sub_extend_failed", { target_user_id, business_id: biz.id, err: updErr.message });
+      return c.json(errBody("internal", "comp_sub_extend_failed"), 500);
+    }
+  }
+  // mode === 'tokens_only': skip sub mutation entirely.
+
+  // 6. Grant tokens. Different RPC per mode:
+  //    created / extended → grant_period_tokens (resets the period to fresh 30×N)
+  //    tokens_only        → add_topup_tokens (adds to persistent topup bucket,
+  //                         does NOT touch period dates or used count)
+  const tokensToGrant = STANDARD_MONTHLY_TOKEN_GRANT * months;
+
+  if (mode === "tokens_only") {
+    const description =
+      "Comp tokens granted by admin" +
+      (body.notes ? `: ${body.notes}` : "");
+    const { error: topupErr } = await supabase.rpc("add_topup_tokens", {
+      p_business_id: biz.id,
+      p_user_id:     target_user_id,
+      p_tokens:      tokensToGrant,
+      p_topup_id:    null,
+      p_description: description,
+    });
+    if (topupErr) {
+      log.error("[admin] comp_topup_grant_failed", { target_user_id, business_id: biz.id, err: topupErr.message });
+      return c.json(errBody("internal", "comp_grant_failed"), 500);
+    }
+  } else {
+    const { error: grantErr } = await supabase.rpc("grant_period_tokens", {
+      p_business_id:  biz.id,
+      p_user_id:      target_user_id,
+      p_tokens:       tokensToGrant,
+      p_period_start: newPeriodStart.toISOString(),
+      p_period_end:   newPeriodEnd.toISOString(),
+    });
+    if (grantErr) {
+      log.error("[admin] comp_grant_failed", { target_user_id, business_id: biz.id, err: grantErr.message });
+      return c.json(errBody("internal", "comp_grant_failed"), 500);
+    }
+  }
+
+  // 7. Audit row — admin_actions
+  const previousStatus = (existingSub?.status as string | undefined) ?? null;
+  const auditMetadata: Record<string, unknown> = {
+    business_id:    biz.id,
+    business_slug:  biz.slug,
+    months,
+    tokens_granted: tokensToGrant,
+    mode,
+    previous_status: previousStatus,
+    notes:          body.notes ?? null,
+  };
+  if (mode === "tokens_only") {
+    auditMetadata.sub_payment_source     = existingSub!.payment_source as string;
+    auditMetadata.sub_status             = existingSub!.status as string;
+    auditMetadata.new_current_period_end = null;
+  } else {
+    auditMetadata.new_current_period_end = newPeriodEnd.toISOString();
+  }
+
+  const { error: auditErr } = await supabase.from("admin_actions").insert({
+    admin_user_id,
+    target_user_id,
+    action_kind: actionKind,
+    metadata:    auditMetadata,
+  });
+  if (auditErr) {
+    // Audit failure shouldn't undo the user-visible grant — log + continue.
+    log.error("[admin] comp_audit_failed", { target_user_id, business_id: biz.id, err: auditErr.message });
+  }
+
+  log.info("[admin] comp_month_granted", {
+    admin_user_id,
+    target_user_id,
+    business_id:    biz.id,
+    months,
+    tokens_granted: tokensToGrant,
+    mode,
+    action_kind:    actionKind,
+  });
+
+  return c.json({
+    success:            true,
+    mode,
+    business_id:        biz.id,
+    months,
+    tokens_granted:     tokensToGrant,
+    current_period_end: mode === "tokens_only" ? null : newPeriodEnd.toISOString(),
+    previous_status:    previousStatus,
+  });
 });
 
 export default admin;
