@@ -30,12 +30,22 @@ import {
 } from "../services/supabase";
 import { buildBundleSuggestions } from "../lib/withTokenDeduction";
 import { genericDocumentRunner } from "../lib/tasks/generic-document-runner";
-import type { TaskCtx } from "../lib/tasks/types";
+import type { TaskCtx, TaskFn } from "../lib/tasks/types";
+
+// Import task-specific handlers for free build tasks
+import { runWelcomeEmail } from "../lib/tasks/welcome-email";
+import { runResearchStrategy } from "../lib/tasks/research-strategy";
+import { runMissionDocument } from "../lib/tasks/mission-document";
+import { runLogo } from "../lib/tasks/logo";
+import { runBusinessLandingPage } from "../lib/tasks/business-landing-page";
+import { runLaunchTweet } from "../lib/tasks/launch-tweet";
+import { runTamSamSom } from "../lib/tasks/tam-sam-som";
+import { runDashboardBriefing } from "../lib/tasks/dashboard-briefing";
 
 const app = new Hono<{ Bindings: Env }>();
 app.use("*", requireAuth);
 
-// The 6 free-build task slugs the orchestrator runs by default.
+// The 8 free-build task slugs the orchestrator runs by default.
 // Used to gate paid runs while the build is still in flight (D3).
 const FREE_BUILD_SLUGS = [
   "welcome-email",
@@ -47,6 +57,19 @@ const FREE_BUILD_SLUGS = [
   "tam-sam-som",
   "dashboard-briefing",
 ];
+
+// Dispatch table for manual re-runs of free build tasks through the standard task API.
+// These handlers are the same ones used by the free build orchestrator.
+const FREE_BUILD_TASK_HANDLERS: Record<string, TaskFn> = {
+  "welcome-email": runWelcomeEmail,
+  "research-strategy": runResearchStrategy,
+  "mission-document": runMissionDocument,
+  "logo": runLogo,
+  "business-landing-page": runBusinessLandingPage,
+  "launch-tweet": runLaunchTweet,
+  "tam-sam-som": runTamSamSom,
+  "dashboard-briefing": runDashboardBriefing,
+};
 
 // ── POST /:slug/tasks/:taskSlug/run ─────────────────────────────────────
 app.post("/:slug/tasks/:taskSlug/run", async (c) => {
@@ -101,23 +124,82 @@ app.post("/:slug/tasks/:taskSlug/run", async (c) => {
     );
   }
 
-  if (task.is_default) {
+  if (task.status === "draft") {
     return c.json(
       {
-        error: "task_is_free_build",
-        message: "Free build tasks run automatically.",
+        error: "task_not_yet_available",
+        message: "This task is not yet available."
       },
-      400,
+      403,
     );
   }
 
-  const isComingSoon =
+  // ── Regeneratable task guard ──────────────────────────────────────
+  // BLOCK standalone run only if:
+  //   - A free build is actively running for this business
+  //   - AND this task is currently part of that running build
+  // ALLOW standalone run if:
+  //   - No active free build OR
+  //   - Task is is_regeneratable = true (can always re-run) OR
+  //   - Task has already completed in the current context
+  if (task.is_default && !task.is_regeneratable) {
+    // Check for active free build
+    const { data: activeBuild, error: buildErr } = await supabase
+      .from("free_build_runs")
+      .select("id")
+      .eq("business_id", business.id)
+      .eq("status", "running")
+      .maybeSingle();
+
+    if (buildErr) {
+      log.error("[task-run] free_build_check_failed", {
+        business_id: business.id,
+        err: buildErr.message,
+      });
+      return c.json(errBody("internal", "free_build_check_failed"), 500);
+    }
+
+    if (activeBuild) {
+      // Free build is running - check if this task is currently part of it
+      const { data: taskInBuild, error: taskErr } = await supabase
+        .from("task_runs")
+        .select("status")
+        .eq("business_id", business.id)
+        .eq("task_id", task.id)
+        .in("status", ["running", "pending"])
+        .maybeSingle();
+
+      if (taskErr) {
+        log.error("[task-run] task_in_build_check_failed", {
+          business_id: business.id,
+          task_id: task.id,
+          err: taskErr.message,
+        });
+        return c.json(errBody("internal", "task_in_build_check_failed"), 500);
+      }
+
+      if (taskInBuild) {
+        return c.json(
+          {
+            error: "task_in_active_build",
+            message: "This task is currently running as part of the free build.",
+          },
+          409,
+        );
+      }
+    }
+  }
+
+  // Coming soon check — but exclude free build tasks that have dedicated handlers
+  const hasDedicatedHandler = task.slug in FREE_BUILD_TASK_HANDLERS;
+  const isComingSoon = !hasDedicatedHandler && (
     !task.token_cost ||
     task.token_cost === 0 ||
     !task.prompt_template ||
     task.prompt_template.trim() === "" ||
     task.output_type === "generated_site" ||
-    task.output_type === "dashboard_view";
+    task.output_type === "dashboard_view"
+  );
 
   if (isComingSoon) {
     return c.json(
@@ -158,37 +240,40 @@ app.post("/:slug/tasks/:taskSlug/run", async (c) => {
     );
   }
 
-  // 5. Free-build completion gate (D3)
-  const { data: freeBuildRuns, error: freeBuildErr } = await supabase
-    .from("task_runs")
-    .select("status, tasks!inner(slug)")
-    .eq("business_id", business.id)
-    .in("tasks.slug", FREE_BUILD_SLUGS);
+  // 5. Free-build completion gate (D3) — only applies to non-regeneratable tasks
+  // Regeneratable tasks can always run, even during active free builds
+  if (!task.is_regeneratable) {
+    const { data: freeBuildRuns, error: freeBuildErr } = await supabase
+      .from("task_runs")
+      .select("status, tasks!inner(slug)")
+      .eq("business_id", business.id)
+      .in("tasks.slug", FREE_BUILD_SLUGS);
 
-  if (freeBuildErr) {
-    log.error("[task-run] free_build_check_failed", {
-      business_id: business.id,
-      err: freeBuildErr.message,
-    });
-    return c.json(errBody("internal", "free_build_check_failed"), 500);
-  }
+    if (freeBuildErr) {
+      log.error("[task-run] free_build_check_failed", {
+        business_id: business.id,
+        err: freeBuildErr.message,
+      });
+      return c.json(errBody("internal", "free_build_check_failed"), 500);
+    }
 
-  type FreeBuildRow = { status: string; tasks: { slug: string } };
-  const runs = (freeBuildRuns ?? []) as unknown as FreeBuildRow[];
-  // Free build complete = every FREE_BUILD_SLUGS slug has a task_run with status='completed'.
-  const completedSlugs = new Set(
-    runs.filter((r) => r.status === "completed").map((r) => r.tasks.slug),
-  );
-  const freeBuildComplete = FREE_BUILD_SLUGS.every((s) => completedSlugs.has(s));
-
-  if (!freeBuildComplete) {
-    return c.json(
-      {
-        error: "free_build_in_progress",
-        message: "Free build still in progress. Try again in a moment.",
-      },
-      409,
+    type FreeBuildRow = { status: string; tasks: { slug: string } };
+    const runs = (freeBuildRuns ?? []) as unknown as FreeBuildRow[];
+    // Free build complete = every FREE_BUILD_SLUGS slug has a task_run with status='completed'.
+    const completedSlugs = new Set(
+      runs.filter((r) => r.status === "completed").map((r) => r.tasks.slug),
     );
+    const freeBuildComplete = FREE_BUILD_SLUGS.every((s) => completedSlugs.has(s));
+
+    if (!freeBuildComplete) {
+      return c.json(
+        {
+          error: "free_build_in_progress",
+          message: "Free build still in progress. Try again in a moment.",
+        },
+        409,
+      );
+    }
   }
 
   // 6. Pre-check token balance (D2)
@@ -441,7 +526,11 @@ async function runTaskInBackground(
       cfLocation: null,
     };
 
-    const result = await genericDocumentRunner(taskCtx, task);
+    // Check for dedicated handler first (free build tasks), fallback to generic runner
+    const dedicatedHandler = FREE_BUILD_TASK_HANDLERS[task.slug];
+    const result = dedicatedHandler
+      ? await dedicatedHandler(taskCtx)
+      : await genericDocumentRunner(taskCtx, task);
 
     // Cancellation check: if the user cancelled while the Anthropic call
     // was in flight, the asset has already been written to business_assets
@@ -461,39 +550,50 @@ async function runTaskInBackground(
       return;
     }
 
-    // Debit AFTER the asset persists. Failure here is rare but possible —
-    // log loudly and mark the run as failed (user keeps the asset because
-    // business_assets is the receipt; they just got it for free this once).
-    const { data: debitResult, error: debitErr } = await supabase.rpc(
-      "debit_tokens",
-      {
-        p_business_id: business.id,
-        p_user_id: user_id,
-        p_tokens: task.token_cost,
-        p_task_slug: task.slug,
-        p_task_run_id: taskRunId,
-        p_description: `Task: ${task.name}`,
-      },
-    );
-
-    if (debitErr || !(debitResult as { ok?: boolean })?.ok) {
-      log.error("[task-run] post_run_debit_failed", {
+    // Token deduction — skip entirely for free tasks (token_cost = 0)
+    if (!task.token_cost || task.token_cost === 0) {
+      // Free task — skip token deduction entirely
+      log.info("[task-run] free_task_no_deduction", {
         business_id: business.id,
         task_slug: task.slug,
         task_run_id: taskRunId,
-        err: debitErr?.message,
-        result: debitResult,
+        token_cost: task.token_cost,
       });
-      await supabase
-        .from("task_runs")
-        .update({
-          status: "failed",
-          error: "token_deduct_failed_post_run",
-          completed_at: new Date().toISOString(),
-        })
-        .eq("id", taskRunId)
-        .eq("status", "running"); // don't overwrite a user cancellation
-      return;
+    } else {
+      // Debit AFTER the asset persists. Failure here is rare but possible —
+      // log loudly and mark the run as failed (user keeps the asset because
+      // business_assets is the receipt; they just got it for free this once).
+      const { data: debitResult, error: debitErr } = await supabase.rpc(
+        "debit_tokens",
+        {
+          p_business_id: business.id,
+          p_user_id: user_id,
+          p_tokens: task.token_cost,
+          p_task_slug: task.slug,
+          p_task_run_id: taskRunId,
+          p_description: `Task: ${task.name}`,
+        },
+      );
+
+      if (debitErr || !(debitResult as { ok?: boolean })?.ok) {
+        log.error("[task-run] post_run_debit_failed", {
+          business_id: business.id,
+          task_slug: task.slug,
+          task_run_id: taskRunId,
+          err: debitErr?.message,
+          result: debitResult,
+        });
+        await supabase
+          .from("task_runs")
+          .update({
+            status: "failed",
+            error: "token_deduct_failed_post_run",
+            completed_at: new Date().toISOString(),
+          })
+          .eq("id", taskRunId)
+          .eq("status", "running"); // don't overwrite a user cancellation
+        return;
+      }
     }
 
     // Final completion update — also gated on status='running' so a
@@ -513,7 +613,8 @@ async function runTaskInBackground(
       business_id: business.id,
       task_slug: task.slug,
       task_run_id: taskRunId,
-      tokens_debited: task.token_cost,
+      tokens_debited: (!task.token_cost || task.token_cost === 0) ? 0 : task.token_cost,
+      is_free_task: (!task.token_cost || task.token_cost === 0),
     });
   } catch (err) {
     const message =

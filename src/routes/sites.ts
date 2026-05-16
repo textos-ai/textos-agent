@@ -25,7 +25,14 @@ app.get("/:slug", async (c) => {
       "id, name, slug, created_at, " +
       "accent_color, accent_color_override, hero_layout, hero_font, " +
       "hero_image_url, hero_image_credit, seo_title, seo_description, seo_keywords, " +
-      "calendly_url, show_credentials_publicly, eyebrow_vocab",
+      "calendly_url, show_credentials_publicly, eyebrow_vocab, " +
+      "hero_css_pattern, og_image_url, " +
+      "hero_eyebrow, hero_headline, hero_headline_accent, hero_subhead, " +
+      "hero_cta_label, hero_cta_type, " +
+      "icp_headline, icp_description, icp_signals, " +
+      "pain_points, metrics, palate_cleanser, why_us, nav_links, " +
+      "what_we_do_eyebrow, what_we_do_headline, what_we_do_body, " +
+      "founder_eyebrow, founder_headline, founder_body",
     )
     .eq("slug", slug)
     .eq("is_active", true) // public site is hidden when the business is deactivated
@@ -62,10 +69,37 @@ app.get("/:slug", async (c) => {
     hero_image_url:           business.hero_image_url   ?? null,
     hero_image_credit:        business.hero_image_credit ?? null,
     eyebrow_vocab:            business.eyebrow_vocab    ?? "standard",
+    hero_css_pattern:         business.hero_css_pattern ?? null,
+    og_image_url:             business.og_image_url     ?? null,
     // SEO (agent-derived)
     seo_title:                business.seo_title        ?? null,
     seo_description:          business.seo_description  ?? null,
     seo_keywords:             business.seo_keywords     ?? [],
+    // Hero content fields
+    hero_eyebrow:             business.hero_eyebrow     ?? null,
+    hero_headline:            business.hero_headline    ?? null,
+    hero_headline_accent:     business.hero_headline_accent ?? null,
+    hero_subhead:             business.hero_subhead     ?? null,
+    hero_cta_label:           business.hero_cta_label   ?? null,
+    hero_cta_type:            business.hero_cta_type    ?? null,
+    // ICP fields
+    icp_headline:             business.icp_headline     ?? null,
+    icp_description:          business.icp_description  ?? null,
+    icp_signals:              business.icp_signals      ?? [],
+    // Structured content (JSONB)
+    pain_points:              business.pain_points      ?? [],
+    metrics:                  business.metrics          ?? [],
+    palate_cleanser:          business.palate_cleanser  ?? {},
+    why_us:                   business.why_us           ?? [],
+    nav_links:                business.nav_links        ?? [],
+    // What We Do fields
+    what_we_do_eyebrow:       business.what_we_do_eyebrow ?? null,
+    what_we_do_headline:      business.what_we_do_headline ?? null,
+    what_we_do_body:          business.what_we_do_body  ?? null,
+    // Founder fields
+    founder_eyebrow:          business.founder_eyebrow  ?? null,
+    founder_headline:         business.founder_headline ?? null,
+    founder_body:             business.founder_body     ?? null,
     // User settings
     calendly_url:             business.calendly_url     ?? null,
     show_credentials_publicly: business.show_credentials_publicly ?? false,

@@ -1,0 +1,36 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/code/textos-web/**)",
+      "Bash(npm run *)",
+      "Bash(npx wrangler *)",
+      "Bash(curl -s -X GET https://api.cloudflare.com/client/v4/accounts/__TRACKED_VAR__/pages/projects/textos-web-test/deployments -H 'Authorization: Bearer __TRACKED_VAR__' -H 'Content-Type: application/json')",
+      "Bash(curl -s -X POST https://api.cloudflare.com/client/v4/accounts/__TRACKED_VAR__/pages/projects/textos-web-test/deployments -H 'Authorization: Bearer __TRACKED_VAR__' -H 'Content-Type: application/json' -d '{ *)",
+      "Bash(curl -s https://textos-web-test.pages.dev/)",
+      "Bash(curl -s https://app.textos.ai/)",
+      "Bash(curl -s https://92adfee9.textos-web-test.pages.dev/)",
+      "Bash(curl -s https://textos-agent-test.rgaudet2023.workers.dev/api/env/mode)",
+      "Bash(curl -s https://textos-agent-dev.rgaudet2023.workers.dev/api/env/mode)",
+      "Bash(curl -s https://d7c54077.textos-web-test.pages.dev/)",
+      "Bash(curl -s https://textos-web-test.pages.dev/business/idea-284642/builder)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push *)",
+      "Bash(xargs grep -l \"api/sites\")",
+      "Bash(xargs grep -l \"business_context\")",
+      "Bash(xargs grep -l \"prompt_template\\\\|tasks.*prompt\")",
+      "Bash(curl *)",
+      "PowerShell(cd \"C:\\\\code\\\\textos-agent\"; $env:CLOUDFLARE_API_TOKEN)",
+      "PowerShell($token = \\(Get-Content \"C:\\\\code\\\\textos-web\\\\.env\" | Where-Object { $_ -match \"^CLOUDFLARE_API_TOKEN=\" } | ForEach-Object { $_ -replace \"^CLOUDFLARE_API_TOKEN=\", \"\" }\\); $env:CLOUDFLARE_API_TOKEN = $token; cd \"C:\\\\code\\\\textos-agent\"; npx wrangler whoami)",
+      "PowerShell(npx wrangler deploy --env test)",
+      "PowerShell(npm run *)",
+      "PowerShell($token = \\(Get-Content \"C:\\\\code\\\\textos-agent\\\\.env\" | Where-Object { $_ -match \"^CLOUDFLARE_API_TOKEN=\" } | ForEach-Object { $_ -replace \"^CLOUDFLARE_API_TOKEN=\", \"\" }\\); $env:CLOUDFLARE_API_TOKEN = $token; cd \"C:\\\\code\\\\textos-agent\"; npx wrangler deploy --env test)",
+      "PowerShell($token = \\(Get-Content \"C:\\\\code\\\\textos-agent\\\\.env\" | Where-Object { $_ -match \"^CLOUDFLARE_API_TOKEN=\" } | ForEach-Object { $_ -replace \"^CLOUDFLARE_API_TOKEN=\", \"\" }\\); $env:CLOUDFLARE_API_TOKEN = $token; cd \"C:\\\\code\\\\textos-agent\"; npx wrangler tail --env test)",
+      "PowerShell($token = \\(Get-Content \"C:\\\\code\\\\textos-agent\\\\.env\" | Where-Object { $_ -match \"^CLOUDFLARE_API_TOKEN=\" } | ForEach-Object { $_ -replace \"^CLOUDFLARE_API_TOKEN=\", \"\" }\\); $env:CLOUDFLARE_API_TOKEN = $token; cd \"C:\\\\code\\\\textos-agent\"; npx wrangler tail textos-agent-test --env test)",
+      "PowerShell($env:CLOUDFLARE_API_TOKEN)",
+      "PowerShell($env:CLOUDFLARE_API_TOKEN = \"cfut_u8Cavnmb5JX2Ty0CDDSAkn7bVEv59VH5cbCamx7K2ebb173b\")",
+      "Bash(export CLOUDFLARE_API_TOKEN=\"cfut_u8Cavnmb5JX2Ty0CDDSAkn7bVEv59VH5cbCamx7K2ebb173b\")",
+      "Bash(wrangler pages *)"
+    ]
+  }
+}
