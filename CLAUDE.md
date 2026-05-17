@@ -334,3 +334,31 @@ TOKEN SECURITY:
 [ ] Check wrangler.toml for current env/binding config
 [ ] Confirm CLOUDFLARE_API_TOKEN is loadable from .env
 [ ] Run npx wrangler whoami before any deploy
+
+---
+
+## POST-LAUNCH INFRASTRUCTURE (V1.1)
+
+These three improvements are planned after May 19 launch.
+Do NOT implement before launch.
+
+1. LOCAL CLAUDE.md FILES
+   Add per-module context files for complex areas:
+   - src/pages/business/CLAUDE.md (routing rules)
+   - src/routes/auth/ CLAUDE.md (auth patterns)
+   - src/lib/tasks/CLAUDE.md (task execution patterns)
+   Start with business routing — caused 7 hours of pain on May 16.
+
+2. .claude/skills/ FOLDER
+   Reusable expert workflows for repeated tasks:
+   - deploy.md (the full deploy ritual)
+   - debug.md (the debugging brief formula)
+   - new-page.md (the static prerender + _redirects pattern)
+   Write one skill at a time. Test for one week before adding more.
+
+3. .claude/hooks/ GUARDRAILS
+   Automated protection for critical files.
+   Implement only when codebase is stable (V1.1+).
+   Protected zones: auth, billing, migrations.
+   Risk: misconfigured hooks can block emergency hotfixes.
+   Do NOT add before the codebase stabilizes post-launch.
