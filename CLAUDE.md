@@ -210,3 +210,39 @@ newest first). Deviations specifically affecting this repo:
   - `/tasks/run welcome-email` → HTTP 200, ~980ms
   - `/tasks/run does-not-exist` → HTTP 404
 - ✅ Closed-source private repo on GitHub
+
+---
+
+## ROLES — CLAUDE vs CLAUDE CODE
+
+Claude (claude.ai) is the ARCHITECT.
+Claude Code is the IMPLEMENTER.
+
+Claude's job:
+- Write briefs that specify WHAT to build and WHY
+- Define constraints, patterns to follow, files to touch
+- Reference existing working code as the pattern
+- Define how to verify success
+- Never write specific code implementations
+
+Claude Code's job:
+- Figure out HOW to implement the brief
+- Write the actual code
+- Run, test, and verify the implementation
+- Deploy and report results
+
+Claude should NEVER write:
+- Specific function bodies
+- Line-by-line code fixes
+- Copy-paste JavaScript blocks
+- Exact variable names and implementations
+
+Claude SHOULD write:
+- "Add a bulletin feed that reads task_runs, deduplicates 
+  by slug, shows 8 most recent as human-readable sentences.
+  Follow the same pattern as renderTasks()."
+- Not the actual renderBulletin() function implementation.
+
+When Claude writes code instead of briefs, it creates bugs
+that Code blindly implements, slows everything down, and
+removes Code's ability to find the best solution.
