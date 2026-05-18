@@ -325,6 +325,20 @@ TOKEN SECURITY:
 
 ---
 
+## QUICK CONTENT CHANGES
+
+When asked to change text, copy, or images only:
+- Edit the file
+- Deploy to test only
+- Stop and wait for approval
+- Do NOT deploy to prod
+- Do NOT git commit
+- Do NOT run the full release pipeline
+
+A text change is not a release.
+
+---
+
 ## DAILY CHECKLIST (run at start of every session)
 
 [ ] Read CLAUDE.md in both repos
@@ -362,3 +376,228 @@ Do NOT implement before launch.
    Protected zones: auth, billing, migrations.
    Risk: misconfigured hooks can block emergency hotfixes.
    Do NOT add before the codebase stabilizes post-launch.
+
+================================================================
+## PROJECT CONTEXT — WHAT WE ARE BUILDING
+================================================================
+
+TextOS is a fully autonomous AI-powered business operating system.
+It builds and operates complete online businesses without ongoing
+human involvement. The activator sets a mission and a monthly ad
+budget. TextOS handles everything else — forever.
+
+THE ACTIVATOR'S ENTIRE JOB:
+  1. Set a mission (business idea)
+  2. Connect Stripe (one-time)
+  3. Set monthly ad budget
+  4. That's it. TextOS runs the business from this point forward.
+
+The activator is NOT a manager. They receive reports and metrics.
+They do not approve content, review campaigns, or make operational
+decisions. Every operational decision is made autonomously by TextOS.
+
+WHAT TEXTOS DOES AUTONOMOUSLY:
+  - Generates brand, mission, strategy from a single idea
+  - Builds and deploys the business website
+  - Creates the digital product (PDF guide/template/checklist)
+  - Deploys a live paywall (Stripe checkout on the business site)
+  - Generates all ad creative (copy, images, video scripts)
+  - Publishes campaigns to Meta, Google, TikTok, LinkedIn
+  - Ingests performance data and optimizes campaigns nightly
+  - Improves the product based on user behavior and feedback
+  - Reports metrics to the activator: sales, ROAS, LTV, CAC, CVR
+
+WHAT IS BUILT AND WORKING:
+  ✓ Authentication (Google OAuth + magic link, no passwords)
+  ✓ Business Builder (10-task free build pipeline, SSE streaming)
+  ✓ Generated business websites (static, deployed to {slug}.app.textos.ai)
+  ✓ Token economy (30 tokens/period, top-up bundles, ledger)
+  ✓ Stripe subscriptions ($49.99/mo Founders, $29.99/mo Standard)
+  ✓ Stripe Connect schema (businesses table has stripe_connect_* fields)
+  ✓ Operator School (6 badges, 12 lessons)
+  ✓ Business Manager V1 (goals, charge windows, milestones)
+  ✓ Business Live page (/business/live — operations view)
+  ✓ Admin portal (Phase 1+2)
+  ✓ Marketing: carousel generator, cold email, social content plan
+
+WHAT IS COMING NEXT (Autonomous Business Engine):
+  → DIGITAL_PRODUCT generation pipeline (PDF via Claude + R2 storage)
+  → Stripe paywall on business website (/buy + /download pages)
+  → Ad creative generation (Meta first, then Google, TikTok)
+  → Ad platform API integrations
+  → Nightly optimization loop (Cron Trigger at 2am UTC)
+  → Event-driven threshold workers (Cloudflare Queues)
+  → Ad wallet funding flow (Stripe → TextOS → platforms)
+  → Performance reporting dashboard (metrics to activator)
+
+NET NEW TABLES FOR AUTONOMOUS ENGINE (not yet created):
+  business_products     — digital product assets, R2 file location, pricing
+  ad_campaigns          — campaign config, platform, status, daily budget
+  ad_creatives          — creative assets, platform format, performance data
+  ad_wallets            — activator balance, disbursement history, fee ledger
+  performance_snapshots — daily metrics: revenue, ROAS, CVR, ad spend
+
+DO NOT create these tables until the sprint brief instructs it.
+DO NOT start any autonomous engine work until Rob says go.
+
+================================================================
+## TYPESCRIPT CONTRACT RULES
+================================================================
+
+### BaseRow interface (use for all new row types)
+
+All new row interfaces must extend BaseRow or MutableRow.
+Add to src/services/supabase.ts before adding any new row type.
+
+  export interface BaseRow {
+    id: string;           // uuid
+    created_at: string;   // timestamptz
+  }
+
+  export interface MutableRow extends BaseRow {
+    updated_at: string;   // timestamptz
+  }
+
+All existing row types (BusinessRow, UserRow, etc.) should be
+migrated to extend BaseRow in a separate cleanup pass.
+Do NOT do this migration mid-feature — do it as a standalone task.
+
+### Route handler error shape (use errBody() everywhere)
+
+Every route handler must return errBody() on error paths.
+Never return ad-hoc JSON on error. Never throw without catching.
+
+Import from: src/lib/errors.ts
+  import { errBody } from '../lib/errors.js';
+
+Error response pattern:
+  return c.json(errBody('not_found', 'Business not found'), 404);
+  return c.json(errBody('bad_request', 'Slug is required'), 400);
+  return c.json(errBody('internal', 'Database write failed'), 500);
+
+ErrorCode values: bad_request, not_found, conflict, internal,
+  upstream_error, unauthorized, forbidden, rate_limited, not_configured
+
+### Function signature consistency
+
+Agent service functions follow this pattern:
+  export async function doThing(
+    client: SupabaseClient,
+    param1: string,
+    param2: number,
+  ): Promise<ThingRow> {
+    const { data, error } = await client.from('things')...
+    if (error) throw error;
+    return data as ThingRow;
+  }
+
+Rules:
+  - First param is always SupabaseClient
+  - Return typed promises, never any
+  - Throw on error — never return error objects
+  - Named exports only — no default exports from service files
+
+================================================================
+## FIELD LOCKING SYSTEM (for Autonomous Engine content fields)
+================================================================
+
+Any content field that the AI generates AND the activator can edit
+must implement the locking system. This applies to business_products
+and any future content tables touched by the optimization loop.
+
+Three properties per content field:
+  content:  the current value
+  source:   "ai_generated" | "human_edited" | "ai_optimized"
+  locked:   true | false
+
+Rules (non-negotiable):
+  - Field starts as source="ai_generated", locked=false
+  - Activator manually edits field → source="human_edited", locked=true
+  - Optimization loop reads locked BEFORE any write
+  - locked=true → skip this field, write recommendation to dashboard
+  - locked=false → optimization loop may update, source="ai_optimized"
+  - Activator can toggle locked from dashboard at any time
+
+When querying for optimization targets:
+  WHERE locked = false AND source != 'human_edited'
+
+When writing a recommendation for a locked field:
+  INSERT INTO recommendation_queue (business_id, field_path, 
+    current_value, suggested_value, expected_impact, created_at)
+
+================================================================
+## AUTONOMOUS ENGINE — ARCHITECTURE CONSTRAINTS
+================================================================
+
+PDF GENERATION:
+  Headless browsers (Puppeteer/Chrome) CANNOT run in Cloudflare
+  Workers — no DOM environment. Use an external PDF API called
+  via HTTP from the Worker. Options: Gotenberg, PDFMonkey,
+  WeasyPrint. One HTTP call: structured HTML in, PDF bytes out,
+  store to R2.
+
+  DO NOT attempt to generate PDFs inside the Worker directly.
+  DO NOT use puppeteer or playwright in textos-agent.
+
+R2 STORAGE PATHS:
+  Products:   /businesses/{business_id}/products/v{version}/{filename}.pdf
+  Creatives:  /businesses/{business_id}/creatives/{platform}/{filename}
+
+SIGNED DOWNLOAD URLS:
+  Generated on payment_intent.succeeded webhook
+  Stored in KV: key=download:{session_id}  TTL=86400 (24 hours)
+  Invalidated on charge.refunded
+
+AD WALLET CONSTRAINT:
+  The ad wallet funding flow (Stripe → TextOS → platforms) requires
+  legal clearance before enabling real money movement.
+  Build the schema, UI, and disbursement logic — but gate actual
+  fund movement behind a feature flag (AD_WALLET_LIVE=false in env)
+  until legal structure is confirmed.
+
+META ADS CONSTRAINT:
+  Design Meta Business Manager account structure BEFORE writing
+  any Meta API code. A misconfigured Business Manager can result
+  in account suspension affecting ALL businesses simultaneously.
+  One mistake = all customers affected.
+
+QUALITY GATES (enforce before any campaign publishes):
+  All of the following must pass before ads go live:
+  - Real $1 test transaction completed end-to-end
+  - Download URL confirmed working after payment
+  - /buy page loads < 3 seconds, Lighthouse > 80
+  - /buy renders correctly at 390px mobile
+  - No placeholder text on any page
+  - Privacy policy and terms linked from footer
+  - Ad platform credentials verified (test API call 200)
+  - Ad wallet has 7+ days of budget remaining
+  - All creative assets uploaded to platform libraries
+  - Pixel/conversion tracking confirmed firing
+
+CRON TRIGGERS:
+  Nightly optimization:      2:00 AM UTC daily
+  Creative learning loop:    Sunday 3:00 AM UTC
+  Product improvement loop:  1st of month 4:00 AM UTC
+
+EVENT-DRIVEN TRIGGERS (Cloudflare Queues, fire immediately):
+  payment_intent.succeeded    → generate signed URL, send email
+  ad_spend_threshold breach   → pause ALL campaigns immediately
+  roas_critical (< 0.5/48h)  → pause campaign, queue new creative
+  conversion_rate_drop > 50%  → check technical, flag for nightly
+  wallet_low (< 20% budget)   → alert activator, pause if < $10
+
+================================================================
+## AI-GENERATED TESTIMONIALS — PROHIBITED
+================================================================
+
+Do NOT generate fake testimonials for /buy pages or any
+sales surface. FTC guidelines and consumer protection laws
+in most jurisdictions prohibit fabricated testimonials.
+
+For V1: Show an honest empty state ("Be the first to review")
+After launch: Add real testimonials from real customers only.
+
+If a brief asks for AI-generated testimonials, refuse and
+explain this constraint. Implement the empty state instead.
+
+================================================================
