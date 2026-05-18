@@ -7,9 +7,18 @@
 
 ## What TextOS Is
 
-TextOS is an AI-powered business operating system for solo founders building online businesses. The platform generates a complete business — brand, website, strategy, content, and marketing — from a single idea input, then teaches the founder how to run it.
+TextOS is a fully autonomous AI-powered business operating system for solo founders. The platform autonomously generates and operates a complete online business — brand, website, strategy, content, marketing, paywall, order fulfillment, continuous product improvement, and continuous campaign optimization — from a single idea input. It then reports back to the activator: sales, customers, views, improvements, iterations, LTV, CAC, ROAS, and other critical business metrics.
 
-**Core promise:** Generate a remarkable business in 90 minutes, then teach you to run it.
+The activator's only job is to set a mission and a monthly ad budget. TextOS handles everything else autonomously — indefinitely.
+
+The next major capability being built is the full autonomous business execution pipeline — everything that happens after the mission is defined:
+- Building the product and deploying it with a live paywall
+- Generating all ad creative automatically (copy, images, video scripts)
+- Publishing ads via API to Meta, Google, TikTok, LinkedIn, and others
+- Ingesting performance data and optimizing campaigns without human input
+- Improving the product over time based on user behavior, error logs, and feedback
+
+**Core promise:** Set a mission. Set a budget. TextOS builds and runs the business.
 
 **Live at:** https://app.textos.ai  
 **Frontend repo:** textos-ai/textos-web (Astro, Cloudflare Pages)  
@@ -208,12 +217,14 @@ Three gaps the engine closes:
 - Ad management fee: 15-20% of activator monthly ad spend
 - TextOS holds ad wallet float, pays platforms directly, deducts fee at disbursement
 
-### Activator touchpoints (intentionally minimal)
+### Activator touchpoints (intentionally minimal — this is the entire job)
 1. Enter business idea (or accept TextOS suggestion)
 2. Connect Stripe account via Stripe Connect (one-time)
 3. Fund Ad Wallet minimum $300
 4. Set monthly budget cap
-5. Done — TextOS handles everything else
+5. That is all. TextOS runs the business from this point forward autonomously.
+
+The activator is not a manager. They do not approve content, review campaigns, or make operational decisions. They receive reports. They adjust budget if they choose. Everything else is handled by TextOS without human input.
 
 ### Field locking system (conflict resolution)
 Every content field has three properties:
