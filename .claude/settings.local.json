@@ -56,7 +56,10 @@
       "PowerShell(\\(Invoke-WebRequest -Uri \"https://textos-web-test.pages.dev\" -UseBasicParsing\\).Content | Select-String \"Sign In\")",
       "PowerShell(\\(Invoke-WebRequest -Uri \"https://textos-web-test.pages.dev\" -UseBasicParsing\\).Content | Select-String \"Sign In|nav-pill|nav-biz-quick\")",
       "PowerShell(\\(Invoke-WebRequest -Uri \"https://textos-web-test.pages.dev\" -UseBasicParsing\\).Content | Select-String \"nav-toggle|nav-collapse|nav-biz-quick-mobile\")",
-      "PowerShell(\\(Invoke-WebRequest -Uri \"https://textos-web-test.pages.dev\" -UseBasicParsing\\).Content | Select-String \"user-metrics|metrics-grid|cta-actions\")"
+      "PowerShell(\\(Invoke-WebRequest -Uri \"https://textos-web-test.pages.dev\" -UseBasicParsing\\).Content | Select-String \"user-metrics|metrics-grid|cta-actions\")",
+      "PowerShell(cd C:\\\\code\\\\textos-agent; $env:SUPABASE_DB_URL = \\(Get-Content .env | Where-Object { $_ -match '^DATABASE_URL=' } | ForEach-Object { $_ -replace '^DATABASE_URL=', '' }\\); if \\($env:SUPABASE_DB_URL\\) { Write-Host \"Found DB URL \\(first 30 chars\\): $\\($env:SUPABASE_DB_URL.Substring\\(0, 30\\)\\)...\" } else { Write-Host \"No DATABASE_URL found in .env\" })",
+      "PowerShell(cd C:\\\\code\\\\textos-agent; $env:CLOUDFLARE_API_TOKEN = \\(Get-Content \"C:\\\\code\\\\textos-agent\\\\.env\" | Where-Object { $_ -match \"^CLOUDFLARE_API_TOKEN=\" } | ForEach-Object { $_ -replace \"^CLOUDFLARE_API_TOKEN=\", \"\" }\\); npx wrangler deploy --env test)",
+      "PowerShell(cd C:\\\\code\\\\textos-agent; $env:CLOUDFLARE_API_TOKEN = \\(Get-Content \"C:\\\\code\\\\textos-agent\\\\.env\" | Where-Object { $_ -match \"^CLOUDFLARE_API_TOKEN=\" } | ForEach-Object { $_ -replace \"^CLOUDFLARE_API_TOKEN=\", \"\" }\\); npx wrangler deploy)"
     ]
   }
 }

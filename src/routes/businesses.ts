@@ -143,16 +143,9 @@ app.get("/:slug/tasks", async (c) => {
   });
 
   // Free-build status — the frontend gates paid tile buttons on this (D3).
-  const FREE_BUILD_SLUGS = [
-    "welcome-email",
-    "research-strategy",
-    "mission-document",
-    "logo",
-    "business-landing-page",
-    "launch-tweet",
-    "tam-sam-som",
-    "dashboard-briefing",
-  ];
+  // Import from orchestrator to maintain single source of truth.
+  const { FREE_BUILD_PIPELINE } = await import("../lib/free-build-orchestrator");
+  const FREE_BUILD_SLUGS = FREE_BUILD_PIPELINE.map(task => task.slug);
   const freeBuildTasks = taskList.filter((t) => FREE_BUILD_SLUGS.includes(t.slug));
   const free_build_complete =
     freeBuildTasks.length === FREE_BUILD_SLUGS.length &&

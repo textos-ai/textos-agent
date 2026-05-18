@@ -33,23 +33,34 @@ import { runLogo } from "./tasks/logo";
 import { runMissionDocument } from "./tasks/mission-document";
 import { runDashboardBriefing } from "./tasks/dashboard-briefing";
 import { runTamSamSom } from "./tasks/tam-sam-som";
+import { runPersonalizedPitchEmail } from "./tasks/personalized-pitch-email";
+import { runSocialContentPlan } from "./tasks/social-content-plan";
+import { runColdEmailOutreach } from "./tasks/cold-email-outreach";
 
 // Free-build pipeline — execution order is intentional:
-// welcome-email first (user confirmation before heavy work),
-// research-strategy second (all downstream tasks read from business_context),
-// mission-document before logo (brand voice established before visual identity),
-// business-landing-page after logo (can reference logo URL in hero),
-// tam-sam-som after landing page (needs full business context to size the market).
-const PIPELINE: Array<{ slug: string; name: string; fn: TaskFn }> = [
-  { slug: "welcome-email",          name: "Welcome Email",         fn: runWelcomeEmail },
-  { slug: "research-strategy",      name: "Research Strategy",     fn: runResearchStrategy },
-  { slug: "mission-document",       name: "Mission Document",      fn: runMissionDocument },
-  { slug: "logo",                   name: "Logo",                  fn: runLogo },
-  { slug: "business-landing-page",  name: "Business Landing Page", fn: runBusinessLandingPage },
-  { slug: "launch-tweet",           name: "Launch Tweet",          fn: runLaunchTweet },
-  { slug: "tam-sam-som",            name: "Market Sizing",         fn: runTamSamSom },
-  { slug: "dashboard-briefing",     name: "Dashboard Briefing",    fn: runDashboardBriefing },
+// research-strategy first (establishes business foundation),
+// mission-document second (defines purpose and voice),
+// tam-sam-som third (sizes the market opportunity),
+// business-landing-page fourth (builds the website),
+// launch-tweet fifth (announces to market),
+// social-content-plan sixth (ongoing marketing strategy),
+// cold-email-outreach seventh (direct outreach campaigns),
+// personalized-pitch-email eighth (targeted sales messaging),
+// welcome-email last (summary of completed work with all data available).
+export const FREE_BUILD_PIPELINE: Array<{ slug: string; name: string; fn: TaskFn }> = [
+  { slug: "research-strategy",        name: "Research Strategy",       fn: runResearchStrategy },
+  { slug: "mission-document",         name: "Mission Document",        fn: runMissionDocument },
+  { slug: "tam-sam-som",              name: "Market Sizing",           fn: runTamSamSom },
+  { slug: "business-landing-page",    name: "Business Landing Page",   fn: runBusinessLandingPage },
+  { slug: "launch-tweet",             name: "Launch Tweet",            fn: runLaunchTweet },
+  { slug: "social-content-plan",      name: "Social Content Plan",     fn: runSocialContentPlan },
+  { slug: "cold-email-outreach",      name: "Cold Email Outreach",     fn: runColdEmailOutreach },
+  { slug: "personalized-pitch-email", name: "Personalized Pitch Email", fn: runPersonalizedPitchEmail },
+  { slug: "welcome-email",            name: "Welcome Email",           fn: runWelcomeEmail },
 ];
+
+// Legacy constant for backward compatibility - remove in next major version
+const PIPELINE = FREE_BUILD_PIPELINE;
 
 /**
  * Runs the complete free-build pipeline for a business.

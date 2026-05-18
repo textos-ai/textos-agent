@@ -32,44 +32,21 @@ import { buildBundleSuggestions } from "../lib/withTokenDeduction";
 import { genericDocumentRunner } from "../lib/tasks/generic-document-runner";
 import type { TaskCtx, TaskFn } from "../lib/tasks/types";
 
-// Import task-specific handlers for free build tasks
-import { runWelcomeEmail } from "../lib/tasks/welcome-email";
-import { runResearchStrategy } from "../lib/tasks/research-strategy";
-import { runMissionDocument } from "../lib/tasks/mission-document";
-import { runLogo } from "../lib/tasks/logo";
-import { runBusinessLandingPage } from "../lib/tasks/business-landing-page";
-import { runLaunchTweet } from "../lib/tasks/launch-tweet";
-import { runTamSamSom } from "../lib/tasks/tam-sam-som";
-import { runDashboardBriefing } from "../lib/tasks/dashboard-briefing";
+// Import free-build pipeline from orchestrator to maintain single source of truth.
+import { FREE_BUILD_PIPELINE } from "../lib/free-build-orchestrator";
 
 const app = new Hono<{ Bindings: Env }>();
 app.use("*", requireAuth);
 
-// The 8 free-build task slugs the orchestrator runs by default.
+// The free-build task slugs the orchestrator runs by default.
 // Used to gate paid runs while the build is still in flight (D3).
-const FREE_BUILD_SLUGS = [
-  "welcome-email",
-  "research-strategy",
-  "mission-document",
-  "logo",
-  "business-landing-page",
-  "launch-tweet",
-  "tam-sam-som",
-  "dashboard-briefing",
-];
+const FREE_BUILD_SLUGS = FREE_BUILD_PIPELINE.map(task => task.slug);
 
 // Dispatch table for manual re-runs of free build tasks through the standard task API.
 // These handlers are the same ones used by the free build orchestrator.
-const FREE_BUILD_TASK_HANDLERS: Record<string, TaskFn> = {
-  "welcome-email": runWelcomeEmail,
-  "research-strategy": runResearchStrategy,
-  "mission-document": runMissionDocument,
-  "logo": runLogo,
-  "business-landing-page": runBusinessLandingPage,
-  "launch-tweet": runLaunchTweet,
-  "tam-sam-som": runTamSamSom,
-  "dashboard-briefing": runDashboardBriefing,
-};
+const FREE_BUILD_TASK_HANDLERS: Record<string, TaskFn> = Object.fromEntries(
+  FREE_BUILD_PIPELINE.map(task => [task.slug, task.fn])
+);
 
 // ── POST /:slug/tasks/:taskSlug/run ─────────────────────────────────────
 app.post("/:slug/tasks/:taskSlug/run", async (c) => {
