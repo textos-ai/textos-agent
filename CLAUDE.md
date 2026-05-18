@@ -140,6 +140,59 @@ supabase/
 
 ---
 
+## NO CONSTANTS FOR DATABASE-DRIVEN DATA — NON-NEGOTIABLE
+
+The TextOS database is the single source of truth for all
+application data. Never create a JavaScript/TypeScript constant,
+array, or map that duplicates or represents data that exists
+in any of the following core tables:
+
+  tasks              — task names, slugs, descriptions, order
+  task_runs          — run state, output, status
+  business_assets    — asset types, subtypes, content
+  businesses         — business names, slugs, metadata
+  business_context   — agent name, industry, summary, market data
+  business_subscriptions — subscription status, plan details
+  users              — user data, tier, handle
+  token_balances     — token counts, periods
+  token_transactions — transaction history
+
+VIOLATIONS (never do these):
+  const taskNameMap = { 'research-strategy': 'Market Analyzed', ... }
+  const assetTypeMap = { 'welcome_email': { name: '...', icon: '...' } }
+  const FREE_BUILD_SLUGS = ['welcome-email', 'research-strategy', ...]
+  const LIFECYCLE_PHASE_ORDER = [{ slug: 'idea', label: '...' }, ...]
+  const TASK_TO_PHASE = { 'research-strategy': 'idea', ... }
+  const DOC_META = { 'mission-document': { title: '...', icon: '...' } }
+  Any map keyed by task slug whose values duplicate tasks.name
+
+WHAT TO DO INSTEAD:
+  - task names → read tasks.name from the DB join
+  - task order → read tasks.execution_order from the DB
+  - document names → read tasks.name via asset.task_run_id join
+  - lifecycle phases → read tasks.lifecycle_phase_id join
+  - free build tasks → query tasks WHERE is_default = true
+  - asset display names → read tasks.name from matching task_run
+
+BEFORE CREATING ANY CONSTANT LIST:
+  1. Check the database schema — is this data already in a table?
+  2. If yes: query it. Never hardcode it.
+  3. If unsure: ASK ROB before creating any constant.
+     Do not assume. Do not create first and ask later.
+
+ACCEPTABLE CONSTANTS (not DB data):
+  - CSS class names / rendering discriminator maps
+    (e.g. slug → which CSS template to apply for modal rendering)
+  - Environment configuration (API URLs, feature flags)
+  - UI layout constants (breakpoints, animation timings)
+  - Pure presentation logic that has no DB equivalent
+
+The test: if the constant would need to be updated when a new
+task is added to the tasks table, it is a DB-data constant
+and must not exist in code.
+
+---
+
 ## Non-Negotiable Rules
 
 See `../textos-web/CLAUDE.md` § Non-Negotiable Rules. All 13 apply
