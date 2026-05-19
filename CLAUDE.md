@@ -366,8 +366,35 @@ SCRIPT PATTERN for standalone pages:
 - No ES module imports inside define:vars blocks
 
 DEPLOY PATTERN:
-- Test first: npm run deploy:test
-- Verify at: https://textos-web-test.pages.dev
+
+STEP 1 — Set token AND verify in one PowerShell block:
+  All wrangler commands must run in the same PowerShell block
+  as the token assignment. The token does not persist between
+  separate PowerShell calls.
+
+  Run this entire block as ONE command — never split it up:
+
+  $raw = Get-Content "C:\code\textos-web\.env" -Raw
+  $match = [regex]::Match($raw, '(?m)^CLOUDFLARE_API_TOKEN=(.+)$')
+  $token = $match.Groups[1].Value.Trim()
+  $env:CLOUDFLARE_API_TOKEN = $token
+  npx wrangler whoami
+
+  If whoami succeeds, proceed to deploy in the SAME block:
+
+  $raw = Get-Content "C:\code\textos-web\.env" -Raw
+  $match = [regex]::Match($raw, '(?m)^CLOUDFLARE_API_TOKEN=(.+)$')
+  $token = $match.Groups[1].Value.Trim()
+  $env:CLOUDFLARE_API_TOKEN = $token
+  Set-Location "C:\code\textos-web"
+  npm run deploy:test
+
+  NEVER run npx wrangler whoami in one block and then
+  npm run deploy:test in a separate block. The token will
+  be gone by then and the deploy will fail.
+
+STEP 2 — Verify on TEST:
+- Frontend: https://textos-web-test.pages.dev
 - Never report hash preview URLs
 - Never deploy to prod without Rob's explicit approval
 
