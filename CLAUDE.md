@@ -403,6 +403,19 @@ TOKEN SECURITY:
 - Never display token values in output
 - Show first 4 chars max to confirm loading
 
+## VERIFICATION — NON-NEGOTIABLE
+
+After every deploy report ONLY:
+  1. Build passed or failed (with error if failed)
+  2. Deploy succeeded or failed (with error if failed)
+  3. The canonical test URL
+
+NEVER run Invoke-WebRequest or any PowerShell command
+that requires Rob to approve a security prompt.
+NEVER use $() subexpressions in verification commands.
+NEVER check the deployed page via PowerShell.
+Rob verifies in the browser. That is his job, not yours.
+
 ---
 
 ## QUICK CONTENT CHANGES
