@@ -16,16 +16,16 @@ Sprint 2; future product changes go in `../textos-web/ROADMAP.md`).
 NEVER use Set-Content with -Encoding UTF8 on .astro files.
 NEVER use Set-Content with any -Encoding flag on .astro files.
 UTF8 BOM corrupts special characters to garbage like:
-  â€" instead of —
-  Â· instead of ·
-  ðŸ instead of emojis
+  ï¿½" instead of ï¿½
+  Â· instead of ï¿½
+  ï¿½ instead of emojis
 
 THE ONLY SAFE WRITE COMMANDS FOR .astro FILES:
 
-Option A — line array (no encoding flag):
+Option A ï¿½ line array (no encoding flag):
   Set-Content "path\to\file.astro" $lines
 
-Option B — raw string (no BOM UTF8):
+Option B ï¿½ raw string (no BOM UTF8):
   [System.IO.File]::WriteAllText(
     "path\to\file.astro",
     $content,
@@ -43,7 +43,7 @@ TO FIX ENCODING CORRUPTION WITHOUT LOSING CHANGES:
     [System.Text.UTF8Encoding]::new($false)
   )
 
-NEVER restore from git just to fix encoding — that loses
+NEVER restore from git just to fix encoding ï¿½ that loses
 all recent changes. Always fix encoding in place first.
 
 ---
@@ -405,33 +405,21 @@ SCRIPT PATTERN for standalone pages:
 
 DEPLOY PATTERN:
 
-STEP 1 â€” Set token AND verify in one PowerShell block:
-  All wrangler commands must run in the same PowerShell block
-  as the token assignment. The token does not persist between
-  separate PowerShell calls.
+STEP 1 â€” Load the Cloudflare API token:
+  $env:CLOUDFLARE_API_TOKEN = [System.Environment]::GetEnvironmentVariable('CLOUDFLARE_API_TOKEN', 'User')
 
-  Run this entire block as ONE command â€” never split it up:
-
-  $raw = Get-Content "C:\code\textos-web\.env" -Raw
-  $match = [regex]::Match($raw, '(?m)^CLOUDFLARE_API_TOKEN=(.+)$')
-  $token = $match.Groups[1].Value.Trim()
-  $env:CLOUDFLARE_API_TOKEN = $token
+STEP 2 â€” Confirm token loaded:
   npx wrangler whoami
+  Expected: your Cloudflare account name and email.
+  If it fails: stop and report to Rob. Do not proceed.
 
-  If whoami succeeds, proceed to deploy in the SAME block:
-
-  $raw = Get-Content "C:\code\textos-web\.env" -Raw
-  $match = [regex]::Match($raw, '(?m)^CLOUDFLARE_API_TOKEN=(.+)$')
-  $token = $match.Groups[1].Value.Trim()
-  $env:CLOUDFLARE_API_TOKEN = $token
+STEP 3 â€” Deploy to TEST:
   Set-Location "C:\code\textos-web"
   npm run deploy:test
 
-  NEVER run npx wrangler whoami in one block and then
-  npm run deploy:test in a separate block. The token will
-  be gone by then and the deploy will fail.
+All three steps must run in the SAME PowerShell block.
 
-STEP 2 â€” Verify on TEST:
+STEP 4 â€” Verify on TEST:
 - Frontend: https://textos-web-test.pages.dev
 - Never report hash preview URLs
 - Never deploy to prod without Rob's explicit approval
@@ -477,7 +465,7 @@ A text change is not a release.
 [ ] Check for new scripts in src/scripts/
 [ ] Check public/_redirects for current routing rules
 [ ] Check wrangler.toml for current env/binding config
-[ ] Confirm CLOUDFLARE_API_TOKEN is loadable from .env
+[ ] Confirm CLOUDFLARE_API_TOKEN is loadable from User environment variable
 [ ] Run npx wrangler whoami before any deploy
 
 ---
