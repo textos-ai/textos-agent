@@ -23,7 +23,6 @@ import {
 } from "./withTokenDeduction";
 import { log } from "./logger";
 import { extractErrorMessage } from "./extract-error";
-import { pickRandomAgentName } from "./agentNames";
 
 import { runResearchStrategy } from "./tasks/research-strategy";
 import { runWelcomeEmail } from "./tasks/welcome-email";
@@ -158,7 +157,7 @@ export async function runFreeBuild(
       // when a DB trigger pre-creates the row before createEmptyBusinessContext runs),
       // assign a name now so the pipeline uses and persists it.
       if (!ctx.agent_name) {
-        const agentName = pickRandomAgentName();
+        const agentName = "Inkthorn";
         console.log(`[orchestrator] ctx exists but agent_name NULL — assigning ${agentName} for business_id=${business.id}`);
         ctx = await upsertBusinessContext(supabase, {
           business_id: business.id,
@@ -173,7 +172,7 @@ export async function runFreeBuild(
       // No context row — seed one with an agent name before any task upsert can
       // create the row without it. If upsert fails, use an in-memory fallback so
       // the build still runs (agent name won't persist but build completes).
-      const agentName = pickRandomAgentName();
+      const agentName = "Inkthorn";
       console.log(`[orchestrator] no context found — seeding agent_name=${agentName} for business_id=${business.id}`);
       ctx = await upsertBusinessContext(supabase, {
         business_id: business.id,

@@ -28,11 +28,11 @@ function topupCancelUrl(env: Env, slug: string): string {
 }
 function subSuccessUrl(env: Env, slug: string): string {
   const base = env.FRONTEND_URL ?? DEFAULT_FRONTEND_URL;
-  return `${base}/business/${slug}/builder?stripe_success=1`;
+  return `${base}/business/${slug}/live?stripe_success=1`;
 }
 function subCancelUrl(env: Env, slug: string): string {
   const base = env.FRONTEND_URL ?? DEFAULT_FRONTEND_URL;
-  return `${base}/business/${slug}/builder?stripe_cancel=1`;
+  return `${base}/business/${slug}/live?stripe_cancel=1`;
 }
 
 // ── Stripe helper ─────────────────────────────────────────────────────────────

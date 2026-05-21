@@ -59,7 +59,31 @@
       "PowerShell(\\(Invoke-WebRequest -Uri \"https://textos-web-test.pages.dev\" -UseBasicParsing\\).Content | Select-String \"user-metrics|metrics-grid|cta-actions\")",
       "PowerShell(cd C:\\\\code\\\\textos-agent; $env:SUPABASE_DB_URL = \\(Get-Content .env | Where-Object { $_ -match '^DATABASE_URL=' } | ForEach-Object { $_ -replace '^DATABASE_URL=', '' }\\); if \\($env:SUPABASE_DB_URL\\) { Write-Host \"Found DB URL \\(first 30 chars\\): $\\($env:SUPABASE_DB_URL.Substring\\(0, 30\\)\\)...\" } else { Write-Host \"No DATABASE_URL found in .env\" })",
       "PowerShell(cd C:\\\\code\\\\textos-agent; $env:CLOUDFLARE_API_TOKEN = \\(Get-Content \"C:\\\\code\\\\textos-agent\\\\.env\" | Where-Object { $_ -match \"^CLOUDFLARE_API_TOKEN=\" } | ForEach-Object { $_ -replace \"^CLOUDFLARE_API_TOKEN=\", \"\" }\\); npx wrangler deploy --env test)",
-      "PowerShell(cd C:\\\\code\\\\textos-agent; $env:CLOUDFLARE_API_TOKEN = \\(Get-Content \"C:\\\\code\\\\textos-agent\\\\.env\" | Where-Object { $_ -match \"^CLOUDFLARE_API_TOKEN=\" } | ForEach-Object { $_ -replace \"^CLOUDFLARE_API_TOKEN=\", \"\" }\\); npx wrangler deploy)"
+      "PowerShell(cd C:\\\\code\\\\textos-agent; $env:CLOUDFLARE_API_TOKEN = \\(Get-Content \"C:\\\\code\\\\textos-agent\\\\.env\" | Where-Object { $_ -match \"^CLOUDFLARE_API_TOKEN=\" } | ForEach-Object { $_ -replace \"^CLOUDFLARE_API_TOKEN=\", \"\" }\\); npx wrangler deploy)",
+      "PowerShell(Invoke-WebRequest -Uri \"https://textos-web-test.pages.dev/business/coachpilot/live\" -UseBasicParsing)",
+      "PowerShell(\\(Invoke-WebRequest -Uri \"https://textos-web-test.pages.dev/business/coachpilot/live\" -UseBasicParsing\\).Content | Select-String \"Activate Your Business|TEXTOS CONSOLE|Send on Twitter\")",
+      "PowerShell(Set-Location \"C:\\\\code\\\\textos-agent\"; $env:CLOUDFLARE_API_TOKEN = \\(Get-Content \"C:\\\\code\\\\textos-agent\\\\.env\" | Where-Object { $_ -match \"^CLOUDFLARE_API_TOKEN=\" } | ForEach-Object { $_ -replace \"^CLOUDFLARE_API_TOKEN=\", \"\" }\\); npx wrangler deploy --env test)",
+      "PowerShell(\\(Invoke-WebRequest -Uri \"https://textos-web-test.pages.dev/business/coachpilot/live\" -UseBasicParsing\\).Content | Select-String \"Inkthorn|ACTIVATE TO UNLOCK|TEXTOS CONSOLE|Foundation Complete\")",
+      "PowerShell(Get-Content *)",
+      "PowerShell(\\(Invoke-WebRequest -Uri \"https://textos-web-test.pages.dev/business/coachpilot/live\" -UseBasicParsing\\).Content | Select-String \"Inkthorn|TEXTOS CONSOLE|Clarity Launch Co|ACTIVATE TO UNLOCK\")",
+      "PowerShell($original = \\(Get-Content \"C:\\\\code\\\\textos-web\\\\textos-live-v2.html\"\\).Count; Write-Host \"Original HTML file: $original lines\")",
+      "PowerShell(\\(Invoke-WebRequest -Uri \"https://textos-web-test.pages.dev/business/coachpilot/live\" -UseBasicParsing\\).Content | Select-String \"nav-biz-name|doc-list|task-list\")",
+      "PowerShell(\\(Invoke-WebRequest -Uri \"https://textos-web-test.pages.dev/business/coachpilot/live\" -UseBasicParsing\\).Content | Select-String \"Available Plays\")",
+      "PowerShell(Select-String *)",
+      "PowerShell(Copy-Item *)",
+      "PowerShell(\\(Invoke-WebRequest -Uri \"https://textos-web-test.pages.dev/inkthorn-mascot.png\" -UseBasicParsing\\).StatusCode)",
+      "PowerShell(\\(Invoke-WebRequest -Uri \"https://textos-web-test.pages.dev/business/coachpilot/live\" -UseBasicParsing\\).Content | Select-String \"nav-biz-name|doc-list|task-list|console-body|available-plays-list\")",
+      "PowerShell(\\(Invoke-WebRequest -Uri \"https://textos-web-test.pages.dev/business/coachpilot/live\" -UseBasicParsing\\).Content | Select-String \"doc-row|task-row|c-line\")",
+      "Bash(git stash *)",
+      "Bash(npm wrangler *)",
+      "Bash(CLOUDFLARE_API_TOKEN=cfut_u8Cavnmb5JX2Ty0CDDSAkn7bVEv59VH5cbCamx7K2ebb173b npm run *)",
+      "PowerShell(Get-Item *)",
+      "PowerShell($env:CLOUDFLARE_API_TOKEN = \\(Get-Content .env | Select-String \"^CLOUDFLARE_API_TOKEN=\" | ForEach-Object { $_ -replace \"^CLOUDFLARE_API_TOKEN=\", \"\" }\\); npx wrangler whoami)",
+      "PowerShell($env:CLOUDFLARE_API_TOKEN = \\(Get-Content .env | Select-String \"^CLOUDFLARE_API_TOKEN=\" | ForEach-Object { $_ -replace \"^CLOUDFLARE_API_TOKEN=\", \"\" }\\); npx wrangler pages deploy dist --project-name textos-web-test)",
+      "PowerShell(\\(Invoke-WebRequest -Uri \"https://textos-web-test.pages.dev/business/coachpilot/live\" -UseBasicParsing\\).Content | Select-String \"task-list|doc-list|console-body|nav-biz\")",
+      "PowerShell(\\(Invoke-WebRequest -Uri \"https://textos-web-test.pages.dev/business/coachpilot/live\" -UseBasicParsing\\).Content | Select-String \"task-list|doc-list|console-body|modal-overlay|nav-biz\")",
+      "PowerShell($token = \\(Get-Content .env | Where-Object { $_ -match '^CLOUDFLARE_API_TOKEN=' }\\) -replace '^CLOUDFLARE_API_TOKEN=', ''; $env:CLOUDFLARE_API_TOKEN = $token; $env:CLOUDFLARE_API_TOKEN.Substring\\(0,4\\))",
+      "PowerShell(\\(Invoke-WebRequest -Uri \"https://textos-web-test.pages.dev/business/coachpilot/live\" -UseBasicParsing\\).Content | Select-String \"chat-btn|token-chip|hero-title|task-list|doc-list|console-body|modal-overlay\")"
     ]
   }
 }
