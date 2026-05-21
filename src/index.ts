@@ -27,7 +27,9 @@ import generateStoriesRoutes from "./routes/generate-stories";
 import marketingCarouselsRoutes from "./routes/marketing-carousels";
 import billingRoutes from "./routes/billing";
 import businessTaskRunRoutes from "./routes/business-task-run";
-import appsRoutes from "./routes/apps";
+import appsCatalogRoutes from "./routes/apps-catalog";
+import appsBusinessesRoutes from "./routes/apps-businesses";
+import appsInstancesRoutes from "./routes/apps-instances";
 import { runHeartbeatWatchdog } from "./cron/heartbeatWatchdog";
 import { createClient } from "@supabase/supabase-js";
 
@@ -79,8 +81,9 @@ app.route("/api/generate-stories", generateStoriesRoutes);
 app.route("/api/businesses", marketingCarouselsRoutes);
 app.route("/api/businesses", billingRoutes);
 app.route("/api/businesses", businessTaskRunRoutes);
-app.route("/api/apps", appsRoutes);
-app.route("/api", appsRoutes);
+app.route("/api/apps", appsCatalogRoutes);
+app.route("/api/businesses", appsBusinessesRoutes);
+app.route("/api/business-apps", appsInstancesRoutes);
 
 
 app.notFound((c) =>
