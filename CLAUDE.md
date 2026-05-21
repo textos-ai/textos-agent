@@ -720,3 +720,43 @@ If a brief asks for AI-generated testimonials, refuse and
 explain this constraint. Implement the empty state instead.
 
 ================================================================
+
+---
+
+## Claude + Code Working Agreement
+
+### Role Split (Non-Negotiable)
+- **Claude (Architect):** Owns architecture, roadmap,
+  data models, API contracts, and strategic decisions.
+  Writes code ONLY when it has better context than Code
+  (e.g. when reasoning about a full spec not yet in files).
+- **Code (Agent):** Owns all file editing, reading,
+  building, deploying, and debugging. Code can see the
+  full file — trust it to write better implementation
+  code than Claude can produce through blind PowerShell.
+
+### When Code Should Own the Solution
+- Any file edit — Code reads the file first, reasons
+  about it, fixes it. Claude does not dictate line numbers.
+- Any bug fix — Code reads the error, traces the code
+  path, proposes and applies the fix.
+- Any feature implementation — Claude describes WHAT
+  and WHY. Code figures out HOW.
+
+### When Claude Should Write Code
+- New architecture patterns not yet in the codebase
+- Complex data model decisions
+- API contract definitions
+- When Code has repeatedly failed and Claude has
+  specific insight into why
+
+### CLAUDE.md Reminder
+Claude must re-read CLAUDE.md at the start of every
+session and every hour during long sessions.
+This ensures architectural rules, deploy commands,
+and working agreements stay fresh.
+Last updated: May 2026
+
+---
+
+================================================================
