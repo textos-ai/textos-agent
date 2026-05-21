@@ -17,7 +17,7 @@ router.get("/", requireAuth, async (c) => {
     .eq("status", "active")
     .order("sort_order");
   if (error) {
-    log("error", "apps.list_failed", { error: error.message });
+    log.error("apps.list_failed", { error: error.message });
     return c.json(errBody("Failed to load apps"), 500);
   }
   return c.json({ apps });
@@ -89,13 +89,13 @@ router.post("/provision", requireAuth, async (c) => {
     .select()
     .single();
   if (insertErr || !instance) {
-    log("error", "apps.provision_insert_failed", {
+    log.error("apps.provision_insert_failed", {
       error: insertErr?.message,
     });
     return c.json(errBody("Failed to create app instance"), 500);
   }
 
-  log("info", "apps.provisioning_started", {
+  log.info("apps.provisioning_started", {
     business_id,
     app_slug,
     instance_id: instance.id,
@@ -114,7 +114,7 @@ router.post("/provision", requireAuth, async (c) => {
     })
     .eq("id", instance.id);
   if (updateErr) {
-    log("error", "apps.provision_activate_failed", {
+    log.error("apps.provision_activate_failed", {
       error: updateErr.message,
     });
   }

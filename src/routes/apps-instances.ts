@@ -110,7 +110,7 @@ router.delete("/:id", requireAuth, async (c) => {
   if (error) return c.json(errBody("Failed to deprovision app"), 500);
 
   // TODO: release Twilio number when wired
-  log("info", "apps.deprovisioned", { instance_id: id });
+  log.info("apps.deprovisioned", { instance_id: id });
   return c.json({ success: true });
 });
 
