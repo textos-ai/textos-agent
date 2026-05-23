@@ -365,6 +365,20 @@ At the start of each day or new session, Claude Code must:
 
 ---
 
+## CODE CONFIDENCE RULE
+
+NEVER make assumptions about code. Before recommending
+any change, read the current file first. If you do not
+have 100% confidence in what the current code does and
+exactly what needs to change, stop and ask Rob. Do not
+guess. Do not infer from memory. Do not assume a
+previous version of a file matches the current one.
+Rob has 30 years of development experience — if you
+are uncertain, ask him. He would rather answer a
+question than waste time on a wrong fix.
+
+---
+
 ## RESEARCH BEFORE CODE — NON-NEGOTIABLE
 
 Before writing code for ANY new feature:
