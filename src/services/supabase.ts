@@ -49,6 +49,11 @@ export interface TaskRow {
   // inbound text (Telegram, SMS, etc.). V1: metadata only; consumer
   // wiring lands in a later phase.
   text_controllable: boolean;
+  // Present-tense verb shown in the first-build overlay while the task
+  // runs (e.g. "Researching the market…"). DB-driven so adding a task
+  // doesn't require a code change. Nullable for tasks that don't surface
+  // a custom verb (frontend falls back to task.name).
+  progress_verb: string | null;
 }
 
 // Columns selected for any task row read. Kept as a constant so the
@@ -58,7 +63,8 @@ export const TASK_SELECT_COLUMNS =
   "id, slug, name, description_short, description_long, area, is_default, " +
   "plan_required, visibility, price_cents, token_cost, prompt_template, " +
   "output_type, inputs_required, status, kind, config_page_path, " +
-  "lifecycle_phase_id, is_regeneratable, asset_user_editable, text_controllable";
+  "lifecycle_phase_id, is_regeneratable, asset_user_editable, text_controllable, " +
+  "progress_verb";
 
 export async function getTaskBySlug(
   client: SupabaseClient,

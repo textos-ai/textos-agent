@@ -130,6 +130,7 @@ app.get("/:slug/tasks", async (c) => {
       is_regeneratable: task.is_regeneratable,
       asset_user_editable: task.asset_user_editable,
       text_controllable: task.text_controllable,
+      progress_verb: task.progress_verb ?? null,
       status,
       started_at: run?.started_at ?? null,
       completed_at: run?.completed_at ?? null,
