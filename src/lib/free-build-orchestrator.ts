@@ -35,6 +35,7 @@ import { runTamSamSom } from "./tasks/tam-sam-som";
 import { runPersonalizedPitchEmail } from "./tasks/personalized-pitch-email";
 import { runSocialContentPlan } from "./tasks/social-content-plan";
 import { runColdEmailOutreach } from "./tasks/cold-email-outreach";
+import { runFindAUniqueBusinessName } from "./tasks/find-a-unique-business-name";
 
 // Slug → TaskFn dispatch map. Acceptable code constant per CLAUDE.md:
 // it maps slug → handler function, which is execution logic, not DB data.
@@ -44,17 +45,18 @@ import { runColdEmailOutreach } from "./tasks/cold-email-outreach";
 // Add an entry here only when a new task has a dedicated handler. Tasks
 // without a dedicated handler fall through to genericDocumentRunner.
 export const FREE_BUILD_TASK_HANDLERS: Record<string, TaskFn> = {
-  "research-strategy":         runResearchStrategy,
-  "mission-document":          runMissionDocument,
-  "tam-sam-som":               runTamSamSom,
-  "business-landing-page":     runBusinessLandingPage,
-  "launch-tweet":              runLaunchTweet,
-  "logo":                      runLogo,
-  "cold-email-outreach":       runColdEmailOutreach,
-  "welcome-email":             runWelcomeEmail,
-  "social-content-plan":       runSocialContentPlan,
-  "personalized-pitch-email":  runPersonalizedPitchEmail,
-  "dashboard-briefing":        runDashboardBriefing,
+  "research-strategy":              runResearchStrategy,
+  "find-a-unique-business-name":    runFindAUniqueBusinessName,
+  "mission-document":               runMissionDocument,
+  "tam-sam-som":                    runTamSamSom,
+  "business-landing-page":          runBusinessLandingPage,
+  "launch-tweet":                   runLaunchTweet,
+  "logo":                           runLogo,
+  "cold-email-outreach":            runColdEmailOutreach,
+  "welcome-email":                  runWelcomeEmail,
+  "social-content-plan":            runSocialContentPlan,
+  "personalized-pitch-email":       runPersonalizedPitchEmail,
+  "dashboard-briefing":             runDashboardBriefing,
 };
 
 /**
@@ -616,6 +618,10 @@ function extractSummary(slug: string, data: Record<string, unknown>): string {
   switch (slug) {
     case "research-strategy":
       return `Strategy: ${s(data.positioning_statement || data.value_proposition)}`;
+    case "find-a-unique-business-name":
+      return typeof data.business_name === "string"
+        ? `Named: ${data.business_name}`
+        : "Business named.";
     case "welcome-email":
       return s(data.preview) || "Welcome email staged.";
     case "launch-tweet":

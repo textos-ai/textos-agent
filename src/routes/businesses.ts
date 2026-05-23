@@ -423,6 +423,10 @@ function extractOutputSummary(
         ? `TAM: ${tam.label} · SAM/SOM blurred until paid`
         : null;
     }
+    case "find-a-unique-business-name":
+      return typeof data.business_name === "string"
+        ? `Business named: ${data.business_name}`
+        : null;
     default:
       return null;
   }
