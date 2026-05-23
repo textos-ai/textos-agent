@@ -36,30 +36,26 @@ import { runPersonalizedPitchEmail } from "./tasks/personalized-pitch-email";
 import { runSocialContentPlan } from "./tasks/social-content-plan";
 import { runColdEmailOutreach } from "./tasks/cold-email-outreach";
 
-// Free-build pipeline — execution order is intentional:
-// research-strategy first (establishes business foundation),
-// mission-document second (defines purpose and voice),
-// tam-sam-som third (sizes the market opportunity),
-// business-landing-page fourth (builds the website),
-// launch-tweet fifth (announces to market),
-// social-content-plan sixth (ongoing marketing strategy),
-// cold-email-outreach seventh (direct outreach campaigns),
-// personalized-pitch-email eighth (targeted sales messaging),
-// welcome-email last (summary of completed work with all data available).
-export const FREE_BUILD_PIPELINE: Array<{ slug: string; name: string; fn: TaskFn }> = [
-  { slug: "research-strategy",        name: "Research Strategy",       fn: runResearchStrategy },
-  { slug: "mission-document",         name: "Mission Document",        fn: runMissionDocument },
-  { slug: "tam-sam-som",              name: "Market Sizing",           fn: runTamSamSom },
-  { slug: "business-landing-page",    name: "Business Landing Page",   fn: runBusinessLandingPage },
-  { slug: "launch-tweet",             name: "Launch Tweet",            fn: runLaunchTweet },
-  { slug: "social-content-plan",      name: "Social Content Plan",     fn: runSocialContentPlan },
-  { slug: "cold-email-outreach",      name: "Cold Email Outreach",     fn: runColdEmailOutreach },
-  { slug: "personalized-pitch-email", name: "Personalized Pitch Email", fn: runPersonalizedPitchEmail },
-  { slug: "welcome-email",            name: "Welcome Email",           fn: runWelcomeEmail },
-];
-
-// Legacy constant for backward compatibility - remove in next major version
-const PIPELINE = FREE_BUILD_PIPELINE;
+// Slug → TaskFn dispatch map. Acceptable code constant per CLAUDE.md:
+// it maps slug → handler function, which is execution logic, not DB data.
+// The actual list of which slugs run in the free build comes from the DB
+// (tasks WHERE is_default = true AND status = 'active' ORDER BY execution_order).
+//
+// Add an entry here only when a new task has a dedicated handler. Tasks
+// without a dedicated handler fall through to genericDocumentRunner.
+export const FREE_BUILD_TASK_HANDLERS: Record<string, TaskFn> = {
+  "research-strategy":         runResearchStrategy,
+  "mission-document":          runMissionDocument,
+  "tam-sam-som":               runTamSamSom,
+  "business-landing-page":     runBusinessLandingPage,
+  "launch-tweet":              runLaunchTweet,
+  "logo":                      runLogo,
+  "cold-email-outreach":       runColdEmailOutreach,
+  "welcome-email":             runWelcomeEmail,
+  "social-content-plan":       runSocialContentPlan,
+  "personalized-pitch-email":  runPersonalizedPitchEmail,
+  "dashboard-briefing":        runDashboardBriefing,
+};
 
 /**
  * Runs the complete free-build pipeline for a business.
@@ -80,11 +76,56 @@ export async function runFreeBuild(
 ): Promise<void> {
   const anthropic = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
 
+  // ── Load the free-build pipeline from the DB ──────────────────────
+  // Single source of truth: tasks WHERE is_default=true AND status=active.
+  // No hardcoded slug list — adding/removing a free build task is a DB write.
+  const { data: pipelineRows, error: pipelineErr } = await supabase
+    .from("tasks")
+    .select("slug, name, execution_order")
+    .eq("is_default", true)
+    .eq("status", "active")
+    .order("execution_order", { ascending: true });
+
+  if (pipelineErr) {
+    log.error("[orchestrator] pipeline_query_failed", {
+      business_id: business.id,
+      err: pipelineErr.message,
+    });
+    await sseEmit({
+      type: "error" as StreamEvent["type"],
+      message: `Build failed: pipeline query failed (${pipelineErr.message})`,
+      ts: Date.now(),
+    } as unknown as StreamEvent).catch(() => {});
+    throw new Error(`pipeline_query_failed: ${pipelineErr.message}`);
+  }
+
+  const pipeline = (pipelineRows ?? []) as Array<{
+    slug: string;
+    name: string;
+    execution_order: number;
+  }>;
+
+  if (pipeline.length === 0) {
+    log.error("[orchestrator] pipeline_empty", { business_id: business.id });
+    await sseEmit({
+      type: "error" as StreamEvent["type"],
+      message: "Build failed: no active default tasks configured in DB",
+      ts: Date.now(),
+    } as unknown as StreamEvent).catch(() => {});
+    throw new Error("pipeline_empty: no active default tasks");
+  }
+
+  console.log("[orchestrator] pipeline_loaded_from_db", JSON.stringify({
+    business_id: business.id,
+    count: pipeline.length,
+    slugs: pipeline.map((p) => p.slug),
+  }));
+
   // ── Find or create the free_build_run row ─────────────────────────
   let run = await getFreeBuildRunByBusiness(supabase, business.id);
 
   if (!run) {
-    run = await createFreeBuildRun(supabase, business.id, user.id, PIPELINE.length);
+    run = await createFreeBuildRun(supabase, business.id, user.id, pipeline.length);
   }
 
   const runId = run.id;
@@ -239,7 +280,30 @@ export async function runFreeBuild(
 
   // ── Execute each task (outer try guarantees free_build_run is never left running) ──
   try {
-  for (const step of PIPELINE) {
+  for (const row of pipeline) {
+    const handler = FREE_BUILD_TASK_HANDLERS[row.slug];
+    if (!handler) {
+      // DB lists this task as a default but the Worker has no dedicated
+      // handler for it. Emit a warning event and skip gracefully — do NOT
+      // crash the orchestrator. Fix: add a handler to FREE_BUILD_TASK_HANDLERS
+      // or unset is_default on the task row.
+      log.warn("[orchestrator] no_handler_for_default_task", {
+        business_id: business.id,
+        slug: row.slug,
+      });
+      await emit({
+        type: "cmd",
+        text: `[skip] '${row.slug}' has is_default=true but no Worker handler — skipping`,
+        ts: Date.now(),
+      });
+      continue;
+    }
+    const step: { slug: string; name: string; fn: TaskFn } = {
+      slug: row.slug,
+      name: row.name,
+      fn: handler,
+    };
+
     console.log(`[orchestrator] starting task: ${step.slug} at ${new Date().toISOString()}`);
     let taskDef;
     try {
@@ -284,6 +348,25 @@ export async function runFreeBuild(
         continue;
       }
     }
+
+    // Clear is_current on any prior failed task_run rows for this task+business
+    // so the new row we're about to insert is the only is_current=true row.
+    // Without this, a re-run after a failure leaves both rows with is_current=true
+    // and the frontend sees duplicate completed+failed entries.
+    await supabase
+      .from("task_runs")
+      .update({ is_current: false })
+      .eq("business_id", business.id)
+      .eq("task_id", taskDef.id)
+      .eq("is_current", true)
+      .eq("status", "failed")
+      .then(() => {}, (e: unknown) => {
+        log.warn("[orchestrator] clear_failed_is_current_failed", {
+          business_id: business.id,
+          task_id: taskDef.id,
+          err: e instanceof Error ? e.message : String(e),
+        });
+      });
 
     // Create task_run row
     let taskRunId: string;

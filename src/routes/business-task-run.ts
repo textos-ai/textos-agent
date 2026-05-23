@@ -30,23 +30,14 @@ import {
 } from "../services/supabase";
 import { buildBundleSuggestions } from "../lib/withTokenDeduction";
 import { genericDocumentRunner } from "../lib/tasks/generic-document-runner";
-import type { TaskCtx, TaskFn } from "../lib/tasks/types";
+import type { TaskCtx } from "../lib/tasks/types";
 
-// Import free-build pipeline from orchestrator to maintain single source of truth.
-import { FREE_BUILD_PIPELINE } from "../lib/free-build-orchestrator";
+// Slug → handler dispatch map (acceptable code constant; not a list of slugs).
+// The actual "what's in the free build" list comes from the DB at request time.
+import { FREE_BUILD_TASK_HANDLERS } from "../lib/free-build-orchestrator";
 
 const app = new Hono<{ Bindings: Env }>();
 app.use("*", requireAuth);
-
-// The free-build task slugs the orchestrator runs by default.
-// Used to gate paid runs while the build is still in flight (D3).
-const FREE_BUILD_SLUGS = FREE_BUILD_PIPELINE.map(task => task.slug);
-
-// Dispatch table for manual re-runs of free build tasks through the standard task API.
-// These handlers are the same ones used by the free build orchestrator.
-const FREE_BUILD_TASK_HANDLERS: Record<string, TaskFn> = Object.fromEntries(
-  FREE_BUILD_PIPELINE.map(task => [task.slug, task.fn])
-);
 
 // ── POST /:slug/tasks/:taskSlug/run ─────────────────────────────────────
 app.post("/:slug/tasks/:taskSlug/run", async (c) => {
@@ -218,13 +209,38 @@ app.post("/:slug/tasks/:taskSlug/run", async (c) => {
   }
 
   // 5. Free-build completion gate (D3) — only applies to non-regeneratable tasks
-  // Regeneratable tasks can always run, even during active free builds
+  // Regeneratable tasks can always run, even during active free builds.
+  // Free-build slug list comes from the DB (tasks WHERE is_default=true
+  // AND status='active') — no hardcoded slug array.
   if (!task.is_regeneratable) {
+    const { data: freeBuildDefRows, error: freeBuildDefErr } = await supabase
+      .from("tasks")
+      .select("slug")
+      .eq("is_default", true)
+      .eq("status", "active");
+
+    if (freeBuildDefErr) {
+      log.error("[task-run] free_build_list_failed", {
+        business_id: business.id,
+        err: freeBuildDefErr.message,
+      });
+      return c.json(errBody("internal", "free_build_list_failed"), 500);
+    }
+
+    const freeBuildSlugs = (freeBuildDefRows ?? []).map(
+      (r) => (r as { slug: string }).slug,
+    );
+
+    if (freeBuildSlugs.length === 0) {
+      log.error("[task-run] free_build_list_empty", { business_id: business.id });
+      return c.json(errBody("internal", "no_active_default_tasks"), 500);
+    }
+
     const { data: freeBuildRuns, error: freeBuildErr } = await supabase
       .from("task_runs")
       .select("status, tasks!inner(slug)")
       .eq("business_id", business.id)
-      .in("tasks.slug", FREE_BUILD_SLUGS);
+      .in("tasks.slug", freeBuildSlugs);
 
     if (freeBuildErr) {
       log.error("[task-run] free_build_check_failed", {
@@ -236,11 +252,10 @@ app.post("/:slug/tasks/:taskSlug/run", async (c) => {
 
     type FreeBuildRow = { status: string; tasks: { slug: string } };
     const runs = (freeBuildRuns ?? []) as unknown as FreeBuildRow[];
-    // Free build complete = every FREE_BUILD_SLUGS slug has a task_run with status='completed'.
     const completedSlugs = new Set(
       runs.filter((r) => r.status === "completed").map((r) => r.tasks.slug),
     );
-    const freeBuildComplete = FREE_BUILD_SLUGS.every((s) => completedSlugs.has(s));
+    const freeBuildComplete = freeBuildSlugs.every((s) => completedSlugs.has(s));
 
     if (!freeBuildComplete) {
       return c.json(
