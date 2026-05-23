@@ -6,7 +6,7 @@ Your output feeds every downstream task, so be thorough and precise.
 Return ONLY a valid JSON object. No markdown fences, no prose, no explanation — just the JSON object starting with { and ending with }.`;
 
 const REQUIRED_FIELDS = [
-  "business_name", "industry", "business_model", "business_summary",
+  "industry", "business_model", "business_summary",
   "target_customer", "value_proposition", "competitors", "market_trends",
 ];
 const GENERIC_INDUSTRY = new Set(["General Business", "Business", "Other", "", "N/A"]);
@@ -55,7 +55,6 @@ Task: Propose ONE remarkable, specific business concept this person could start 
 
 Return EXACTLY this JSON object — no markdown, no extra keys, no comments:
 {
-  "business_name": "string — a concise, memorable brand name for the proposed business (2-4 words, Title Case)",
   "industry": "string — specific industry (NOT 'General Business' — be specific)",
   "business_model": "string — how it makes money (saas_subscription, marketplace, consulting, service, etc.)",
   "business_summary": "string — 2-3 sentences: what the business does, for whom, and why this person is well-positioned to run it",
@@ -94,7 +93,6 @@ ${pageSection}
 
 Return EXACTLY this JSON object — no markdown, no extra keys, no comments:
 {
-  "business_name": "string — a concise, memorable brand name for this business (2-4 words, Title Case, suitable as a product name — NOT the user's prompt sentence)",
   "industry": "string — specific industry name (NOT 'General Business' — be specific like 'Disaster Response Technology', 'DJ Booking Platform', 'Nonprofit Emergency Services')",
   "business_model": "string — how it makes money or is funded (nonprofit, saas_subscription, marketplace, consulting, donation_funded, etc.)",
   "business_summary": "string — 2-3 sentences describing what the business does and for whom",
@@ -243,20 +241,9 @@ export async function runResearchStrategy(tc: TaskCtx): Promise<TaskResult> {
     // Non-fatal
   }
 
-  // ── Update businesses.name with AI-classified name ───────────────────
-  const classifiedName = parsed.business_name as string;
-  console.log(`[research-strategy] name_reclassification business_id=${business.id} original="${business.name}" classified="${classifiedName}" industry="${parsed.industry}"`);
-  try {
-    await supabase
-      .from("businesses")
-      .update({ name: classifiedName })
-      .eq("id", business.id);
-    await emit({ type: "cmd", text: `Business named: ${classifiedName}`, ts: Date.now() });
-  } catch (err) {
-    const errMsg = extractErrorMessage(err);
-    await emit({ type: "cmd", text: `[warn] name update failed: ${errMsg}`, ts: Date.now() });
-    // Continue — name update is best-effort, not blocking
-  }
+  // Business naming is owned by the find-a-unique-business-name task,
+  // which runs immediately after this one. Research no longer touches
+  // businesses.name.
 
   return {
     output_data: { ...parsed, strategy: parsed.positioning_statement },
