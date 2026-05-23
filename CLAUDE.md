@@ -195,39 +195,44 @@ in any of the following core tables:
   token_balances     — token counts, periods
   token_transactions — transaction history
 
-VIOLATIONS (never do these):
-  const taskNameMap = { 'research-strategy': 'Market Analyzed', ... }
-  const assetTypeMap = { 'welcome_email': { name: '...', icon: '...' } }
-  const FREE_BUILD_SLUGS = ['welcome-email', 'research-strategy', ...]
-  const LIFECYCLE_PHASE_ORDER = [{ slug: 'idea', label: '...' }, ...]
+VIOLATIONS — NEVER DO ANY OF THESE:
+  const FREE_BUILD_PIPELINE = [{ slug: '...', fn: ... }]
+  const FREE_BUILD_SLUGS = ['welcome-email', ...]
+  const taskNameMap = { 'research-strategy': 'Market Analyzed' }
+  const assetTypeMap = { 'welcome_email': { name: '...' } }
+  const LIFECYCLE_PHASE_ORDER = [{ slug: 'idea', ... }]
   const TASK_TO_PHASE = { 'research-strategy': 'idea', ... }
-  const DOC_META = { 'mission-document': { title: '...', icon: '...' } }
-  Any map keyed by task slug whose values duplicate tasks.name
+  const DOC_META = { 'mission-document': { title: '...' } }
+  Any array, map, or constant whose contents would need to
+  change when a task is added or modified in the tasks table.
+
+THE RULE: ZERO hardcoded task data. No slug arrays. No name maps.
+No phase maps. No execution order lists. No free build lists.
+No token cost constants. No plan_required checks hardcoded to
+specific slug values. If it lives in the tasks table (or any
+related table), it must be read from the DB at runtime.
 
 WHAT TO DO INSTEAD:
-  - task names → read tasks.name from the DB join
-  - task order → read tasks.execution_order from the DB
-  - document names → read tasks.name via asset.task_run_id join
-  - lifecycle phases → read tasks.lifecycle_phase_id join
-  - free build tasks → query tasks WHERE is_default = true
-  - asset display names → read tasks.name from matching task_run
+  free build pipeline → SELECT slug, name FROM tasks
+                         WHERE is_default=true AND status='active'
+                         ORDER BY execution_order
+  task names          → read tasks.name from DB join
+  task order          → read tasks.execution_order from DB
+  document names      → read tasks.name via asset.task_run_id join
+  lifecycle phases    → read tasks.lifecycle_phase_id join
+  asset display names → read tasks.name from matching task_run
+  plan gate checks    → read task.plan_required from DB response
 
-BEFORE CREATING ANY CONSTANT LIST:
-  1. Check the database schema — is this data already in a table?
-  2. If yes: query it. Never hardcode it.
-  3. If unsure: ASK ROB before creating any constant.
-     Do not assume. Do not create first and ask later.
+ACCEPTABLE CODE CONSTANTS (not task data):
+  slug → TaskFn dispatch map (maps slug to handler function)
+         This is execution logic, not DB data.
+  CSS class maps keyed by output_type or area
+         (e.g. which icon to show for 'document' vs 'report')
+  UI layout constants (breakpoints, animation timings)
+  Environment configuration (API URLs, feature flags)
 
-ACCEPTABLE CONSTANTS (not DB data):
-  - CSS class names / rendering discriminator maps
-    (e.g. slug → which CSS template to apply for modal rendering)
-  - Environment configuration (API URLs, feature flags)
-  - UI layout constants (breakpoints, animation timings)
-  - Pure presentation logic that has no DB equivalent
-
-The test: if the constant would need to be updated when a new
-task is added to the tasks table, it is a DB-data constant
-and must not exist in code.
+THE TEST: if adding a new task to the tasks table requires
+a code change anywhere in either repo, that code is wrong.
 
 ---
 
