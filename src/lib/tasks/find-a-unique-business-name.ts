@@ -299,6 +299,11 @@ The name must be a real, memorable brand — NOT the user's prompt sentence, NOT
       .from("businesses")
       .update({ name: finalName })
       .eq("id", business.id);
+    // Mutate the shared in-memory business object so any task that
+    // runs after this one (welcome-email, mission-document, etc.)
+    // sees the new name without an extra DB fetch. The orchestrator
+    // passes the same `business` reference into every TaskCtx.
+    business.name = finalName;
   } catch (err) {
     await emit({
       type: "cmd",
