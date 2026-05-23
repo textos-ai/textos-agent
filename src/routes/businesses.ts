@@ -143,12 +143,15 @@ app.get("/:slug/tasks", async (c) => {
   });
 
   // Free-build status — the frontend gates paid tile buttons on this (D3).
-  // Import from orchestrator to maintain single source of truth.
-  const { FREE_BUILD_PIPELINE } = await import("../lib/free-build-orchestrator");
-  const FREE_BUILD_SLUGS = FREE_BUILD_PIPELINE.map(task => task.slug);
-  const freeBuildTasks = taskList.filter((t) => FREE_BUILD_SLUGS.includes(t.slug));
+  // The list of free-build slugs is sourced from the DB at request time
+  // (tasks WHERE is_default=true AND status='active'). No hardcoded list.
+  const freeBuildSlugs = tasks
+    .filter((t) => t.is_default === true && t.status === "active")
+    .map((t) => t.slug);
+  const freeBuildTasks = taskList.filter((t) => freeBuildSlugs.includes(t.slug));
   const free_build_complete =
-    freeBuildTasks.length === FREE_BUILD_SLUGS.length &&
+    freeBuildSlugs.length > 0 &&
+    freeBuildTasks.length === freeBuildSlugs.length &&
     freeBuildTasks.every((t) => t.status === "completed");
   const free_build_running_task =
     freeBuildTasks.find((t) => t.status === "running")?.slug ?? null;
