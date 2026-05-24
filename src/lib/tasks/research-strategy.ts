@@ -5,6 +5,33 @@ const SYSTEM = `You are the TextOS research agent — a world-class business str
 Your output feeds every downstream task, so be thorough and precise.
 Return ONLY a valid JSON object. No markdown fences, no prose, no explanation — just the JSON object starting with { and ending with }.`;
 
+// Hard constraint injected for generated concepts (kind = find_for_me, new_idea).
+// Skipped for kind = existing — the user already owns that business, we just analyze it.
+// TextOS's autonomous engine (ad ops, paywall, digital product fulfillment) only
+// works for businesses that can be operated end-to-end through the internet.
+const ONLINE_ONLY_CONSTRAINT = `CRITICAL CONSTRAINT — ONLINE-ONLY BUSINESSES:
+TextOS operates businesses fully autonomously. Every business you propose MUST be runnable 100% online with no human-in-the-loop physical operations. The business must:
+- Sell digital products, software, content, or remote services
+- Require NO physical inventory, NO in-person services, NO location-dependent operations
+- Be fulfillable end-to-end through the internet (payment, delivery, customer interaction)
+
+ACCEPTABLE categories:
+- Digital downloads (PDF guides, templates, courses, e-books)
+- SaaS / web apps / API products
+- Paid newsletters / online communities / membership content
+- Remote services delivered fully online (consulting calls, async coaching, written deliverables)
+- Affiliate / content / lead-gen / advertising-supported sites
+- Marketplaces connecting digital buyers and sellers
+
+REJECT these patterns and reshape them into the closest viable online-only variant:
+- Brick-and-mortar (retail, restaurant, gym, salon, studio)
+- Physical product sales requiring inventory or shipping
+- In-person services (massage, repair, cleaning, photography, event coordination)
+- Location-dependent services (real estate, local trades, regional dispatch)
+- Anything requiring drivers, technicians, on-site visits, or physical facilities
+
+If the user's input describes an offline or hybrid business, do NOT decline — instead reshape it into the closest viable online-only variant (e.g. "pizza shop in NYC" → "online pizza-making course / pizza-equipment review site / paid pizza newsletter") and explain the pivot in the "reasoning" field.`;
+
 const REQUIRED_FIELDS = [
   "industry", "business_model", "business_summary",
   "target_customer", "value_proposition", "competitors", "market_trends",
@@ -51,7 +78,9 @@ ${findForMeData.interests}
 """
 ${budgetLine}
 
-Task: Propose ONE remarkable, specific business concept this person could start — something that plays to their background, fits the budget, and has real market potential. Then research the market for that concept thoroughly.
+${ONLINE_ONLY_CONSTRAINT}
+
+Task: Propose ONE remarkable, specific business concept this person could start — something that plays to their background, fits the budget, has real market potential, and meets the ONLINE-ONLY constraint above. Then research the market for that concept thoroughly.
 
 Return EXACTLY this JSON object — no markdown, no extra keys, no comments:
 {
@@ -83,6 +112,12 @@ Return EXACTLY this JSON object — no markdown, no extra keys, no comments:
     ? `\nActual page content fetched from the URL:\n"""\n${pageContent}\n"""`
     : "";
 
+  // 'existing' = user already owns this business → analyze as-is, no constraint.
+  // 'new_idea' (and any other generative kind) = we're proposing a new business →
+  // must be online-only.
+  const constraintSection =
+    business.kind === "existing" ? "" : `\n${ONLINE_ONLY_CONSTRAINT}\n`;
+
   return `Research this business and its market thoroughly.${retryNote}
 
 Business name: ${business.name}
@@ -90,6 +125,7 @@ Business type: ${business.kind}
 ${urlSection}
 Idea / description: ${idea}
 ${pageSection}
+${constraintSection}
 
 Return EXACTLY this JSON object — no markdown, no extra keys, no comments:
 {
