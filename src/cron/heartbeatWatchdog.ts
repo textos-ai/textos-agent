@@ -41,7 +41,7 @@ export async function runHeartbeatWatchdog(supabase: SupabaseClient): Promise<vo
     .from("task_runs")
     .update({
       status: "failed",
-      error: "timeout_2min",
+      error: "timeout_5min",
       completed_at: new Date().toISOString(),
     })
     .eq("status", "running")

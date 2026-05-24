@@ -460,7 +460,7 @@ app.get("/:slug/task_runs/:id", async (c) => {
     .from("task_runs")
     .update({
       status: "failed",
-      error: "timeout_2min",
+      error: "timeout_5min",
       completed_at: new Date().toISOString(),
     })
     .eq("business_id", business.id)
