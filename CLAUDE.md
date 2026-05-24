@@ -234,6 +234,22 @@ ACCEPTABLE CODE CONSTANTS (not task data):
 THE TEST: if adding a new task to the tasks table requires
 a code change anywhere in either repo, that code is wrong.
 
+APP PLATFORM RULES (generate-business-app + /api/generated-apps/*):
+  - App HTML is stored in business_assets (asset_type='app'), never
+    on disk. Read it from there at serve time.
+  - app_configs is the source of truth for per-business LLM tier,
+    paid_tier_price_cents, free_tier_enabled. Never hardcode these
+    values in the worker; read them per request.
+  - Visitor token flow: Stripe checkout.session.completed →
+    /api/generated-apps/webhook/stripe → credit app_visitor_tokens
+    row → /api/generated-apps/:businessId/verify-token decrements
+    on each use and writes to app_usage_log.
+  - All runtime errors in the apps route MUST be written to
+    app_bug_log (open status). The admin queue at /admin/app-bugs
+    is the recovery surface; do not silently swallow errors.
+  - /api/generated-apps/* lives in a SEPARATE namespace from
+    /api/apps/* (the pre-built app catalog). Don't mix them.
+
 ---
 
 ## Non-Negotiable Rules

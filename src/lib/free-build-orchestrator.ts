@@ -36,6 +36,7 @@ import { runPersonalizedPitchEmail } from "./tasks/personalized-pitch-email";
 import { runSocialContentPlan } from "./tasks/social-content-plan";
 import { runColdEmailOutreach } from "./tasks/cold-email-outreach";
 import { runFindAUniqueBusinessName } from "./tasks/find-a-unique-business-name";
+import { runGenerateBusinessApp } from "./tasks/generate-business-app";
 
 // Slug → TaskFn dispatch map. Acceptable code constant per CLAUDE.md:
 // it maps slug → handler function, which is execution logic, not DB data.
@@ -57,6 +58,7 @@ export const FREE_BUILD_TASK_HANDLERS: Record<string, TaskFn> = {
   "social-content-plan":            runSocialContentPlan,
   "personalized-pitch-email":       runPersonalizedPitchEmail,
   "dashboard-briefing":             runDashboardBriefing,
+  "generate-business-app":          runGenerateBusinessApp,
 };
 
 /**
