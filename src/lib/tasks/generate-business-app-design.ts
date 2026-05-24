@@ -185,8 +185,11 @@ Return JSON:
   }
 
   // ── Dispatch step 2 in a separate Worker invocation ────────────────────────
-  const agentUrl = resolveAgentUrl(env);
-  const triggerRes = await fetch(`${agentUrl}/api/internal/run-task`, {
+  // Use the SELF service binding rather than a public-URL fetch — Cloudflare
+  // blocks Worker→same-Worker fetches over the public hostname (CF error 1042).
+  // Service Bindings route by binding name; the Request URL hostname is just
+  // a placeholder the Hono router will match against.
+  const triggerReq = new Request("http://internal/api/internal/run-task", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -198,6 +201,7 @@ Return JSON:
       taskSlug: "generate-business-app-html",
     }),
   });
+  const triggerRes = await env.SELF.fetch(triggerReq);
 
   if (!triggerRes.ok) {
     const txt = await triggerRes.text().catch(() => "");

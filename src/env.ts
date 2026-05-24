@@ -67,4 +67,11 @@ export interface Env {
    *  that need to self-call (e.g. chain pattern). If unset, derived from
    *  ENVIRONMENT. Set via wrangler.toml [env.test.vars] for cleanliness. */
   AGENT_URL?: string;
+  /** Service Binding pointing at this same Worker. Used by chain-pattern task
+   *  handlers (generate-business-app-design → generate-business-app-html) to
+   *  fire a self-invocation without hitting Cloudflare's same-Worker public
+   *  URL block (CF error 1042). Routed by binding, not DNS — Request URL
+   *  hostname is ignored. Declared in wrangler.toml as [[services]] (prod)
+   *  and [[env.test.services]] (test). */
+  SELF: Fetcher;
 }

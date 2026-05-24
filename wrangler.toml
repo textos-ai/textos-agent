@@ -38,6 +38,11 @@ FRONTEND_URL = "https://app.textos.ai"
 binding = "SNAPSHOT_KV"
 id = "198fb2847eaa45f9b9d3102311832b9b"
 
+[[kv_namespaces]]
+binding = "XAI_SCRIPTS_KV"
+id = "b9684fc364194c229a2aedc0be6882c2"
+preview_id = "b1800214351949e581d994f728daec0b"
+
 # Cloudflare D1 — per-business activity logs and cache.
 # [[d1_databases]]
 # binding = "DB"
@@ -58,6 +63,15 @@ id = "198fb2847eaa45f9b9d3102311832b9b"
 [[r2_buckets]]
 binding = "ASSETS"
 bucket_name = "textos-assets"
+
+# Service Binding — Worker calls itself via env.SELF.fetch() for the
+# chain-pattern in generate-business-app-design (dispatches the HTML
+# step to a separate Worker invocation). Worker→same-Worker fetches
+# over the public URL are blocked by Cloudflare (CF error 1042);
+# Service Bindings are the supported path. Top-level entry = prod.
+[[services]]
+binding = "SELF"
+service = "textos-agent-dev"
 
 # Production environment — same Worker, separate name + secrets.
 # [env.prod]
@@ -98,3 +112,10 @@ id = "198fb2847eaa45f9b9d3102311832b9b"
 [[env.test.r2_buckets]]
 binding = "ASSETS"
 bucket_name = "textos-assets"
+
+# Service Binding — test variant. Points the SELF binding at this same
+# test Worker so the chain pattern's self-fetch works in test the same
+# way it works in prod (see top-level [[services]] for the prod binding).
+[[env.test.services]]
+binding = "SELF"
+service = "textos-agent-test"
