@@ -58,4 +58,13 @@ export interface Env {
   UNSPLASH_ACCESS_KEY: string;
   /** R2 bucket for generated assets (logos, hero images, exports). */
   ASSETS: R2Bucket;
+  /** Shared secret for internal worker→worker calls (chain-pattern task triggers).
+   *  Set via `wrangler secret put INTERNAL_TRIGGER_SECRET --env <env>`.
+   *  Validated in /api/internal/run-task via the `x-internal-secret` header.
+   *  Required by generate-business-app-design to dispatch the HTML step. */
+  INTERNAL_TRIGGER_SECRET?: string;
+  /** Optional override for this Worker's own public URL — used by task handlers
+   *  that need to self-call (e.g. chain pattern). If unset, derived from
+   *  ENVIRONMENT. Set via wrangler.toml [env.test.vars] for cleanliness. */
+  AGENT_URL?: string;
 }

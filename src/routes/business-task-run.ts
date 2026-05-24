@@ -474,7 +474,7 @@ app.get("/:slug/task_runs/:id", async (c) => {
 // debit_tokens RPC. On any failure, mark task_run as failed and DO NOT
 // debit tokens. Token bookkeeping happens ONCE, after success.
 
-async function runTaskInBackground(
+export async function runTaskInBackground(
   env: Env,
   business: BusinessRow,
   task: TaskRow,

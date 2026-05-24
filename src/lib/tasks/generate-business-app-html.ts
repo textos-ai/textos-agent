@@ -1,20 +1,20 @@
 import type { TaskCtx, TaskResult } from "./types";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// generate-business-app — two-call task handler.
+// generate-business-app-html — step 2 of 2 in the chain pattern.
 //
-// Call 1 (design): Claude returns a JSON spec describing the app type, question
-// list, paywall reveal text, and accent color.
+// Triggered by generate-business-app-design via /api/internal/run-task, runs
+// in its OWN Worker invocation (independent budget).
 //
-// Call 2 (HTML):   Claude returns a self-contained single-file HTML/CSS/JS app
-// based on the spec. The HTML contains {{BUSINESS_ID}}, {{ASSET_ID}}, and
-// {{API_BASE}} placeholders that this handler replaces before saving.
+// Responsibilities:
+//   1. Read the asset_type='app_draft' row written by the design step.
+//   2. Make Call 2 (full HTML, max_tokens 8000) with a 45s timeout.
+//   3. Insert final asset_type='app' row, replace placeholders, update.
+//   4. Upsert app_configs.
+//   5. Delete the draft row.
 //
-// Persistence:
-//   - business_assets: asset_type='app', asset_subtype='mini_app'. asset_data
-//     holds the final HTML and the design spec.
-//   - app_configs: per-business pricing + LLM tier; created here on first run,
-//     left untouched on re-runs (the user may have edited it).
+// Token accounting: this task's tasks.token_cost=0; charging happens in the
+// design step. Trying to debit twice would double-charge the user.
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface AppDesign {
@@ -25,7 +25,7 @@ interface AppDesign {
   questions: Array<{
     id: string;
     text: string;
-    type: "single_choice" | "multi_choice" | "text" | "number" | "scale";
+    type: string;
     options?: string[];
     min?: number;
     max?: number;
@@ -38,115 +38,67 @@ interface AppDesign {
 }
 
 function stripFences(s: string): string {
-  return s.replace(/^```(?:json|html)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  return s.replace(/^```(?:html)?\s*/i, "").replace(/\s*```$/i, "").trim();
 }
 
 function resolveAgentUrl(env: TaskCtx["env"]): string {
-  // Worker doesn't know its own public URL by default; derive from ENVIRONMENT.
-  // Override-friendly: if AGENT_URL is set (wrangler.toml [vars]), it wins.
-  const override = (env as unknown as { AGENT_URL?: string }).AGENT_URL;
-  if (override) return override;
+  if (env.AGENT_URL) return env.AGENT_URL;
   return env.ENVIRONMENT === "test"
     ? "https://textos-agent-test.rgaudet2023.workers.dev"
     : "https://textos-agent-dev.rgaudet2023.workers.dev";
 }
 
-export async function runGenerateBusinessApp(tc: TaskCtx): Promise<TaskResult> {
-  const { business, ctx, anthropic, emit, supabase, env, taskRunId } = tc;
+const CALL_TIMEOUT_MS = 45_000;
+
+async function withTimeout<T>(p: Promise<T>, label: string, ms: number): Promise<T> {
+  const timeout = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error(`${label}_timeout_${Math.floor(ms / 1000)}s`)), ms),
+  );
+  return Promise.race([p, timeout]);
+}
+
+export async function runGenerateBusinessAppHtml(tc: TaskCtx): Promise<TaskResult> {
+  const { business, anthropic, emit, supabase, env, taskRunId } = tc;
 
   const frontendUrl = env.FRONTEND_URL ?? "https://app.textos.ai";
   const agentUrl = resolveAgentUrl(env);
   const plannedUrl = `${frontendUrl}/sites/${business.slug}/app`;
 
-  // Optional user-provided description of what they want (passed through the
-  // business-task-run dispatch path). May be undefined for the autonomous case.
-  const taskRunRow = await supabase
-    .from("task_runs")
-    .select("config")
-    .eq("id", taskRunId)
+  // ── Load the draft written by the design step ──────────────────────────────
+  const { data: draftRow, error: draftErr } = await supabase
+    .from("business_assets")
+    .select("id, asset_data")
+    .eq("business_id", business.id)
+    .eq("asset_type", "app_draft")
+    .order("created_at", { ascending: false })
+    .limit(1)
     .maybeSingle();
-  const config = (taskRunRow.data?.config as Record<string, unknown> | null) || null;
-  const userDescription =
-    typeof config?.description === "string" ? config.description : "";
-  const llmTier = typeof config?.llm_tier === "string" ? (config.llm_tier as string) : "haiku";
 
-  await emit({ type: "cmd", text: "Designing your custom app...", ts: Date.now() });
-
-  // ── CALL 1 — App design ────────────────────────────────────────────────────
-  const call1System = `You are an expert web app designer for ${business.name}, a ${ctx.industry ?? "small"} business. ${ctx.business_summary ?? ""}. Return ONLY valid JSON. First character must be {.`;
-
-  const call1User = `Design a custom mini-app for this business website. The app must be specific to this industry and serve the target customer directly.
-
-Business context:
-- Industry: ${ctx.industry ?? "unknown"}
-- Summary: ${ctx.business_summary ?? "unknown"}
-- Target customer: ${ctx.target_customer ? JSON.stringify(ctx.target_customer) : "unknown"}
-- Value proposition: ${ctx.value_proposition ?? "unknown"}
-- Brand voice: ${ctx.brand_voice ?? "professional"}
-- Business kind: ${business.kind}
-
-${userDescription ? `User-provided description (HONOR THIS): ${userDescription}` : ""}
-
-Choose the BEST app type from this list based on the business:
-  - assessment_quiz: customer readiness/fit quiz
-  - quote_calculator: instant price estimator
-  - roi_calculator: return on investment tool
-  - recommendation_engine: product/service matcher
-  - lead_qualifier: qualify visitor's needs
-  - booking_intake: pre-booking question form
-  - knowledge_checker: educational quiz
-
-Return JSON:
-{
-  "app_type": "string",
-  "app_title": "string",
-  "app_tagline": "string",
-  "app_description": "string (shown to visitor)",
-  "questions": [
-    {
-      "id": "q1",
-      "text": "string",
-      "type": "single_choice|multi_choice|text|number|scale",
-      "options": ["..."],
-      "min": 0,
-      "max": 10
-    }
-  ],
-  "free_tier_reveals": "string — what the free tier shows after submit",
-  "paid_tier_reveals": "string — what the paid tier unlocks",
-  "cta_label": "string — paywall button text",
-  "result_logic": "string — plain English: how to score/calculate results",
-  "accent_color": "string — hex color matching the business brand"
-}`;
-
-  let design: AppDesign;
-  try {
-    const msg = await anthropic.messages.create({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 2000,
-      stream: false,
-      system: call1System,
-      messages: [{ role: "user", content: call1User }],
-    });
-    const block = msg.content[0];
-    const text = block && block.type === "text" ? (block as { text: string }).text : "";
-    design = JSON.parse(stripFences(text.trim())) as AppDesign;
-  } catch (err) {
+  if (draftErr) {
+    throw new Error(`Failed to read app_draft: ${draftErr.message}`);
+  }
+  if (!draftRow) {
     throw new Error(
-      `App design call failed: ${err instanceof Error ? err.message : String(err)}`,
+      "No app_draft found for this business — design step must complete first.",
     );
   }
+  const draftData = draftRow.asset_data as Record<string, unknown> | null;
+  const design = draftData?.design as AppDesign | undefined;
+  if (!design) {
+    throw new Error("app_draft has no design spec — design step output malformed.");
+  }
+  const llmTier = (draftData?.llm_tier as string) || "haiku";
 
   await emit({
     type: "cmd",
-    text: `Building ${design.app_type.replace(/_/g, " ")}...`,
+    text: `Building ${(design.app_type || "app").replace(/_/g, " ")}...`,
     ts: Date.now(),
   });
 
   // ── CALL 2 — HTML generation ───────────────────────────────────────────────
-  const call2System = `You are an expert frontend developer. Generate complete, self-contained HTML/CSS/JS. No external dependencies except vanilla JS. The app must be fully functional standalone. Return ONLY the complete HTML. No explanation. No markdown fences. Start with <!DOCTYPE html>.`;
+  const systemPrompt = `You are an expert frontend developer. Generate complete, self-contained HTML/CSS/JS. No external dependencies except vanilla JS. The app must be fully functional standalone. Return ONLY the complete HTML. No explanation. No markdown fences. Start with <!DOCTYPE html>.`;
 
-  const call2User = `Generate a complete HTML file for this business mini-app based on this spec:
+  const userPrompt = `Generate a complete HTML file for this business mini-app based on this spec:
 
 ${JSON.stringify(design, null, 2)}
 
@@ -193,13 +145,17 @@ Start with <!DOCTYPE html>. No markdown fences. Return only HTML.`;
 
   let html: string;
   try {
-    const msg = await anthropic.messages.create({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 8000,
-      stream: false,
-      system: call2System,
-      messages: [{ role: "user", content: call2User }],
-    });
+    const msg = await withTimeout(
+      anthropic.messages.create({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 8000,
+        stream: false,
+        system: systemPrompt,
+        messages: [{ role: "user", content: userPrompt }],
+      }),
+      "html_call",
+      CALL_TIMEOUT_MS,
+    );
     const block = msg.content[0];
     const text = block && block.type === "text" ? (block as { text: string }).text : "";
     html = stripFences(text.trim());
@@ -214,8 +170,7 @@ Start with <!DOCTYPE html>. No markdown fences. Return only HTML.`;
 
   await emit({ type: "cmd", text: "Saving your app...", ts: Date.now() });
 
-  // ── Persist asset (needs id before placeholder replacement) ────────────────
-  // Insert with a placeholder html, then update once we know the asset id.
+  // ── Insert final asset row (need its id to substitute placeholders) ────────
   const { data: assetRow, error: assetErr } = await supabase
     .from("business_assets")
     .insert({
@@ -225,7 +180,6 @@ Start with <!DOCTYPE html>. No markdown fences. Return only HTML.`;
       asset_subtype: "mini_app",
       asset_url: plannedUrl,
       asset_data: {
-        // html filled in after id-aware replacement below
         html: null,
         app_type: design.app_type,
         app_title: design.app_title,
@@ -234,7 +188,7 @@ Start with <!DOCTYPE html>. No markdown fences. Return only HTML.`;
         llm_tier: llmTier,
         generated_at: new Date().toISOString(),
       },
-      metadata: { model: "claude-sonnet-4-20250514", app_type: design.app_type },
+      metadata: { model: "claude-sonnet-4-20250514", app_type: design.app_type, step: "html" },
     })
     .select("id")
     .single();
@@ -244,7 +198,7 @@ Start with <!DOCTYPE html>. No markdown fences. Return only HTML.`;
   }
   const assetId = assetRow.id as string;
 
-  // Replace placeholders now that we know all three values.
+  // Substitute placeholders now that we know all three values.
   const finalHtml = html
     .replace(/\{\{BUSINESS_ID\}\}/g, business.id)
     .replace(/\{\{ASSET_ID\}\}/g, assetId)
@@ -268,7 +222,7 @@ Start with <!DOCTYPE html>. No markdown fences. Return only HTML.`;
     throw new Error(`Failed to update business_assets HTML: ${updateErr.message}`);
   }
 
-  // ── app_configs (per-business config; upsert on business_id) ───────────────
+  // ── app_configs upsert (per-business) ──────────────────────────────────────
   const { error: cfgErr } = await supabase.from("app_configs").upsert(
     {
       business_id: business.id,
@@ -283,7 +237,6 @@ Start with <!DOCTYPE html>. No markdown fences. Return only HTML.`;
     { onConflict: "business_id" },
   );
   if (cfgErr) {
-    // Non-fatal — the asset is saved; admin can fix config later. Log & continue.
     await emit({
       type: "cmd",
       text: `[warn] app_configs upsert failed: ${cfgErr.message}`,
@@ -291,9 +244,24 @@ Start with <!DOCTYPE html>. No markdown fences. Return only HTML.`;
     });
   }
 
+  // ── Delete the draft row now that the final asset is persisted ─────────────
+  // Non-fatal if it fails — the draft is just a workspace row; the final 'app'
+  // row is the source of truth for serving.
+  const { error: deleteErr } = await supabase
+    .from("business_assets")
+    .delete()
+    .eq("id", draftRow.id);
+  if (deleteErr) {
+    await emit({
+      type: "cmd",
+      text: `[warn] failed to delete app_draft (non-fatal): ${deleteErr.message}`,
+      ts: Date.now(),
+    });
+  }
+
   await emit({
     type: "narrative",
-    text: `Your ${design.app_type.replace(/_/g, " ")} is ready →`,
+    text: "Your app is live →",
     ts: Date.now(),
   });
   await emit({
@@ -304,6 +272,7 @@ Start with <!DOCTYPE html>. No markdown fences. Return only HTML.`;
 
   return {
     output_data: {
+      step: "html",
       app_type: design.app_type,
       app_title: design.app_title,
       app_tagline: design.app_tagline,

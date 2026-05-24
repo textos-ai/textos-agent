@@ -32,6 +32,7 @@ import appsBusinessesRoutes from "./routes/apps-businesses";
 import appsInstancesRoutes from "./routes/apps-instances";
 import xaiFyiRoutes from "./routes/xai-fyi";
 import generatedAppsRoutes from "./routes/generated-apps";
+import internalRoutes from "./routes/internal";
 import { runHeartbeatWatchdog } from "./cron/heartbeatWatchdog";
 import { createClient } from "@supabase/supabase-js";
 
@@ -93,6 +94,7 @@ app.route("/api/businesses", appsBusinessesRoutes);
 app.route("/api/business-apps", appsInstancesRoutes);
 app.route("/xai-fyi", xaiFyiRoutes);
 app.route("/api/generated-apps", generatedAppsRoutes);
+app.route("/api/internal", internalRoutes);
 
 
 app.notFound((c) =>
