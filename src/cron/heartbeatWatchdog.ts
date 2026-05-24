@@ -28,15 +28,15 @@ export async function runHeartbeatWatchdog(supabase: SupabaseClient): Promise<vo
     return;
   }
 
-  // Sweep paid task_runs that have been 'running' > 3 min. Paid tasks
-  // should complete in <90s in the happy path; anything past 3 min is
+  // Sweep paid task_runs that have been 'running' > 5 min. Paid tasks
+  // should complete in <90s in the happy path; anything past 5 min is
   // almost always a crashed worker (waitUntil cancellation, Anthropic
-  // timeout, OOM). Extended from 2min to 3min for two-call Sonnet tasks
-  // like business-landing-page. The catch block in the run endpoint flips
-  // status to 'failed' for any caught exception, so still-'running' rows
-  // past the timeout are orphaned — they need this sweep to unstick. The
-  // UPDATE gates on status='running' so it can't overwrite a user cancellation.
-  const taskTimeoutCutoff = new Date(Date.now() - 180_000).toISOString();
+  // timeout, OOM). Extended from 3min to 5min so the chained
+  // generate-business-app-html step (Sonnet + 4000 max_tokens) has room
+  // on the long tail. The per-business inline sweep in
+  // business-task-run.ts uses the same 5-min cutoff. Per-task wall clock
+  // still belongs to each handler's withTimeout wrapper.
+  const taskTimeoutCutoff = new Date(Date.now() - 300_000).toISOString();
   const { data: stalePaidTasks, error: paidErr } = await supabase
     .from("task_runs")
     .update({

@@ -452,8 +452,10 @@ app.get("/:slug/task_runs/:id", async (c) => {
   // watchdog cron a safety net rather than the only line of defense.
   // Polls happen every 2s while a task is in flight, so a stuck row
   // clears within seconds instead of waiting for the next cron tick.
-  // Threshold: 2 min — tasks that go past that are crashed, not slow.
-  const timeoutCutoff = new Date(Date.now() - 120_000).toISOString();
+  // Threshold: 5 min — accommodates the longer LLM-heavy paid tasks
+  // (generate-business-app-html in particular). The handler's own
+  // withTimeout wrappers still fail fast at their own thresholds.
+  const timeoutCutoff = new Date(Date.now() - 300_000).toISOString();
   await supabase
     .from("task_runs")
     .update({
