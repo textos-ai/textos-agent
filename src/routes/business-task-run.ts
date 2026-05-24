@@ -46,6 +46,23 @@ app.post("/:slug/tasks/:taskSlug/run", async (c) => {
   const taskSlug = c.req.param("taskSlug");
   const supabase = createSupabaseClient(c.env);
 
+  // Optional request body: { config?: object } — passed through to the
+  // task_runs row so handlers can read user-provided params (description,
+  // llm_tier, etc.). Body is optional; treat empty / missing / non-JSON as
+  // "no config". Strict validation lives in the handler that reads it.
+  let bodyConfig: Record<string, unknown> | null = null;
+  try {
+    const raw = await c.req.json().catch(() => null);
+    if (raw && typeof raw === "object" && "config" in raw) {
+      const candidate = (raw as { config: unknown }).config;
+      if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
+        bodyConfig = candidate as Record<string, unknown>;
+      }
+    }
+  } catch {
+    bodyConfig = null;
+  }
+
   // 1. Resolve business + ownership
   let business: BusinessRow | null;
   try {
@@ -309,7 +326,8 @@ app.post("/:slug/tasks/:taskSlug/run", async (c) => {
     );
   }
 
-  // 7. Create task_run row — status=running, no tokens debited yet
+  // 7. Create task_run row — status=running, no tokens debited yet.
+  // config is jsonb; null when no body was sent or it had no config field.
   const { data: taskRunRow, error: insertErr } = await supabase
     .from("task_runs")
     .insert({
@@ -318,6 +336,7 @@ app.post("/:slug/tasks/:taskSlug/run", async (c) => {
       task_id: task.id,
       status: "running",
       started_at: new Date().toISOString(),
+      config: bodyConfig,
     })
     .select("id")
     .single();
