@@ -48,7 +48,7 @@ function resolveAgentUrl(env: TaskCtx["env"]): string {
     : "https://textos-agent-dev.rgaudet2023.workers.dev";
 }
 
-const CALL_TIMEOUT_MS = 45_000;
+const CALL_TIMEOUT_MS = 90_000;
 
 async function withTimeout<T>(p: Promise<T>, label: string, ms: number): Promise<T> {
   const timeout = new Promise<never>((_, reject) =>
@@ -148,7 +148,7 @@ Start with <!DOCTYPE html>. No markdown fences. Return only HTML.`;
     const msg = await withTimeout(
       anthropic.messages.create({
         model: "claude-sonnet-4-20250514",
-        max_tokens: 8000,
+        max_tokens: 4000,
         stream: false,
         system: systemPrompt,
         messages: [{ role: "user", content: userPrompt }],
