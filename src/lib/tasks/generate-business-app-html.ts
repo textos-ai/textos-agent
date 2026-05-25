@@ -190,55 +190,74 @@ Start with <!DOCTYPE html>. No markdown fences. Return only HTML.`;
     max_tokens: 8000,
     prompt_chars: systemPrompt.length + userPrompt.length,
     timeout_ms: CALL_TIMEOUT_MS,
+    stream: true,
   });
+  // Streaming the HTML call — non-streaming (stream:false) at 8000 max_tokens
+  // was silently killed by Cloudflare's subrequest body timeout mid-response
+  // (no exception, no abort_fired, just a quiet invocation kill). Streaming
+  // keeps the subrequest active as chunks arrive; each chunk is a separate
+  // read from CF's perspective. We accumulate text from content_block_delta
+  // events, then stream.finalMessage() gives us stop_reason + usage cleanly.
+  // Tracking variables are declared OUTSIDE the inner try so the outer catch
+  // can include partial state on failure.
+  let stopReason: string = "unknown";
+  let inputTokens: number | null = null;
+  let outputTokens: number | null = null;
+  let chunkCount = 0;
+  let accumulatedText = "";
   try {
-    // AbortController-driven timeout. Cancels the underlying fetch
-    // when the timer fires — releases the Worker invocation budget
-    // instead of leaving the request dangling like Promise.race did.
     const controller = new AbortController();
     const timeoutId = setTimeout(() => {
       genAppLog("html_abort_fired", {
         business_id: business.id,
         task_run_id: taskRunId,
         elapsed_ms: Date.now() - callStart,
+        chunks_received: chunkCount,
+        chars_received: accumulatedText.length,
       });
       controller.abort();
     }, CALL_TIMEOUT_MS);
-    let msg;
     try {
-      msg = await anthropic.messages.create(
+      const stream = anthropic.messages.stream(
         {
           model: htmlModel,
-          // Raised 4000 → 8000 after the charcuterie app truncated mid-script.
-          // A complete quiz/calculator with 6-8 questions + result logic +
-          // paywall is realistically 5-7k tokens of output; 4000 was tight by
-          // design and silently chopped the longer apps. Charge is per actual
-          // output tokens used (not the ceiling) so the cost ceiling went up
-          // but the expected cost per app is unchanged.
           max_tokens: 8000,
-          stream: false,
           system: systemPrompt,
           messages: [{ role: "user", content: userPrompt }],
         },
         { signal: controller.signal },
       );
+      for await (const event of stream) {
+        if (
+          event.type === "content_block_delta" &&
+          (event as { delta?: { type?: string; text?: string } }).delta?.type === "text_delta"
+        ) {
+          const delta = (event as { delta: { text?: string } }).delta;
+          if (typeof delta.text === "string") {
+            accumulatedText += delta.text;
+            chunkCount++;
+          }
+        }
+      }
+      const finalMessage = await stream.finalMessage();
+      stopReason = (finalMessage as { stop_reason?: string }).stop_reason ?? "unknown";
+      const usage = (finalMessage as { usage?: { input_tokens?: number; output_tokens?: number } }).usage;
+      inputTokens = usage?.input_tokens ?? null;
+      outputTokens = usage?.output_tokens ?? null;
     } finally {
       clearTimeout(timeoutId);
     }
-    const block = msg.content[0];
-    const text = block && block.type === "text" ? (block as { text: string }).text : "";
-    const stopReason = (msg as { stop_reason?: string }).stop_reason ?? "unknown";
-    const usage = (msg as { usage?: { input_tokens?: number; output_tokens?: number } }).usage ?? {};
     genAppLog("html_anthropic_call_complete", {
       business_id: business.id,
       task_run_id: taskRunId,
       stop_reason: stopReason,
-      input_tokens: usage.input_tokens ?? null,
-      output_tokens: usage.output_tokens ?? null,
+      input_tokens: inputTokens,
+      output_tokens: outputTokens,
       elapsed_ms: Date.now() - callStart,
-      response_chars: text.length,
+      response_chars: accumulatedText.length,
+      chunk_count: chunkCount,
     });
-    html = stripFences(text.trim());
+    html = stripFences(accumulatedText.trim());
     if (!html.toLowerCase().startsWith("<!doctype")) {
       genAppLog("html_doctype_missing", {
         business_id: business.id,
@@ -247,7 +266,8 @@ Start with <!DOCTYPE html>. No markdown fences. Return only HTML.`;
       });
       throw new Error(`HTML output didn't start with <!DOCTYPE html>: ${html.slice(0, 80)}`);
     }
-    // Truncation detection — refuse to save half-apps. Two independent signals:
+    // Truncation detection — same logic as before, now runs over the
+    // accumulated streamed text. Two independent signals:
     //   1. Anthropic's stop_reason === 'max_tokens'  (model hit the budget)
     //   2. The parsed HTML doesn't end with </html>  (output cut mid-string)
     const endsWithHtmlTag = html.trimEnd().toLowerCase().endsWith("</html>");
@@ -269,6 +289,9 @@ Start with <!DOCTYPE html>. No markdown fences. Return only HTML.`;
       business_id: business.id,
       task_run_id: taskRunId,
       elapsed_ms: Date.now() - callStart,
+      chunks_received: chunkCount,
+      chars_received: accumulatedText.length,
+      stop_reason_so_far: stopReason,
       err_name: err instanceof Error ? err.name : "unknown",
       err_message: err instanceof Error ? err.message : String(err),
     });
