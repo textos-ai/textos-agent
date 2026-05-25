@@ -31,6 +31,8 @@ import {
 import { buildBundleSuggestions } from "../lib/withTokenDeduction";
 import { genericDocumentRunner } from "../lib/tasks/generic-document-runner";
 import type { TaskCtx } from "../lib/tasks/types";
+import { genAppLog } from "../lib/gen-app-log";
+import { serializeGenAppError } from "../lib/gen-app-error";
 
 // Slug → handler dispatch map (acceptable code constant; not a list of slugs).
 // The actual "what's in the free build" list comes from the DB at request time.
@@ -532,6 +534,10 @@ export async function runTaskInBackground(
   // legitimate "running app generation" the second user click should bounce
   // off of.
   if (task.slug === GEN_APP_DESIGN_SLUG) {
+    genAppLog("runner_concurrency_lock_check", {
+      business_id: business.id,
+      task_run_id: taskRunId,
+    });
     const { data: conflicting, error: lockErr } = await supabase
       .from("task_runs")
       .select("id, tasks!inner(slug)")
@@ -546,9 +552,19 @@ export async function runTaskInBackground(
         task_run_id: taskRunId,
         err: lockErr.message,
       });
+      genAppLog("runner_concurrency_lock_query_failed", {
+        business_id: business.id,
+        task_run_id: taskRunId,
+        err: lockErr.message,
+      });
       // Don't block on a DB hiccup — best-effort lock.
     } else if (conflicting && conflicting.length > 0) {
       log.info("[task-run] concurrency_blocked", {
+        business_id: business.id,
+        task_run_id: taskRunId,
+        conflicting_ids: conflicting.map((r: { id: string }) => r.id),
+      });
+      genAppLog("runner_concurrency_lock_hit", {
         business_id: business.id,
         task_run_id: taskRunId,
         conflicting_ids: conflicting.map((r: { id: string }) => r.id),
@@ -557,7 +573,7 @@ export async function runTaskInBackground(
         .from("task_runs")
         .update({
           status: "failed",
-          error: "concurrent_generation_in_progress",
+          error: serializeGenAppError("concurrent_generation_in_progress"),
           completed_at: new Date().toISOString(),
         })
         .eq("id", taskRunId)
@@ -602,10 +618,26 @@ export async function runTaskInBackground(
     };
 
     // Check for dedicated handler first (free build tasks), fallback to generic runner
+    const isGenAppTask = task.slug.startsWith(GEN_APP_SLUG_PREFIX);
+    if (isGenAppTask) {
+      genAppLog("runner_handler_dispatch_start", {
+        business_id: business.id,
+        task_run_id: taskRunId,
+        task_slug: task.slug,
+      });
+    }
     const dedicatedHandler = FREE_BUILD_TASK_HANDLERS[task.slug];
     const result = dedicatedHandler
       ? await dedicatedHandler(taskCtx)
       : await genericDocumentRunner(taskCtx, task);
+    if (isGenAppTask) {
+      genAppLog("runner_handler_dispatch_complete", {
+        business_id: business.id,
+        task_run_id: taskRunId,
+        task_slug: task.slug,
+        has_output_data: !!result.output_data,
+      });
+    }
 
     // Cancellation check: if the user cancelled while the Anthropic call
     // was in flight, the asset has already been written to business_assets
@@ -683,10 +715,27 @@ export async function runTaskInBackground(
         task_run_id: taskRunId,
         reason: debitSkipReason ?? "token_cost_zero",
       });
+      if (task.slug.startsWith(GEN_APP_SLUG_PREFIX)) {
+        genAppLog("runner_debit_skipped", {
+          business_id: business.id,
+          task_run_id: taskRunId,
+          task_slug: task.slug,
+          reason: debitSkipReason ?? "token_cost_zero",
+        });
+      }
     } else {
       // Debit AFTER the asset persists. Failure here is rare but possible —
       // log loudly and mark the run as failed (user keeps the asset because
       // business_assets is the receipt; they just got it for free this once).
+      if (task.slug.startsWith(GEN_APP_SLUG_PREFIX)) {
+        genAppLog("runner_debit_start", {
+          business_id: business.id,
+          task_run_id: taskRunId,
+          task_slug: task.slug,
+          tokens: effectiveCost,
+          user_id,
+        });
+      }
       const { data: debitResult, error: debitErr } = await supabase.rpc(
         "debit_tokens",
         {
@@ -708,16 +757,35 @@ export async function runTaskInBackground(
           err: debitErr?.message,
           result: debitResult,
         });
+        if (task.slug.startsWith(GEN_APP_SLUG_PREFIX)) {
+          genAppLog("runner_debit_failed", {
+            business_id: business.id,
+            task_run_id: taskRunId,
+            task_slug: task.slug,
+            err: debitErr?.message ?? String(debitResult),
+          });
+        }
+        const failError = task.slug.startsWith(GEN_APP_SLUG_PREFIX)
+          ? serializeGenAppError("token_deduct_failed_post_run")
+          : "token_deduct_failed_post_run";
         await supabase
           .from("task_runs")
           .update({
             status: "failed",
-            error: "token_deduct_failed_post_run",
+            error: failError,
             completed_at: new Date().toISOString(),
           })
           .eq("id", taskRunId)
           .eq("status", "running"); // don't overwrite a user cancellation
         return;
+      }
+      if (task.slug.startsWith(GEN_APP_SLUG_PREFIX)) {
+        genAppLog("runner_debit_complete", {
+          business_id: business.id,
+          task_run_id: taskRunId,
+          task_slug: task.slug,
+          tokens: effectiveCost,
+        });
       }
     }
 
@@ -750,11 +818,27 @@ export async function runTaskInBackground(
       task_run_id: taskRunId,
       err: message,
     });
+    // Structured error for the generate-business-app chain so apps.astro
+    // can show a human-readable summary to the operator instead of the
+    // raw technical message. Other tasks keep plain-text error storage
+    // (their UIs don't parse JSON).
+    const errorPayload = task.slug.startsWith(GEN_APP_SLUG_PREFIX)
+      ? serializeGenAppError(message)
+      : message;
+    if (task.slug.startsWith(GEN_APP_SLUG_PREFIX)) {
+      genAppLog("runner_handler_dispatch_failed", {
+        business_id: business.id,
+        task_run_id: taskRunId,
+        task_slug: task.slug,
+        err_name: err instanceof Error ? err.name : "unknown",
+        err_message: message,
+      });
+    }
     await supabase
       .from("task_runs")
       .update({
         status: "failed",
-        error: message,
+        error: errorPayload,
         completed_at: new Date().toISOString(),
       })
       .eq("id", taskRunId)

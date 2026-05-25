@@ -1,6 +1,7 @@
 import type { TaskCtx, TaskResult } from "./types";
 import { resolveModelForTier } from "../llm-tier-model";
 import { sanitizeGeneratedHtml } from "../sanitize-generated-html";
+import { genAppLog } from "../gen-app-log";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // generate-business-app-html — step 2 of 2 in the chain pattern.
@@ -61,12 +62,22 @@ async function withTimeout<T>(p: Promise<T>, label: string, ms: number): Promise
 
 export async function runGenerateBusinessAppHtml(tc: TaskCtx): Promise<TaskResult> {
   const { business, anthropic, emit, supabase, env, taskRunId } = tc;
+  const handlerStart = Date.now();
 
   const frontendUrl = env.FRONTEND_URL ?? "https://app.textos.ai";
   const agentUrl = resolveAgentUrl(env);
   const plannedUrl = `${frontendUrl}/sites/${business.slug}/app`;
 
+  genAppLog("html_handler_entry", {
+    business_id: business.id,
+    task_run_id: taskRunId,
+  });
+
   // ── Load the draft written by the design step ──────────────────────────────
+  genAppLog("html_draft_read_start", {
+    business_id: business.id,
+    task_run_id: taskRunId,
+  });
   const { data: draftRow, error: draftErr } = await supabase
     .from("business_assets")
     .select("id, asset_data")
@@ -77,9 +88,18 @@ export async function runGenerateBusinessAppHtml(tc: TaskCtx): Promise<TaskResul
     .maybeSingle();
 
   if (draftErr) {
+    genAppLog("html_draft_read_failed", {
+      business_id: business.id,
+      task_run_id: taskRunId,
+      err: draftErr.message,
+    });
     throw new Error(`Failed to read app_draft: ${draftErr.message}`);
   }
   if (!draftRow) {
+    genAppLog("html_draft_not_found", {
+      business_id: business.id,
+      task_run_id: taskRunId,
+    });
     throw new Error(
       "No app_draft found for this business — design step must complete first.",
     );
@@ -87,9 +107,21 @@ export async function runGenerateBusinessAppHtml(tc: TaskCtx): Promise<TaskResul
   const draftData = draftRow.asset_data as Record<string, unknown> | null;
   const design = draftData?.design as AppDesign | undefined;
   if (!design) {
+    genAppLog("html_draft_malformed", {
+      business_id: business.id,
+      task_run_id: taskRunId,
+      draft_row_id: draftRow.id,
+    });
     throw new Error("app_draft has no design spec — design step output malformed.");
   }
   const llmTier = (draftData?.llm_tier as string) || "haiku";
+  genAppLog("html_draft_read_complete", {
+    business_id: business.id,
+    task_run_id: taskRunId,
+    draft_row_id: draftRow.id,
+    llm_tier: llmTier,
+    app_type: design.app_type,
+  });
 
   await emit({
     type: "cmd",
@@ -150,12 +182,28 @@ Start with <!DOCTYPE html>. No markdown fences. Return only HTML.`;
   const htmlModel = resolveModelForTier(llmTier);
 
   let html: string;
+  const callStart = Date.now();
+  genAppLog("html_anthropic_call_start", {
+    business_id: business.id,
+    task_run_id: taskRunId,
+    model: htmlModel,
+    max_tokens: 8000,
+    prompt_chars: systemPrompt.length + userPrompt.length,
+    timeout_ms: CALL_TIMEOUT_MS,
+  });
   try {
     // AbortController-driven timeout. Cancels the underlying fetch
     // when the timer fires — releases the Worker invocation budget
     // instead of leaving the request dangling like Promise.race did.
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), CALL_TIMEOUT_MS);
+    const timeoutId = setTimeout(() => {
+      genAppLog("html_abort_fired", {
+        business_id: business.id,
+        task_run_id: taskRunId,
+        elapsed_ms: Date.now() - callStart,
+      });
+      controller.abort();
+    }, CALL_TIMEOUT_MS);
     let msg;
     try {
       msg = await anthropic.messages.create(
@@ -179,25 +227,51 @@ Start with <!DOCTYPE html>. No markdown fences. Return only HTML.`;
     }
     const block = msg.content[0];
     const text = block && block.type === "text" ? (block as { text: string }).text : "";
+    const stopReason = (msg as { stop_reason?: string }).stop_reason ?? "unknown";
+    const usage = (msg as { usage?: { input_tokens?: number; output_tokens?: number } }).usage ?? {};
+    genAppLog("html_anthropic_call_complete", {
+      business_id: business.id,
+      task_run_id: taskRunId,
+      stop_reason: stopReason,
+      input_tokens: usage.input_tokens ?? null,
+      output_tokens: usage.output_tokens ?? null,
+      elapsed_ms: Date.now() - callStart,
+      response_chars: text.length,
+    });
     html = stripFences(text.trim());
     if (!html.toLowerCase().startsWith("<!doctype")) {
+      genAppLog("html_doctype_missing", {
+        business_id: business.id,
+        task_run_id: taskRunId,
+        head_preview: html.slice(0, 80),
+      });
       throw new Error(`HTML output didn't start with <!DOCTYPE html>: ${html.slice(0, 80)}`);
     }
     // Truncation detection — refuse to save half-apps. Two independent signals:
     //   1. Anthropic's stop_reason === 'max_tokens'  (model hit the budget)
     //   2. The parsed HTML doesn't end with </html>  (output cut mid-string)
-    // Either signal throws. Outer catch surfaces it as
-    // "App HTML generation failed: html_truncated: ..."  — the asset is not
-    // written and the task_run flips to failed via runTaskInBackground's catch.
-    // Token debit is skipped because the throw happens before the debit branch.
-    const stopReason = (msg as { stop_reason?: string }).stop_reason ?? "unknown";
     const endsWithHtmlTag = html.trimEnd().toLowerCase().endsWith("</html>");
     if (stopReason === "max_tokens" || !endsWithHtmlTag) {
+      genAppLog("html_truncation_detected", {
+        business_id: business.id,
+        task_run_id: taskRunId,
+        stop_reason: stopReason,
+        ends_with_html_tag: endsWithHtmlTag,
+        html_length: html.length,
+        tail_preview: html.slice(-160),
+      });
       throw new Error(
         `html_truncated: stop_reason='${stopReason}' ends_with_html_tag=${endsWithHtmlTag} length=${html.length}`,
       );
     }
   } catch (err) {
+    genAppLog("html_anthropic_call_failed", {
+      business_id: business.id,
+      task_run_id: taskRunId,
+      elapsed_ms: Date.now() - callStart,
+      err_name: err instanceof Error ? err.name : "unknown",
+      err_message: err instanceof Error ? err.message : String(err),
+    });
     throw new Error(
       `App HTML generation failed: ${err instanceof Error ? err.message : String(err)}`,
     );
@@ -209,6 +283,12 @@ Start with <!DOCTYPE html>. No markdown fences. Return only HTML.`;
   // Removals are non-fatal; they get logged to app_bug_log for admin review.
   const sanitized = sanitizeGeneratedHtml(html);
   html = sanitized.html;
+  genAppLog("html_sanitizer_findings", {
+    business_id: business.id,
+    task_run_id: taskRunId,
+    total_removals: sanitized.removals.reduce((sum, r) => sum + r.count, 0),
+    pattern_summary: sanitized.removals.map((r) => ({ pattern: r.pattern, count: r.count })),
+  });
   if (sanitized.removals.length > 0) {
     await emit({
       type: "cmd",
@@ -331,6 +411,15 @@ Start with <!DOCTYPE html>. No markdown fences. Return only HTML.`;
     type: "cmd",
     text: `App deployed at /sites/${business.slug}/app`,
     ts: Date.now(),
+  });
+
+  genAppLog("html_handler_complete", {
+    business_id: business.id,
+    task_run_id: taskRunId,
+    total_elapsed_ms: Date.now() - handlerStart,
+    outcome: "success",
+    asset_id: assetId,
+    url: plannedUrl,
   });
 
   return {

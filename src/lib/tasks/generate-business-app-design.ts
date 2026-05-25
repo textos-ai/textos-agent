@@ -1,5 +1,6 @@
 import type { TaskCtx, TaskResult } from "./types";
 import { resolveModelForTier } from "../llm-tier-model";
+import { genAppLog } from "../gen-app-log";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // generate-business-app-design — step 1 of 2 in the chain pattern.
@@ -64,10 +65,15 @@ async function withTimeout<T>(p: Promise<T>, label: string, ms: number): Promise
 
 export async function runGenerateBusinessAppDesign(tc: TaskCtx): Promise<TaskResult> {
   const { business, ctx, anthropic, emit, supabase, env, taskRunId, user } = tc;
+  const handlerStart = Date.now();
 
   // Surface a clear setup error early — without the secret, the chain cannot
   // dispatch step 2 and the user would never see their app finished.
   if (!env.INTERNAL_TRIGGER_SECRET) {
+    genAppLog("design_secret_missing", {
+      business_id: business.id,
+      task_run_id: taskRunId,
+    });
     throw new Error(
       "INTERNAL_TRIGGER_SECRET is unset — cannot chain to generate-business-app-html. " +
         "Set it via: wrangler secret put INTERNAL_TRIGGER_SECRET --env <env>",
@@ -85,6 +91,13 @@ export async function runGenerateBusinessAppDesign(tc: TaskCtx): Promise<TaskRes
   const userDescription =
     typeof config?.description === "string" ? config.description : "";
   const llmTier = typeof config?.llm_tier === "string" ? (config.llm_tier as string) : "haiku";
+
+  genAppLog("design_handler_entry", {
+    business_id: business.id,
+    task_run_id: taskRunId,
+    llm_tier: llmTier,
+    has_user_description: userDescription.length > 0,
+  });
 
   await emit({ type: "cmd", text: "Designing your custom app...", ts: Date.now() });
 
@@ -140,12 +153,28 @@ Return JSON:
   const designModel = resolveModelForTier(llmTier);
 
   let design: AppDesign;
+  const callStart = Date.now();
+  genAppLog("design_anthropic_call_start", {
+    business_id: business.id,
+    task_run_id: taskRunId,
+    model: designModel,
+    max_tokens: 2000,
+    prompt_chars: systemPrompt.length + userPrompt.length,
+    timeout_ms: CALL_TIMEOUT_MS,
+  });
   try {
     // AbortController-driven timeout. Unlike the legacy Promise.race
     // withTimeout helper, this actually cancels the underlying fetch
     // when the timer fires, freeing the Worker invocation budget.
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), CALL_TIMEOUT_MS);
+    const timeoutId = setTimeout(() => {
+      genAppLog("design_abort_fired", {
+        business_id: business.id,
+        task_run_id: taskRunId,
+        elapsed_ms: Date.now() - callStart,
+      });
+      controller.abort();
+    }, CALL_TIMEOUT_MS);
     let msg;
     try {
       msg = await anthropic.messages.create(
@@ -163,8 +192,26 @@ Return JSON:
     }
     const block = msg.content[0];
     const text = block && block.type === "text" ? (block as { text: string }).text : "";
+    const stopReason = (msg as { stop_reason?: string }).stop_reason ?? "unknown";
+    const usage = (msg as { usage?: { input_tokens?: number; output_tokens?: number } }).usage ?? {};
+    genAppLog("design_anthropic_call_complete", {
+      business_id: business.id,
+      task_run_id: taskRunId,
+      stop_reason: stopReason,
+      input_tokens: usage.input_tokens ?? null,
+      output_tokens: usage.output_tokens ?? null,
+      elapsed_ms: Date.now() - callStart,
+      response_chars: text.length,
+    });
     design = JSON.parse(stripFences(text.trim())) as AppDesign;
   } catch (err) {
+    genAppLog("design_anthropic_call_failed", {
+      business_id: business.id,
+      task_run_id: taskRunId,
+      elapsed_ms: Date.now() - callStart,
+      err_name: err instanceof Error ? err.name : "unknown",
+      err_message: err instanceof Error ? err.message : String(err),
+    });
     throw new Error(
       `App design call failed: ${err instanceof Error ? err.message : String(err)}`,
     );
@@ -179,6 +226,11 @@ Return JSON:
   // ── Persist draft ──────────────────────────────────────────────────────────
   // Stored as asset_type='app_draft'. The HTML step reads this row, then deletes
   // it once the final 'app' row is saved.
+  genAppLog("design_draft_write_start", {
+    business_id: business.id,
+    task_run_id: taskRunId,
+    app_type: design.app_type,
+  });
   const { error: draftErr } = await supabase
     .from("business_assets")
     .insert({
@@ -195,8 +247,17 @@ Return JSON:
       metadata: { model: designModel, step: "design" },
     });
   if (draftErr) {
+    genAppLog("design_draft_write_failed", {
+      business_id: business.id,
+      task_run_id: taskRunId,
+      err: draftErr.message,
+    });
     throw new Error(`Failed to save app_draft: ${draftErr.message}`);
   }
+  genAppLog("design_draft_write_complete", {
+    business_id: business.id,
+    task_run_id: taskRunId,
+  });
 
   // ── Dispatch step 2 in a separate Worker invocation ────────────────────────
   // Use the SELF service binding rather than a public-URL fetch — Cloudflare
@@ -219,10 +280,20 @@ Return JSON:
       config: { llm_tier: llmTier },
     }),
   });
+  genAppLog("design_chain_trigger_start", {
+    business_id: business.id,
+    task_run_id: taskRunId,
+  });
   const triggerRes = await env.SELF.fetch(triggerReq);
 
   if (!triggerRes.ok) {
     const txt = await triggerRes.text().catch(() => "");
+    genAppLog("design_chain_trigger_failed", {
+      business_id: business.id,
+      task_run_id: taskRunId,
+      status: triggerRes.status,
+      body_preview: txt.slice(0, 200),
+    });
     throw new Error(
       `Failed to trigger generate-business-app-html (status ${triggerRes.status}): ${txt.slice(0, 200)}`,
     );
@@ -232,6 +303,19 @@ Return JSON:
     task_run_id?: string;
   };
   const htmlTaskRunId = triggerJson.task_run_id ?? null;
+  genAppLog("design_chain_trigger_complete", {
+    business_id: business.id,
+    task_run_id: taskRunId,
+    html_task_run_id: htmlTaskRunId,
+  });
+
+  genAppLog("design_handler_complete", {
+    business_id: business.id,
+    task_run_id: taskRunId,
+    total_elapsed_ms: Date.now() - handlerStart,
+    outcome: "success",
+    html_task_run_id: htmlTaskRunId,
+  });
 
   return {
     output_data: {

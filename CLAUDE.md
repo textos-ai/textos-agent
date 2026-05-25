@@ -381,6 +381,43 @@ At the start of each day or new session, Claude Code must:
 
 ---
 
+## DIAGNOSE BY LOGS, NOT SCREENSHOTS — NON-NEGOTIABLE
+
+Never diagnose a Worker-side failure by reading screenshots, by
+guessing, or by inferring from prior conversation. Always pull
+Worker logs first. Every fix must be grounded in actual log data —
+not inference, not memory, not "this is probably the issue."
+
+How to pull logs (test environment shown; swap to prod for prod
+diagnoses):
+  Set-Location "C:\code\textos-agent"
+  $env:CLOUDFLARE_API_TOKEN = [System.Environment]::GetEnvironmentVariable('CLOUDFLARE_API_TOKEN', 'User')
+  npx wrangler tail --env test
+
+Then trigger the failure live. wrangler tail only captures FUTURE
+events from when it started — past failures are not visible. The
+operator (or you, via API call) must reproduce the failure with
+the tail active.
+
+If the tail shows nothing useful — sparse handler logs, "request
+arrived" but no detail — INSTRUMENT FIRST. Add console.log
+calls at every meaningful step (handler entry, external API
+call start/complete, DB writes, error throws), deploy, then
+reproduce. Logs that say "function entered" and "function
+returned with X" are worth more than a clever guess at root
+cause.
+
+Prefix conventions for filterable tails:
+  [GEN-APP]   generated-business-app chain (design + html)
+  [task-run]  shared runTaskInBackground in business-task-run.ts
+  Other features use their own [PREFIX] strings.
+
+Exception: pure UI/copy/color bugs that involve no runtime async
+behavior. Read the source, fix, ship — logs aren't needed for
+"the button color is wrong."
+
+---
+
 ## CODE CONFIDENCE RULE
 
 NEVER make assumptions about code. Before recommending
