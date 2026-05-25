@@ -58,6 +58,12 @@ app.get("/:slug", async (c) => {
 
   c.header("Cache-Control", "public, max-age=300");
   return c.json({
+    // id is read by app.astro (`/sites/{slug}/app`) and the embedded
+    // "Business App" teaser in /sites/[slug]/index.astro to resolve
+    // slug → businessId before calling /api/generated-apps/{id}/app-html.
+    // Already publicly derivable from generated-app HTML and Stripe metadata;
+    // net new exposure is zero.
+    id:                       business.id,
     name:                     business.name,
     slug:                     business.slug,
     created_at:               business.created_at,
