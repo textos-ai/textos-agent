@@ -314,6 +314,12 @@ Start with <!DOCTYPE html>. No markdown fences. Return only HTML.`;
   await emit({ type: "cmd", text: "Saving your app...", ts: Date.now() });
 
   // ── Insert final asset row (need its id to substitute placeholders) ────────
+  genAppLog("html_asset_insert_start", {
+    business_id: business.id,
+    task_run_id: taskRunId,
+    asset_type: "app",
+    html_length: html.length,
+  });
   const { data: assetRow, error: assetErr } = await supabase
     .from("business_assets")
     .insert({
@@ -337,9 +343,19 @@ Start with <!DOCTYPE html>. No markdown fences. Return only HTML.`;
     .single();
 
   if (assetErr || !assetRow) {
+    genAppLog("html_asset_insert_failed", {
+      business_id: business.id,
+      task_run_id: taskRunId,
+      err: assetErr?.message ?? "no_row_returned",
+    });
     throw new Error(`Failed to write business_assets: ${assetErr?.message ?? "unknown"}`);
   }
   const assetId = assetRow.id as string;
+  genAppLog("html_asset_insert_complete", {
+    business_id: business.id,
+    task_run_id: taskRunId,
+    asset_id: assetId,
+  });
 
   // Substitute placeholders now that we know all three values.
   const finalHtml = html
@@ -347,6 +363,12 @@ Start with <!DOCTYPE html>. No markdown fences. Return only HTML.`;
     .replace(/\{\{ASSET_ID\}\}/g, assetId)
     .replace(/\{\{API_BASE\}\}/g, agentUrl);
 
+  genAppLog("html_asset_update_start", {
+    business_id: business.id,
+    task_run_id: taskRunId,
+    asset_id: assetId,
+    final_html_length: finalHtml.length,
+  });
   const { error: updateErr } = await supabase
     .from("business_assets")
     .update({
@@ -362,10 +384,26 @@ Start with <!DOCTYPE html>. No markdown fences. Return only HTML.`;
     })
     .eq("id", assetId);
   if (updateErr) {
+    genAppLog("html_asset_update_failed", {
+      business_id: business.id,
+      task_run_id: taskRunId,
+      asset_id: assetId,
+      err: updateErr.message,
+    });
     throw new Error(`Failed to update business_assets HTML: ${updateErr.message}`);
   }
+  genAppLog("html_asset_update_complete", {
+    business_id: business.id,
+    task_run_id: taskRunId,
+    asset_id: assetId,
+  });
 
   // ── app_configs upsert (per-business) ──────────────────────────────────────
+  genAppLog("html_app_configs_upsert_start", {
+    business_id: business.id,
+    task_run_id: taskRunId,
+    asset_id: assetId,
+  });
   const { error: cfgErr } = await supabase.from("app_configs").upsert(
     {
       business_id: business.id,
@@ -380,25 +418,53 @@ Start with <!DOCTYPE html>. No markdown fences. Return only HTML.`;
     { onConflict: "business_id" },
   );
   if (cfgErr) {
+    genAppLog("html_app_configs_upsert_failed", {
+      business_id: business.id,
+      task_run_id: taskRunId,
+      err: cfgErr.message,
+    });
+    // Non-fatal — the asset is saved; admin can fix config later.
     await emit({
       type: "cmd",
       text: `[warn] app_configs upsert failed: ${cfgErr.message}`,
       ts: Date.now(),
+    });
+  } else {
+    genAppLog("html_app_configs_upsert_complete", {
+      business_id: business.id,
+      task_run_id: taskRunId,
     });
   }
 
   // ── Delete the draft row now that the final asset is persisted ─────────────
   // Non-fatal if it fails — the draft is just a workspace row; the final 'app'
   // row is the source of truth for serving.
+  genAppLog("html_draft_delete_start", {
+    business_id: business.id,
+    task_run_id: taskRunId,
+    draft_row_id: draftRow.id,
+  });
   const { error: deleteErr } = await supabase
     .from("business_assets")
     .delete()
     .eq("id", draftRow.id);
   if (deleteErr) {
+    genAppLog("html_draft_delete_failed", {
+      business_id: business.id,
+      task_run_id: taskRunId,
+      draft_row_id: draftRow.id,
+      err: deleteErr.message,
+    });
     await emit({
       type: "cmd",
       text: `[warn] failed to delete app_draft (non-fatal): ${deleteErr.message}`,
       ts: Date.now(),
+    });
+  } else {
+    genAppLog("html_draft_delete_complete", {
+      business_id: business.id,
+      task_run_id: taskRunId,
+      draft_row_id: draftRow.id,
     });
   }
 
