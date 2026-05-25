@@ -161,7 +161,13 @@ Start with <!DOCTYPE html>. No markdown fences. Return only HTML.`;
       msg = await anthropic.messages.create(
         {
           model: htmlModel,
-          max_tokens: 4000,
+          // Raised 4000 → 8000 after the charcuterie app truncated mid-script.
+          // A complete quiz/calculator with 6-8 questions + result logic +
+          // paywall is realistically 5-7k tokens of output; 4000 was tight by
+          // design and silently chopped the longer apps. Charge is per actual
+          // output tokens used (not the ceiling) so the cost ceiling went up
+          // but the expected cost per app is unchanged.
+          max_tokens: 8000,
           stream: false,
           system: systemPrompt,
           messages: [{ role: "user", content: userPrompt }],
@@ -176,6 +182,20 @@ Start with <!DOCTYPE html>. No markdown fences. Return only HTML.`;
     html = stripFences(text.trim());
     if (!html.toLowerCase().startsWith("<!doctype")) {
       throw new Error(`HTML output didn't start with <!DOCTYPE html>: ${html.slice(0, 80)}`);
+    }
+    // Truncation detection — refuse to save half-apps. Two independent signals:
+    //   1. Anthropic's stop_reason === 'max_tokens'  (model hit the budget)
+    //   2. The parsed HTML doesn't end with </html>  (output cut mid-string)
+    // Either signal throws. Outer catch surfaces it as
+    // "App HTML generation failed: html_truncated: ..."  — the asset is not
+    // written and the task_run flips to failed via runTaskInBackground's catch.
+    // Token debit is skipped because the throw happens before the debit branch.
+    const stopReason = (msg as { stop_reason?: string }).stop_reason ?? "unknown";
+    const endsWithHtmlTag = html.trimEnd().toLowerCase().endsWith("</html>");
+    if (stopReason === "max_tokens" || !endsWithHtmlTag) {
+      throw new Error(
+        `html_truncated: stop_reason='${stopReason}' ends_with_html_tag=${endsWithHtmlTag} length=${html.length}`,
+      );
     }
   } catch (err) {
     throw new Error(
