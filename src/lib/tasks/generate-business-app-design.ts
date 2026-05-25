@@ -1,4 +1,5 @@
 import type { TaskCtx, TaskResult } from "./types";
+import { resolveModelForTier } from "../llm-tier-model";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // generate-business-app-design — step 1 of 2 in the chain pattern.
@@ -134,19 +135,32 @@ Return JSON:
   "accent_color": "string — hex color matching the business brand"
 }`;
 
+  // Resolve the concrete Anthropic model from the user-selected tier.
+  // Throws on unknown tier — fail-fast rather than silently fall back.
+  const designModel = resolveModelForTier(llmTier);
+
   let design: AppDesign;
   try {
-    const msg = await withTimeout(
-      anthropic.messages.create({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 2000,
-        stream: false,
-        system: systemPrompt,
-        messages: [{ role: "user", content: userPrompt }],
-      }),
-      "design_call",
-      CALL_TIMEOUT_MS,
-    );
+    // AbortController-driven timeout. Unlike the legacy Promise.race
+    // withTimeout helper, this actually cancels the underlying fetch
+    // when the timer fires, freeing the Worker invocation budget.
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), CALL_TIMEOUT_MS);
+    let msg;
+    try {
+      msg = await anthropic.messages.create(
+        {
+          model: designModel,
+          max_tokens: 2000,
+          stream: false,
+          system: systemPrompt,
+          messages: [{ role: "user", content: userPrompt }],
+        },
+        { signal: controller.signal },
+      );
+    } finally {
+      clearTimeout(timeoutId);
+    }
     const block = msg.content[0];
     const text = block && block.type === "text" ? (block as { text: string }).text : "";
     design = JSON.parse(stripFences(text.trim())) as AppDesign;
@@ -178,7 +192,7 @@ Return JSON:
         llm_tier: llmTier,
         designed_at: new Date().toISOString(),
       },
-      metadata: { model: "claude-sonnet-4-20250514", step: "design" },
+      metadata: { model: designModel, step: "design" },
     });
   if (draftErr) {
     throw new Error(`Failed to save app_draft: ${draftErr.message}`);
@@ -199,6 +213,10 @@ Return JSON:
       businessId: business.id,
       userId: user.id,
       taskSlug: "generate-business-app-html",
+      // Forward the tier so the HTML step's task_run carries it, and
+      // the chain-aware debit override in runTaskInBackground can map
+      // tier → cost for the chained HTML task.
+      config: { llm_tier: llmTier },
     }),
   });
   const triggerRes = await env.SELF.fetch(triggerReq);

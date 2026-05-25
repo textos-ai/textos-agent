@@ -31,6 +31,11 @@ const RunTaskBody = z.object({
   businessId: z.string().uuid(),
   userId: z.string().uuid(),
   taskSlug: z.string().min(1),
+  // Optional pass-through config — used by chain-pattern handlers to
+  // forward state from the parent task_run to the chained child
+  // task_run (e.g. llm_tier so the chained step bills by tier).
+  // Stored verbatim on task_runs.config (jsonb).
+  config: z.record(z.unknown()).optional(),
 });
 
 app.post("/run-task", async (c) => {
@@ -52,7 +57,7 @@ app.post("/run-task", async (c) => {
   } catch (err) {
     return c.json(errBody("bad_request", "invalid body", String(err)), 400);
   }
-  const { businessId, userId, taskSlug } = body;
+  const { businessId, userId, taskSlug, config } = body;
 
   const supabase = createSupabaseClient(c.env);
 
@@ -96,6 +101,9 @@ app.post("/run-task", async (c) => {
       task_id: task.id,
       status: "running",
       started_at: new Date().toISOString(),
+      // Forwarded config from parent chain task (see chain-pattern
+      // handlers, e.g. generate-business-app-design).
+      config: config ?? null,
     })
     .select("id")
     .single();

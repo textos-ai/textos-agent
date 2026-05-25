@@ -495,6 +495,23 @@ app.get("/:slug/task_runs/:id", async (c) => {
 // debit_tokens RPC. On any failure, mark task_run as failed and DO NOT
 // debit tokens. Token bookkeeping happens ONCE, after success.
 
+// Slug code-constants for the generate-business-app chain. Acceptable
+// per the CLAUDE.md "tasks-as-data" rule (this is execution logic,
+// not task metadata duplication). Long-term fix is schema columns
+// charge_at_chain_end + parent_task_slug on tasks — backlog'd.
+const GEN_APP_DESIGN_SLUG = "generate-business-app";
+const GEN_APP_HTML_SLUG   = "generate-business-app-html";
+const GEN_APP_SLUG_PREFIX = "generate-business-app";
+
+// Tier → tokens for the chained HTML step's debit. Mirrors the
+// llm-tier-model.ts map but at the cost dimension. Keep in lockstep
+// with that file when adding a tier.
+const TIER_TO_TOKEN_COST: Record<string, number> = {
+  haiku: 2,
+  sonnet: 5,
+  opus: 10,
+};
+
 export async function runTaskInBackground(
   env: Env,
   business: BusinessRow,
@@ -503,6 +520,51 @@ export async function runTaskInBackground(
   taskRunId: string,
 ): Promise<void> {
   const supabase = createSupabaseClient(env);
+
+  // ── Concurrency lock — Design step only ────────────────────────────────
+  // Block a new Design start if any other 'generate-business-app%' task_run
+  // is already in flight for this business. This includes a chained HTML
+  // task from a previous Design that hasn't completed.
+  //
+  // The lock is applied at the Design entry, NOT on the HTML step — the
+  // HTML step is itself a child of an in-flight Design and would otherwise
+  // self-conflict. internal.ts dispatches the HTML step; that's the
+  // legitimate "running app generation" the second user click should bounce
+  // off of.
+  if (task.slug === GEN_APP_DESIGN_SLUG) {
+    const { data: conflicting, error: lockErr } = await supabase
+      .from("task_runs")
+      .select("id, tasks!inner(slug)")
+      .eq("business_id", business.id)
+      .eq("status", "running")
+      .neq("id", taskRunId)
+      .like("tasks.slug", `${GEN_APP_SLUG_PREFIX}%`);
+
+    if (lockErr) {
+      log.warn("[task-run] concurrency_lock_query_failed", {
+        business_id: business.id,
+        task_run_id: taskRunId,
+        err: lockErr.message,
+      });
+      // Don't block on a DB hiccup — best-effort lock.
+    } else if (conflicting && conflicting.length > 0) {
+      log.info("[task-run] concurrency_blocked", {
+        business_id: business.id,
+        task_run_id: taskRunId,
+        conflicting_ids: conflicting.map((r: { id: string }) => r.id),
+      });
+      await supabase
+        .from("task_runs")
+        .update({
+          status: "failed",
+          error: "concurrent_generation_in_progress",
+          completed_at: new Date().toISOString(),
+        })
+        .eq("id", taskRunId)
+        .eq("status", "running");
+      return;
+    }
+  }
 
   try {
     const [ctx, user] = await Promise.all([
@@ -563,14 +625,63 @@ export async function runTaskInBackground(
       return;
     }
 
-    // Token deduction — skip entirely for free tasks (token_cost = 0)
-    if (!task.token_cost || task.token_cost === 0) {
-      // Free task — skip token deduction entirely
-      log.info("[task-run] free_task_no_deduction", {
+    // ── Chain-aware debit override ────────────────────────────────────
+    // For the generate-business-app chain, charge once at the HTML
+    // (chained child) step's completion, not at the Design step.
+    // Tier-aware: read llm_tier from THIS task_run's config and map.
+    //
+    // Specifically:
+    //   - 'generate-business-app'      → SKIP debit (chained child charges)
+    //   - 'generate-business-app-html' → tier-aware debit (Haiku 2, Sonnet 5, Opus 10)
+    //   - everything else              → existing behavior (task.token_cost)
+    //
+    // Long-term fix is data-driven (tasks.charge_at_chain_end +
+    // tasks.parent_task_slug + tasks.tier_costs). Code constant for now.
+    let effectiveCost = task.token_cost ?? 0;
+    let debitSkipReason: string | null = null;
+
+    if (task.slug === GEN_APP_DESIGN_SLUG) {
+      // Design step never debits — child (HTML step) owns the charge.
+      effectiveCost = 0;
+      debitSkipReason = "chain_charges_on_child";
+    } else if (task.slug === GEN_APP_HTML_SLUG) {
+      // Read the chained tier from this task_run's config (forwarded by
+      // the Design handler via internal.ts).
+      const { data: cfgRow } = await supabase
+        .from("task_runs")
+        .select("config")
+        .eq("id", taskRunId)
+        .maybeSingle();
+      const cfg = (cfgRow?.config as Record<string, unknown> | null) || null;
+      const tier =
+        typeof cfg?.llm_tier === "string" ? (cfg.llm_tier as string) : "haiku";
+      const mapped = TIER_TO_TOKEN_COST[tier];
+      if (typeof mapped !== "number") {
+        log.error("[task-run] unknown_llm_tier_for_chain_debit", {
+          business_id: business.id,
+          task_run_id: taskRunId,
+          tier,
+        });
+        await supabase
+          .from("task_runs")
+          .update({
+            status: "failed",
+            error: `unknown_llm_tier_for_debit: ${tier}`,
+            completed_at: new Date().toISOString(),
+          })
+          .eq("id", taskRunId)
+          .eq("status", "running");
+        return;
+      }
+      effectiveCost = mapped;
+    }
+
+    if (effectiveCost === 0) {
+      log.info("[task-run] no_debit", {
         business_id: business.id,
         task_slug: task.slug,
         task_run_id: taskRunId,
-        token_cost: task.token_cost,
+        reason: debitSkipReason ?? "token_cost_zero",
       });
     } else {
       // Debit AFTER the asset persists. Failure here is rare but possible —
@@ -581,7 +692,7 @@ export async function runTaskInBackground(
         {
           p_business_id: business.id,
           p_user_id: user_id,
-          p_tokens: task.token_cost,
+          p_tokens: effectiveCost,
           p_task_slug: task.slug,
           p_task_run_id: taskRunId,
           p_description: `Task: ${task.name}`,
@@ -593,6 +704,7 @@ export async function runTaskInBackground(
           business_id: business.id,
           task_slug: task.slug,
           task_run_id: taskRunId,
+          effective_cost: effectiveCost,
           err: debitErr?.message,
           result: debitResult,
         });
@@ -626,8 +738,8 @@ export async function runTaskInBackground(
       business_id: business.id,
       task_slug: task.slug,
       task_run_id: taskRunId,
-      tokens_debited: (!task.token_cost || task.token_cost === 0) ? 0 : task.token_cost,
-      is_free_task: (!task.token_cost || task.token_cost === 0),
+      tokens_debited: effectiveCost,
+      is_free_task: effectiveCost === 0,
     });
   } catch (err) {
     const message =

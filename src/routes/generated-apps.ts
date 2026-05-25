@@ -79,7 +79,15 @@ interface StripeCheckoutSession {
   id: string;
   mode: string;
   payment_status: string;
+  payment_intent: string | null;
+  customer_details?: { email?: string | null } | null;
   metadata: Record<string, string | undefined> | null;
+}
+
+interface StripeCharge {
+  id: string;
+  payment_intent: string | null;
+  amount_refunded: number;
 }
 
 interface StripeEvent {
@@ -240,51 +248,114 @@ app.post("/webhook/stripe", async (c) => {
     return c.json(errBody("bad_request", "invalid_json"), 400);
   }
 
-  // Only handle checkout completions for our generated-app token product.
-  if (event.type !== "checkout.session.completed") {
-    return c.json({ ok: true, ignored: event.type });
-  }
-
-  const session = event.data.object as StripeCheckoutSession;
-  const meta = session.metadata ?? {};
-  if (meta.textos_kind !== "generated_app_tokens") {
-    return c.json({ ok: true, ignored: "not_our_event" });
-  }
-
   const sb = createSupabaseClient(c.env);
-  const tokensPurchased = parseInt(meta.tokens_purchased ?? "0", 10);
-  const businessId = meta.business_id ?? "";
-  const visitorToken = meta.visitor_token ?? "";
 
-  if (!businessId || !visitorToken || tokensPurchased <= 0) {
-    log.error("generated_apps.webhook_bad_metadata", { session_id: session.id, meta });
-    return c.json(errBody("bad_request", "missing metadata"), 400);
+  // ── checkout.session.completed ───────────────────────────────────────────
+  if (event.type === "checkout.session.completed") {
+    const session = event.data.object as StripeCheckoutSession;
+    const meta = session.metadata ?? {};
+    if (meta.textos_kind !== "generated_app_tokens") {
+      return c.json({ ok: true, ignored: "not_our_event" });
+    }
+
+    const tokensPurchased = parseInt(meta.tokens_purchased ?? "0", 10);
+    const businessId = meta.business_id ?? "";
+    const visitorToken = meta.visitor_token ?? "";
+
+    if (!businessId || !visitorToken || tokensPurchased <= 0) {
+      log.error("generated_apps.webhook_bad_metadata", { session_id: session.id, meta });
+      return c.json(errBody("bad_request", "missing metadata"), 400);
+    }
+
+    // Capture visitor email + payment_intent for receipts and refund linkage.
+    // visitor_email and stripe_payment_intent_id are added by the GROUP 3 SQL.
+    const visitorEmail = session.customer_details?.email ?? null;
+    const paymentIntent = session.payment_intent ?? null;
+
+    // Idempotent: only update if tokens_remaining is still 0. If a duplicate
+    // event fires, we won't double-credit.
+    const { data: updated, error: updErr } = await sb
+      .from("app_visitor_tokens")
+      .update({
+        tokens_remaining: tokensPurchased,
+        visitor_email: visitorEmail,
+        stripe_payment_intent_id: paymentIntent,
+      })
+      .eq("visitor_token", visitorToken)
+      .eq("tokens_remaining", 0)
+      .select("id")
+      .maybeSingle();
+
+    if (updErr) {
+      log.error("generated_apps.webhook_update_failed", { err: updErr.message, session_id: session.id });
+      return c.json(errBody("internal", "update_failed"), 500);
+    }
+
+    log.info("generated_apps.tokens_credited", {
+      session_id: session.id,
+      business_id: businessId,
+      visitor_token: visitorToken,
+      tokens: tokensPurchased,
+      has_email: visitorEmail !== null,
+      has_payment_intent: paymentIntent !== null,
+      new_row: updated ? "yes" : "no (already credited or expired)",
+    });
+
+    return c.json({ ok: true });
   }
 
-  // Idempotent: only update if tokens_remaining is still 0. If a duplicate
-  // event fires, we won't double-credit.
-  const { data: updated, error: updErr } = await sb
-    .from("app_visitor_tokens")
-    .update({ tokens_remaining: tokensPurchased })
-    .eq("visitor_token", visitorToken)
-    .eq("tokens_remaining", 0)
-    .select("id")
-    .maybeSingle();
+  // ── charge.refunded ──────────────────────────────────────────────────────
+  // Stripe refund → zero the visitor's remaining tokens. Matched by
+  // stripe_payment_intent_id (stored on app_visitor_tokens at
+  // checkout.session.completed time).
+  if (event.type === "charge.refunded") {
+    const charge = event.data.object as StripeCharge;
+    if (!charge.payment_intent) {
+      return c.json({ ok: true, ignored: "no_payment_intent_on_charge" });
+    }
 
-  if (updErr) {
-    log.error("generated_apps.webhook_update_failed", { err: updErr.message, session_id: session.id });
-    return c.json(errBody("internal", "update_failed"), 500);
+    const { data: vt, error: lookupErr } = await sb
+      .from("app_visitor_tokens")
+      .select("id, business_id, visitor_token, tokens_remaining")
+      .eq("stripe_payment_intent_id", charge.payment_intent)
+      .maybeSingle();
+
+    if (lookupErr) {
+      log.error("generated_apps.refund_lookup_failed", {
+        err: lookupErr.message,
+        payment_intent: charge.payment_intent,
+      });
+      return c.json(errBody("internal", "refund_lookup_failed"), 500);
+    }
+    if (!vt) {
+      // Not one of ours — silently ignore. The platform stripe webhook
+      // handles subscription / topup refunds via its own path.
+      return c.json({ ok: true, ignored: "not_our_refund" });
+    }
+
+    const { error: zeroErr } = await sb
+      .from("app_visitor_tokens")
+      .update({ tokens_remaining: 0 })
+      .eq("id", vt.id);
+
+    if (zeroErr) {
+      log.error("generated_apps.refund_update_failed", {
+        err: zeroErr.message,
+        payment_intent: charge.payment_intent,
+      });
+      return c.json(errBody("internal", "refund_update_failed"), 500);
+    }
+
+    log.info("generated_apps.tokens_refunded", {
+      charge_id: charge.id,
+      payment_intent: charge.payment_intent,
+      business_id: vt.business_id,
+      previous_remaining: vt.tokens_remaining,
+    });
+    return c.json({ ok: true });
   }
 
-  log.info("generated_apps.tokens_credited", {
-    session_id: session.id,
-    business_id: businessId,
-    visitor_token: visitorToken,
-    tokens: tokensPurchased,
-    new_row: updated ? "yes" : "no (already credited or expired)",
-  });
-
-  return c.json({ ok: true });
+  return c.json({ ok: true, ignored: event.type });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -366,6 +437,8 @@ const ConfigBody = z.object({
   paid_tier_price_cents: z.number().int().min(0).max(100000).optional(),
   free_tier_enabled: z.boolean().optional(),
   is_published: z.boolean().optional(),
+  // Floor at 1 — visitor must spend at least one token per use, otherwise
+  // app interactions are effectively free even after a paid purchase.
   token_cost_per_use: z.number().int().min(1).max(100).optional(),
 });
 

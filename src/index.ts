@@ -34,6 +34,7 @@ import xaiFyiRoutes from "./routes/xai-fyi";
 import generatedAppsRoutes from "./routes/generated-apps";
 import internalRoutes from "./routes/internal";
 import { runHeartbeatWatchdog } from "./cron/heartbeatWatchdog";
+import { runGenAppStaleSweep } from "./cron/genAppStaleSweep";
 import { createClient } from "@supabase/supabase-js";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -114,8 +115,19 @@ app.onError((err, c) => {
 export default {
   fetch: app.fetch.bind(app),
 
-  async scheduled(_event: ScheduledEvent, env: Env, _ctx: ExecutionContext): Promise<void> {
+  async scheduled(event: ScheduledEvent, env: Env, _ctx: ExecutionContext): Promise<void> {
     const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+    // Dispatch by cron schedule (see wrangler.toml [triggers]).
+    // Every-minute cron runs the heartbeat watchdog; the 10-minute cron
+    // runs the generate-business-app stale sweep. Each scheduled invocation
+    // gets only one trigger; we branch on event.cron to avoid running
+    // both jobs on every minute tick.
+    if (event.cron === "*/10 * * * *") {
+      await runGenAppStaleSweep(supabase);
+      return;
+    }
+    // Default (covers "* * * * *" and any future schedule we forget to
+    // branch on — heartbeat is safe to run more often than needed).
     await runHeartbeatWatchdog(supabase);
   },
 };

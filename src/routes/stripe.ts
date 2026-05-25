@@ -176,6 +176,16 @@ async function handleCheckoutCompleted(
   supabase: SupabaseClient,
   eventId: string,
 ): Promise<HandlerResult> {
+  // ── Generated-app token purchase (visitor-side, anonymous) ──────────────
+  // No textos_user_id is set on these sessions (visitors aren't logged in).
+  // Branch here BEFORE the user-id check below. Also handled by the
+  // standalone /api/generated-apps/webhook/stripe — both URLs work; Rob
+  // configures Stripe to send to one or both. The /api/generated-apps URL
+  // stays live as a fallback; this consolidation is additive.
+  if (session.metadata?.textos_kind === "generated_app_tokens") {
+    return await handleGeneratedAppTokensCheckout(session, supabase, eventId);
+  }
+
   const userId = session.metadata?.textos_user_id;
   if (!userId) {
     return { code: 400, msg: "checkout_completed_missing_textos_user_id" };
@@ -532,12 +542,122 @@ async function handleInvoiceFailed(
   return { code: 200, msg: "ok" };
 }
 
+// ── Generated-app token purchase handler ───────────────────────────────────
+// Mirrors the logic in src/routes/generated-apps.ts webhook so this platform
+// endpoint can also accept generated-app checkout events. Both URLs work in
+// parallel during migration. Keep these two implementations in sync until
+// the standalone webhook is formally deprecated.
+async function handleGeneratedAppTokensCheckout(
+  session: StripeCheckoutSession,
+  supabase: SupabaseClient,
+  eventId: string,
+): Promise<HandlerResult> {
+  const meta = session.metadata ?? {};
+  const tokensPurchased = parseInt(meta.tokens_purchased ?? "0", 10);
+  const businessId = meta.business_id ?? "";
+  const visitorToken = meta.visitor_token ?? "";
+
+  if (!businessId || !visitorToken || tokensPurchased <= 0) {
+    log.error("[stripe-webhook] generated_app_bad_metadata", {
+      event_id: eventId,
+      session_id: session.id,
+    });
+    return { code: 400, msg: "generated_app_missing_metadata" };
+  }
+
+  // Cast to access optional fields that StripeCheckoutSession in this file
+  // doesn't declare — they're present on the actual API payload.
+  const s = session as unknown as {
+    customer_details?: { email?: string | null } | null;
+    payment_intent: string | null;
+  };
+  const visitorEmail = s.customer_details?.email ?? null;
+  const paymentIntent = s.payment_intent ?? null;
+
+  // Idempotent: only credit if tokens_remaining is still 0.
+  const { data: updated, error } = await supabase
+    .from("app_visitor_tokens")
+    .update({
+      tokens_remaining: tokensPurchased,
+      visitor_email: visitorEmail,
+      stripe_payment_intent_id: paymentIntent,
+    })
+    .eq("visitor_token", visitorToken)
+    .eq("tokens_remaining", 0)
+    .select("id")
+    .maybeSingle();
+
+  if (error) {
+    log.error("[stripe-webhook] generated_app_update_failed", {
+      event_id: eventId,
+      session_id: session.id,
+      err: error.message,
+    });
+    return { code: 500, msg: "generated_app_update_failed" };
+  }
+
+  log.info("[stripe-webhook] generated_app_tokens_credited", {
+    event_id: eventId,
+    session_id: session.id,
+    business_id: businessId,
+    visitor_token: visitorToken,
+    tokens: tokensPurchased,
+    has_email: visitorEmail !== null,
+    new_row: updated ? "yes" : "no (already credited or expired)",
+  });
+  return { code: 200, msg: "ok" };
+}
+
 async function handleChargeRefunded(
   charge: StripeCharge,
   supabase: SupabaseClient,
   eventId: string,
   stripeSecretKey: string,
 ): Promise<HandlerResult> {
+  // ── Generated-app token refund ─────────────────────────────────────────
+  // Match by stripe_payment_intent_id stored on app_visitor_tokens at
+  // checkout time. If matched, zero remaining tokens and return — this
+  // refund is not a subscription invoice refund.
+  if (charge.payment_intent) {
+    const { data: vt, error: vtLookupErr } = await supabase
+      .from("app_visitor_tokens")
+      .select("id, business_id, visitor_token, tokens_remaining")
+      .eq("stripe_payment_intent_id", charge.payment_intent)
+      .maybeSingle();
+
+    if (vtLookupErr) {
+      log.error("[stripe-webhook] generated_app_refund_lookup_failed", {
+        event_id: eventId,
+        charge_id: charge.id,
+        err: vtLookupErr.message,
+      });
+      return { code: 500, msg: "generated_app_refund_lookup_failed" };
+    }
+
+    if (vt) {
+      const { error: zeroErr } = await supabase
+        .from("app_visitor_tokens")
+        .update({ tokens_remaining: 0 })
+        .eq("id", vt.id);
+      if (zeroErr) {
+        log.error("[stripe-webhook] generated_app_refund_update_failed", {
+          event_id: eventId,
+          charge_id: charge.id,
+          err: zeroErr.message,
+        });
+        return { code: 500, msg: "generated_app_refund_update_failed" };
+      }
+      log.info("[stripe-webhook] generated_app_tokens_refunded", {
+        event_id: eventId,
+        charge_id: charge.id,
+        business_id: vt.business_id,
+        previous_remaining: vt.tokens_remaining,
+      });
+      return { code: 200, msg: "generated_app_tokens_refunded" };
+    }
+    // Fall through to subscription/topup refund handling.
+  }
+
   // ── Case 1: Subscription invoice refund ───────────────────────────────────
   // charge.invoice is set when Stripe refunded a subscription invoice charge.
   // Fetch the invoice to get the subscription_id, then reverse the period grant.

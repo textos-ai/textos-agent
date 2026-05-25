@@ -1,4 +1,6 @@
 import type { TaskCtx, TaskResult } from "./types";
+import { resolveModelForTier } from "../llm-tier-model";
+import { sanitizeGeneratedHtml } from "../sanitize-generated-html";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // generate-business-app-html — step 2 of 2 in the chain pattern.
@@ -143,19 +145,32 @@ REQUIREMENTS:
 
 Start with <!DOCTYPE html>. No markdown fences. Return only HTML.`;
 
+  // Resolve the concrete Anthropic model from the user-selected tier.
+  // Throws on unknown tier — fail-fast rather than silently fall back.
+  const htmlModel = resolveModelForTier(llmTier);
+
   let html: string;
   try {
-    const msg = await withTimeout(
-      anthropic.messages.create({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 4000,
-        stream: false,
-        system: systemPrompt,
-        messages: [{ role: "user", content: userPrompt }],
-      }),
-      "html_call",
-      CALL_TIMEOUT_MS,
-    );
+    // AbortController-driven timeout. Cancels the underlying fetch
+    // when the timer fires — releases the Worker invocation budget
+    // instead of leaving the request dangling like Promise.race did.
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), CALL_TIMEOUT_MS);
+    let msg;
+    try {
+      msg = await anthropic.messages.create(
+        {
+          model: htmlModel,
+          max_tokens: 4000,
+          stream: false,
+          system: systemPrompt,
+          messages: [{ role: "user", content: userPrompt }],
+        },
+        { signal: controller.signal },
+      );
+    } finally {
+      clearTimeout(timeoutId);
+    }
     const block = msg.content[0];
     const text = block && block.type === "text" ? (block as { text: string }).text : "";
     html = stripFences(text.trim());
@@ -166,6 +181,34 @@ Start with <!DOCTYPE html>. No markdown fences. Return only HTML.`;
     throw new Error(
       `App HTML generation failed: ${err instanceof Error ? err.message : String(err)}`,
     );
+  }
+
+  // Sanitization pass — neutralize patterns that violate the TXAPP execution
+  // contract (external fetches, XHR, non-TXAPP localStorage, document.cookie,
+  // window.parent). Regex-only — see lib/sanitize-generated-html.ts.
+  // Removals are non-fatal; they get logged to app_bug_log for admin review.
+  const sanitized = sanitizeGeneratedHtml(html);
+  html = sanitized.html;
+  if (sanitized.removals.length > 0) {
+    await emit({
+      type: "cmd",
+      text: `[sanitized] removed ${sanitized.removals.reduce((sum, r) => sum + r.count, 0)} flagged pattern(s) from app HTML`,
+      ts: Date.now(),
+    });
+    // Fire-and-log to app_bug_log so the admin queue surfaces this generation.
+    // Non-fatal — if the insert errors, we still save the (sanitized) app.
+    // asset_id is unknown at this point; updated by the admin queue UI manually
+    // or filled by a later enrichment step.
+    await supabase.from("app_bug_log").insert({
+      business_id: business.id,
+      asset_id: business.id, // placeholder — see comment
+      error_type: "html_sanitization",
+      error_message: JSON.stringify(sanitized.removals).slice(0, 4000),
+      status: "open",
+    }).then(() => {}, (e: unknown) => {
+      // Non-fatal — log to Worker logs and continue.
+      console.error("[generate-app-html] app_bug_log insert failed", e);
+    });
   }
 
   await emit({ type: "cmd", text: "Saving your app...", ts: Date.now() });
@@ -188,7 +231,7 @@ Start with <!DOCTYPE html>. No markdown fences. Return only HTML.`;
         llm_tier: llmTier,
         generated_at: new Date().toISOString(),
       },
-      metadata: { model: "claude-sonnet-4-20250514", app_type: design.app_type, step: "html" },
+      metadata: { model: htmlModel, app_type: design.app_type, step: "html" },
     })
     .select("id")
     .single();
