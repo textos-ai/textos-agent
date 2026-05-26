@@ -53,14 +53,23 @@ preview_id = "b1800214351949e581d994f728daec0b"
 # database_id = "<d1-database-id>"
 
 # Cloudflare Queues — long-running task dispatch.
-# [[queues.producers]]
-# binding = "TASK_QUEUE"
-# queue = "tasks"
-#
-# [[queues.consumers]]
-# queue = "tasks"
-# max_batch_size = 10
-# max_batch_timeout = 30
+# Generic placeholder kept for reference; specific queue below.
+
+# generate-business-app HTML step queue. Consumer gets a 15-min wall-clock
+# budget, fixing the silent-kill problem from CF subrequest body timeouts
+# when streaming long Anthropic responses inside the request lifecycle.
+# Producer: src/lib/tasks/generate-business-app-design.ts (Design handler).
+# Consumer: src/queues/app-gen-html-consumer.ts (dispatched by queue handler
+# in src/index.ts).
+[[queues.producers]]
+binding = "APP_GEN_HTML_QUEUE"
+queue = "textos-app-gen-html-prod"
+
+[[queues.consumers]]
+queue = "textos-app-gen-html-prod"
+max_batch_size = 1
+max_batch_timeout = 5
+max_retries = 3
 
 # Cloudflare R2 — generated documents, hero images, exports.
 [[r2_buckets]]
@@ -122,3 +131,16 @@ bucket_name = "textos-assets"
 [[env.test.services]]
 binding = "SELF"
 service = "textos-agent-test"
+
+# Test variant of the HTML-generation queue (separate physical queue from
+# prod). Same code path; the producer dispatches whichever binding is in
+# scope for this environment.
+[[env.test.queues.producers]]
+binding = "APP_GEN_HTML_QUEUE"
+queue = "textos-app-gen-html-test"
+
+[[env.test.queues.consumers]]
+queue = "textos-app-gen-html-test"
+max_batch_size = 1
+max_batch_timeout = 5
+max_retries = 3

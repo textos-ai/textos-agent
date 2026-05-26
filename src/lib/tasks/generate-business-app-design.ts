@@ -67,18 +67,102 @@ export async function runGenerateBusinessAppDesign(tc: TaskCtx): Promise<TaskRes
   const { business, ctx, anthropic, emit, supabase, env, taskRunId, user } = tc;
   const handlerStart = Date.now();
 
-  // Surface a clear setup error early — without the secret, the chain cannot
-  // dispatch step 2 and the user would never see their app finished.
-  if (!env.INTERNAL_TRIGGER_SECRET) {
-    genAppLog("design_secret_missing", {
-      business_id: business.id,
-      task_run_id: taskRunId,
-    });
-    throw new Error(
-      "INTERNAL_TRIGGER_SECRET is unset — cannot chain to generate-business-app-html. " +
-        "Set it via: wrangler secret put INTERNAL_TRIGGER_SECRET --env <env>",
-    );
+  // ── Diagnostic checkpoint writer ─────────────────────────────────────────
+  // Awaited writes to task_runs.work_log[] — the same row the frontend is
+  // already polling. By being awaited inside the handler (not fire-and-
+  // forget on a module-scope sink), every checkpoint lands in the row
+  // BEFORE the next step runs and BEFORE the handler returns. Read-modify-
+  // write is safe here because the entire Design handler runs serially in
+  // a single Worker invocation — no concurrent writers.
+  //
+  // Why this exists alongside genAppLog (which writes to stream_events +
+  // task_runs.work_log via the gen-app-log sink): the sink is fire-and-
+  // forget and has been silently dropping writes (zero gen_app_% rows in
+  // stream_events despite confirmed handler execution). Until we know why,
+  // we need at least one authoritative signal channel that we can prove
+  // landed by reading task_runs.work_log right after the run.
+  async function checkpoint(event: string, data: Record<string, unknown> = {}) {
+    const entry = { event, ts: new Date().toISOString(), ...data };
+    try {
+      const { data: row } = await supabase
+        .from("task_runs")
+        .select("work_log")
+        .eq("id", taskRunId)
+        .maybeSingle();
+      const current = Array.isArray(row?.work_log)
+        ? (row!.work_log as unknown[])
+        : [];
+      current.push(entry);
+      await supabase
+        .from("task_runs")
+        .update({ work_log: current })
+        .eq("id", taskRunId);
+    } catch (err) {
+      // Don't crash the run on a diagnostic write failure — just log to
+      // console (which will land in tail when tail is alive).
+      console.error(
+        "[design.checkpoint] write_failed",
+        JSON.stringify({
+          event,
+          err: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    }
   }
+
+  await checkpoint("design_entry", {
+    business_id: business.id,
+    task_run_id: taskRunId,
+    environment: env.ENVIRONMENT,
+  });
+
+  // ── Runtime-binding probe (kept as awaited checkpoint) ─────────────────
+  // Surfaces the actual shape of env.APP_GEN_HTML_QUEUE at runtime AND the
+  // presence of INTERNAL_TRIGGER_SECRET. Both lands in task_runs.work_log
+  // synchronously so Rob can SELECT the row right after a failed run and
+  // see exactly what the binding state was at handler entry.
+  const queueBinding = env.APP_GEN_HTML_QUEUE as unknown as
+    | { send?: unknown }
+    | undefined;
+  await checkpoint("design_probe", {
+    business_id: business.id,
+    task_run_id: taskRunId,
+    has_queue: typeof queueBinding,
+    has_queue_send_fn:
+      queueBinding && typeof queueBinding === "object"
+        ? typeof queueBinding.send
+        : "n/a",
+    has_internal_secret: typeof env.INTERNAL_TRIGGER_SECRET,
+    internal_secret_len:
+      typeof env.INTERNAL_TRIGGER_SECRET === "string"
+        ? env.INTERNAL_TRIGGER_SECRET.length
+        : 0,
+  });
+  // Also fire the genAppLog so the console.log lane (for wrangler tail when
+  // it works) and the fire-and-forget sink lanes still get the event.
+  genAppLog("design_handler_entry_probe", {
+    business_id: business.id,
+    task_run_id: taskRunId,
+    has_queue: typeof queueBinding,
+    has_queue_send_fn:
+      queueBinding && typeof queueBinding === "object"
+        ? typeof queueBinding.send
+        : "n/a",
+    has_internal_secret: typeof env.INTERNAL_TRIGGER_SECRET,
+    internal_secret_len:
+      typeof env.INTERNAL_TRIGGER_SECRET === "string"
+        ? env.INTERNAL_TRIGGER_SECRET.length
+        : 0,
+    environment: env.ENVIRONMENT,
+  });
+
+  // INTERNAL_TRIGGER_SECRET guard moved into the SELF.fetch fallback
+  // branch below (search "x-internal-secret"). The queue path
+  // (APP_GEN_HTML_QUEUE) does not need this secret — it dispatches step
+  // 2 via Cloudflare Queues, not via the /api/internal/run-task chain
+  // trigger. When the queue binding is present, the secret is optional
+  // and this top-of-handler guard would block a perfectly-working queue
+  // dispatch path on a stale config issue.
 
   // Optional user-provided description and tier — passed through task_runs.config
   // by the business-task-run dispatch path.
@@ -260,53 +344,262 @@ Return JSON:
   });
 
   // ── Dispatch step 2 in a separate Worker invocation ────────────────────────
-  // Use the SELF service binding rather than a public-URL fetch — Cloudflare
-  // blocks Worker→same-Worker fetches over the public hostname (CF error 1042).
-  // Service Bindings route by binding name; the Request URL hostname is just
-  // a placeholder the Hono router will match against.
-  const triggerReq = new Request("http://internal/api/internal/run-task", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-internal-secret": env.INTERNAL_TRIGGER_SECRET,
-    },
-    body: JSON.stringify({
-      businessId: business.id,
-      userId: user.id,
-      taskSlug: "generate-business-app-html",
-      // Forward the tier so the HTML step's task_run carries it, and
-      // the chain-aware debit override in runTaskInBackground can map
-      // tier → cost for the chained HTML task.
-      config: { llm_tier: llmTier },
-    }),
-  });
-  genAppLog("design_chain_trigger_start", {
-    business_id: business.id,
-    task_run_id: taskRunId,
-  });
-  const triggerRes = await env.SELF.fetch(triggerReq);
+  // Two dispatch paths, picked by binding presence:
+  //
+  //   1. APP_GEN_HTML_QUEUE (preferred). Producer pre-creates the HTML
+  //      task_run row in status='queued', then sends a message containing
+  //      its id. The consumer (src/queues/app-gen-html-consumer.ts) atomically
+  //      flips queued→running and dispatches runTaskInBackground inside a
+  //      fresh 15-min wall-clock budget — this avoids the Cloudflare
+  //      subrequest body timeout that silently killed the SELF.fetch path
+  //      on long Anthropic streams.
+  //   2. env.SELF.fetch (fallback). Original chain trigger via the
+  //      /api/internal/run-task service binding. Kept alive as a safety
+  //      net during the queue soak period — if the queue binding is ever
+  //      undefined we still dispatch the HTML step.
+  //
+  // Both paths return next_task_run_id so the frontend poll logic in
+  // /business/apps.astro is unchanged.
+  let htmlTaskRunId: string | null = null;
 
-  if (!triggerRes.ok) {
-    const txt = await triggerRes.text().catch(() => "");
-    genAppLog("design_chain_trigger_failed", {
+  await checkpoint("design_dispatch_choice", {
+    branch: env.APP_GEN_HTML_QUEUE ? "queue" : "self_fetch_fallback",
+  });
+
+  if (env.APP_GEN_HTML_QUEUE) {
+    // Queue path: pre-create the HTML task_run row in status='queued', then
+    // enqueue the message. The consumer applies Rob's idempotency contract
+    // (queued/failed → atomic claim; running/completed → skip) so retries
+    // don't double-charge or duplicate assets.
+    genAppLog("design_queue_dispatch_start", {
       business_id: business.id,
       task_run_id: taskRunId,
-      status: triggerRes.status,
-      body_preview: txt.slice(0, 200),
     });
-    throw new Error(
-      `Failed to trigger generate-business-app-html (status ${triggerRes.status}): ${txt.slice(0, 200)}`,
-    );
+    const { data: htmlTaskLookup, error: htmlTaskErr } = await supabase
+      .from("tasks")
+      .select("id")
+      .eq("slug", "generate-business-app-html")
+      .maybeSingle();
+    if (htmlTaskErr || !htmlTaskLookup) {
+      genAppLog("design_queue_html_task_lookup_failed", {
+        business_id: business.id,
+        task_run_id: taskRunId,
+        err: htmlTaskErr?.message ?? "html_task_row_missing",
+      });
+      throw new Error(
+        `generate-business-app-html task row missing: ${htmlTaskErr?.message ?? "not found"}`,
+      );
+    }
+
+    const { data: queuedRow, error: queuedErr } = await supabase
+      .from("task_runs")
+      .insert({
+        user_id: user.id,
+        business_id: business.id,
+        task_id: (htmlTaskLookup as { id: string }).id,
+        status: "queued",
+        // started_at intentionally null — the consumer sets it on the
+        // atomic queued→running flip so dashboards reflect actual run start.
+        config: {
+          llm_tier: llmTier,
+          parent_design_task_run_id: taskRunId,
+        },
+      })
+      .select("id")
+      .single();
+
+    if (queuedErr || !queuedRow) {
+      genAppLog("design_queue_row_insert_failed", {
+        business_id: business.id,
+        task_run_id: taskRunId,
+        err: queuedErr?.message,
+      });
+      throw new Error(
+        `Failed to insert queued HTML task_run: ${queuedErr?.message ?? "no row returned"}`,
+      );
+    }
+
+    const claimedHtmlId = (queuedRow as { id: unknown }).id;
+    if (typeof claimedHtmlId !== "string" || claimedHtmlId.length === 0) {
+      // Defensive — Supabase .single() should always return {id} matching
+      // the inserted row, but if PostgREST ever changes the shape silently
+      // we want a loud failure instead of letting `htmlTaskRunId` stay
+      // null and corrupt output_data downstream (which is what produced
+      // the "step 2 did not start" frontend fallback before this guard).
+      genAppLog("design_queue_row_id_malformed", {
+        business_id: business.id,
+        task_run_id: taskRunId,
+        observed_shape: typeof claimedHtmlId,
+      });
+      throw new Error(
+        `Queued HTML task_run insert returned a row but its id field was missing or not a string (got ${typeof claimedHtmlId}).`,
+      );
+    }
+    htmlTaskRunId = claimedHtmlId;
+    genAppLog("design_queue_row_inserted", {
+      business_id: business.id,
+      task_run_id: taskRunId,
+      html_task_run_id: htmlTaskRunId,
+    });
+
+    try {
+      await env.APP_GEN_HTML_QUEUE.send({
+        htmlTaskRunId,
+        businessId: business.id,
+        userId: user.id,
+        designTaskRunId: taskRunId,
+      });
+    } catch (sendErr) {
+      // Queue send failed — flip the pre-created row to failed so it
+      // doesn't sit in 'queued' forever and so the stale-sweep cron
+      // doesn't have to clean it up. Then bubble the error.
+      const msg = sendErr instanceof Error ? sendErr.message : String(sendErr);
+      genAppLog("design_queue_send_failed", {
+        business_id: business.id,
+        task_run_id: taskRunId,
+        html_task_run_id: htmlTaskRunId,
+        err: msg,
+      });
+      await supabase
+        .from("task_runs")
+        .update({
+          status: "failed",
+          completed_at: new Date().toISOString(),
+          error: `queue_send_failed: ${msg}`.slice(0, 4000),
+        })
+        .eq("id", htmlTaskRunId)
+        .eq("status", "queued");
+      throw new Error(`Failed to enqueue HTML step: ${msg}`);
+    }
+
+    genAppLog("design_queue_dispatch_complete", {
+      business_id: business.id,
+      task_run_id: taskRunId,
+      html_task_run_id: htmlTaskRunId,
+    });
+  } else {
+    // Fallback path: Service Binding chain trigger. Cloudflare blocks
+    // Worker→same-Worker fetches over the public hostname (CF error 1042),
+    // so we route via the SELF binding declared in wrangler.toml. The
+    // Request URL hostname is a placeholder the Hono router matches against.
+    //
+    // Secret guard scoped to this branch only. The queue path (above)
+    // doesn't need INTERNAL_TRIGGER_SECRET; only the /api/internal/run-task
+    // route validates it. Surfacing the misconfiguration here keeps the
+    // failure tight to the actual code path that depends on the secret.
+    if (!env.INTERNAL_TRIGGER_SECRET) {
+      genAppLog("design_secret_missing", {
+        business_id: business.id,
+        task_run_id: taskRunId,
+        branch: "self_fetch_fallback",
+      });
+      throw new Error(
+        "INTERNAL_TRIGGER_SECRET is unset — cannot chain to generate-business-app-html via SELF.fetch fallback. " +
+          "Set it via: wrangler secret put INTERNAL_TRIGGER_SECRET --env <env>",
+      );
+    }
+    const triggerReq = new Request("http://internal/api/internal/run-task", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-internal-secret": env.INTERNAL_TRIGGER_SECRET,
+      },
+      body: JSON.stringify({
+        businessId: business.id,
+        userId: user.id,
+        taskSlug: "generate-business-app-html",
+        // Forward the tier so the HTML step's task_run carries it, and
+        // the chain-aware debit override in runTaskInBackground can map
+        // tier → cost for the chained HTML task.
+        config: { llm_tier: llmTier, parent_design_task_run_id: taskRunId },
+      }),
+    });
+    genAppLog("design_chain_trigger_start", {
+      business_id: business.id,
+      task_run_id: taskRunId,
+    });
+    const triggerRes = await env.SELF.fetch(triggerReq);
+
+    if (!triggerRes.ok) {
+      const txt = await triggerRes.text().catch(() => "");
+      genAppLog("design_chain_trigger_failed", {
+        business_id: business.id,
+        task_run_id: taskRunId,
+        status: triggerRes.status,
+        body_preview: txt.slice(0, 200),
+      });
+      throw new Error(
+        `Failed to trigger generate-business-app-html (status ${triggerRes.status}): ${txt.slice(0, 200)}`,
+      );
+    }
+
+    const triggerJson = (await triggerRes.json().catch(() => ({}))) as {
+      task_run_id?: string;
+    };
+    htmlTaskRunId = triggerJson.task_run_id ?? null;
+    genAppLog("design_chain_trigger_complete", {
+      business_id: business.id,
+      task_run_id: taskRunId,
+      html_task_run_id: htmlTaskRunId,
+    });
   }
 
-  const triggerJson = (await triggerRes.json().catch(() => ({}))) as {
-    task_run_id?: string;
+  await checkpoint("design_dispatch_complete", {
+    html_task_run_id: htmlTaskRunId,
+    has_html_task_run_id:
+      typeof htmlTaskRunId === "string" && htmlTaskRunId.length > 0,
+  });
+
+  // Persist output_data on the Design task_run directly, BEFORE the
+  // return. runTaskInBackground does write `output_data: result.output_data`
+  // at completion time, but only when the status='running' gate still
+  // matches at that moment. If anything flips the row's status between
+  // here and the framework write (a cancellation, the inline 5-min
+  // sweep at business-task-run.ts:458, etc.), the framework's write
+  // silently no-ops — and the frontend then sees status='completed' but
+  // output_data missing, which hits apps.astro:933 with the misleading
+  // "INTERNAL_TRIGGER_SECRET is unset" message. This explicit pre-write
+  // is the belt-and-suspenders fix: by the time we return, the field is
+  // in the DB regardless of what happens later. (Both paths flow
+  // through this write — queue branch and SELF.fetch branch alike.)
+  const designOutputData = {
+    step: "design",
+    app_type: design.app_type,
+    app_title: design.app_title,
+    app_tagline: design.app_tagline,
+    next_step: "generate-business-app-html",
+    next_task_run_id: htmlTaskRunId,
   };
-  const htmlTaskRunId = triggerJson.task_run_id ?? null;
-  genAppLog("design_chain_trigger_complete", {
+  genAppLog("design_output_data_write_start", {
     business_id: business.id,
     task_run_id: taskRunId,
     html_task_run_id: htmlTaskRunId,
+    has_next_task_run_id: typeof htmlTaskRunId === "string" && htmlTaskRunId.length > 0,
+  });
+  const { error: outputWriteErr } = await supabase
+    .from("task_runs")
+    .update({ output_data: designOutputData })
+    .eq("id", taskRunId);
+  if (outputWriteErr) {
+    genAppLog("design_output_data_write_failed", {
+      business_id: business.id,
+      task_run_id: taskRunId,
+      err: outputWriteErr.message,
+    });
+    // Non-fatal — the framework write still runs after the return and
+    // may succeed. We just lose the early-persist guarantee.
+  } else {
+    genAppLog("design_output_data_write_complete", {
+      business_id: business.id,
+      task_run_id: taskRunId,
+    });
+  }
+
+  await checkpoint("design_exit", {
+    total_elapsed_ms: Date.now() - handlerStart,
+    outcome: "success",
+    html_task_run_id: htmlTaskRunId,
+    output_data_persisted: !outputWriteErr,
   });
 
   genAppLog("design_handler_complete", {
@@ -317,14 +610,5 @@ Return JSON:
     html_task_run_id: htmlTaskRunId,
   });
 
-  return {
-    output_data: {
-      step: "design",
-      app_type: design.app_type,
-      app_title: design.app_title,
-      app_tagline: design.app_tagline,
-      next_step: "generate-business-app-html",
-      next_task_run_id: htmlTaskRunId,
-    },
-  };
+  return { output_data: designOutputData };
 }

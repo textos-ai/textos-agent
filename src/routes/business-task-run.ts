@@ -31,7 +31,12 @@ import {
 import { buildBundleSuggestions } from "../lib/withTokenDeduction";
 import { genericDocumentRunner } from "../lib/tasks/generic-document-runner";
 import type { TaskCtx } from "../lib/tasks/types";
-import { genAppLog } from "../lib/gen-app-log";
+import {
+  genAppLog,
+  takeGenAppEvents,
+  clearGenAppEvents,
+  setGenAppLogSink,
+} from "../lib/gen-app-log";
 import { serializeGenAppError } from "../lib/gen-app-error";
 
 // Slug → handler dispatch map (acceptable code constant; not a list of slugs).
@@ -492,6 +497,15 @@ app.get("/:slug/task_runs/:id", async (c) => {
   return c.json(row);
 });
 
+// NOTE (2026-05-25): the previous GET /:slug/app-logs handler that
+// lived here was moved to src/routes/app-logs.ts and remounted at the
+// dedicated prefix /api/app-logs. The /api/businesses prefix has five
+// sibling sub-apps mounted on it (business-manager, marketing-carousels,
+// billing, business-task-run, apps-businesses) and the new handler was
+// 404'ing despite being registered — fall-through across sibling
+// sub-app mounts wasn't reliably matching it. Keeping the rest of this
+// file's routes here unchanged; only the app-logs route moved.
+
 // ── Background runner ────────────────────────────────────────────────────
 // Build the full TaskCtx, run the generic runner, then debit tokens via
 // debit_tokens RPC. On any failure, mark task_run as failed and DO NOT
@@ -522,6 +536,13 @@ export async function runTaskInBackground(
   taskRunId: string,
 ): Promise<void> {
   const supabase = createSupabaseClient(env);
+
+  // Wire the gen-app-log durable sink for this Worker invocation so
+  // every genAppLog() call fires a fire-and-forget INSERT into
+  // gen_app_logs. Safe to wire even for non-gen-app tasks — the table
+  // only receives rows when genAppLog is called, which only happens
+  // from gen-app code paths.
+  setGenAppLogSink(supabase);
 
   // ── Concurrency lock — Design step only ────────────────────────────────
   // Block a new Design start if any other 'generate-business-app%' task_run
@@ -573,7 +594,10 @@ export async function runTaskInBackground(
         .from("task_runs")
         .update({
           status: "failed",
-          error: serializeGenAppError("concurrent_generation_in_progress"),
+          error: serializeGenAppError(
+            "concurrent_generation_in_progress",
+            takeGenAppEvents(taskRunId),
+          ),
           completed_at: new Date().toISOString(),
         })
         .eq("id", taskRunId)
@@ -766,7 +790,10 @@ export async function runTaskInBackground(
           });
         }
         const failError = task.slug.startsWith(GEN_APP_SLUG_PREFIX)
-          ? serializeGenAppError("token_deduct_failed_post_run")
+          ? serializeGenAppError(
+              "token_deduct_failed_post_run",
+              takeGenAppEvents(taskRunId),
+            )
           : "token_deduct_failed_post_run";
         await supabase
           .from("task_runs")
@@ -809,6 +836,12 @@ export async function runTaskInBackground(
       tokens_debited: effectiveCost,
       is_free_task: effectiveCost === 0,
     });
+    // Drop the per-task-run event buffer on success — there's no error
+    // payload to attach it to, and we don't want it lingering across
+    // back-to-back consumer batches in the same Worker invocation.
+    if (task.slug.startsWith(GEN_APP_SLUG_PREFIX)) {
+      clearGenAppEvents(taskRunId);
+    }
   } catch (err) {
     const message =
       err instanceof Error ? err.message : String(err) || "unknown_error";
@@ -822,9 +855,11 @@ export async function runTaskInBackground(
     // can show a human-readable summary to the operator instead of the
     // raw technical message. Other tasks keep plain-text error storage
     // (their UIs don't parse JSON).
-    const errorPayload = task.slug.startsWith(GEN_APP_SLUG_PREFIX)
-      ? serializeGenAppError(message)
-      : message;
+    //
+    // We log runner_handler_dispatch_failed FIRST so it lands in the
+    // event buffer for this task_run before we drain it via
+    // takeGenAppEvents — otherwise the operator-facing log would be
+    // missing the very last entry that names the dispatch failure.
     if (task.slug.startsWith(GEN_APP_SLUG_PREFIX)) {
       genAppLog("runner_handler_dispatch_failed", {
         business_id: business.id,
@@ -834,6 +869,11 @@ export async function runTaskInBackground(
         err_message: message,
       });
     }
+    const isGenApp = task.slug.startsWith(GEN_APP_SLUG_PREFIX);
+    const events = isGenApp ? takeGenAppEvents(taskRunId) : [];
+    const errorPayload = isGenApp
+      ? serializeGenAppError(message, events)
+      : message;
     await supabase
       .from("task_runs")
       .update({

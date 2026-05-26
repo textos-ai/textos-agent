@@ -72,6 +72,17 @@ export interface Env {
    *  fire a self-invocation without hitting Cloudflare's same-Worker public
    *  URL block (CF error 1042). Routed by binding, not DNS — Request URL
    *  hostname is ignored. Declared in wrangler.toml as [[services]] (prod)
-   *  and [[env.test.services]] (test). */
+   *  and [[env.test.services]] (test).
+   *
+   *  Kept alive as a fallback after the APP_GEN_HTML_QUEUE rollout — Design
+   *  handler prefers the queue path when its binding is present, falls back
+   *  to env.SELF.fetch when the queue binding is undefined. */
   SELF: Fetcher;
+  /** Cloudflare Queue producer for the generate-business-app HTML step.
+   *  Optional during the soak period — the Design handler falls back to the
+   *  SELF service-binding chain when undefined. Declared in wrangler.toml as
+   *  [[queues.producers]] (prod) and [[env.test.queues.producers]] (test);
+   *  the matching consumer handler lives in src/queues/app-gen-html-consumer.ts.
+   *  See src/queues/types.ts for the message shape. */
+  APP_GEN_HTML_QUEUE?: Queue<import("./queues/types").HtmlJobMessage>;
 }

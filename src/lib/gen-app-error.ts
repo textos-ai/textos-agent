@@ -17,6 +17,15 @@
 export interface GenAppErrorPayload {
   technical: string;
   summary: string;
+  /**
+   * Optional structured log — every [GEN-APP] event recorded for the
+   * failing task_run, drained from the in-memory buffer in
+   * gen-app-log.ts at catch time. Frontend (apps.astro) renders each
+   * entry on its own line in the collapsible "Show details" panel so
+   * the operator can see the full trace, not just the one-line
+   * `technical` summary.
+   */
+  events?: Array<Record<string, unknown>>;
 }
 
 /**
@@ -84,8 +93,22 @@ export function formatGenAppError(technical: string): GenAppErrorPayload {
 
 /**
  * Convenience: stringify the payload for storage in task_runs.error.
- * Truncated to 4000 chars to fit the text column without surprises.
+ *
+ * Cap raised from 4000 → 32000 on 2026-05-25 because the structured
+ * `events` array (drained from gen-app-log.ts on failure) can easily
+ * exceed 4000 chars. A typical failed html run buffers ~15-30 events
+ * at ~150 chars each. 32000 gives ~200 events of headroom; the buffer
+ * itself caps at 200 entries, so this is the natural ceiling. If we
+ * ever blow through it, the JSON.stringify truncates mid-event but
+ * the summary/technical fields are first in key order so they're
+ * preserved.
  */
-export function serializeGenAppError(technical: string): string {
-  return JSON.stringify(formatGenAppError(technical)).slice(0, 4000);
+export function serializeGenAppError(
+  technical: string,
+  events?: Array<Record<string, unknown>>,
+): string {
+  const base = formatGenAppError(technical);
+  const payload: GenAppErrorPayload =
+    events && events.length > 0 ? { ...base, events } : base;
+  return JSON.stringify(payload).slice(0, 32000);
 }

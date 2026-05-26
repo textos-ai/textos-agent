@@ -11,7 +11,12 @@ import { genAppLog } from "../gen-app-log";
 //
 // Responsibilities:
 //   1. Read the asset_type='app_draft' row written by the design step.
-//   2. Make Call 2 (full HTML, max_tokens 8000) with a 45s timeout.
+//   2. Make Call 2 (full HTML, max_tokens 12000, streaming) with a 90s
+//      timeout. Raised from 8000 on 2026-05-25 after Haiku consistently
+//      hit stop_reason=max_tokens around 29-30K chars on attempts. The
+//      Worker is no longer constrained by the subrequest body timeout
+//      because the consumer runs inside a Cloudflare Queue invocation
+//      (15-min wall-clock budget). Streaming keeps the connection live.
 //   3. Insert final asset_type='app' row, replace placeholders, update.
 //   4. Upsert app_configs.
 //   5. Delete the draft row.
@@ -130,50 +135,60 @@ export async function runGenerateBusinessAppHtml(tc: TaskCtx): Promise<TaskResul
   });
 
   // ── CALL 2 — HTML generation ───────────────────────────────────────────────
-  const systemPrompt = `You are an expert frontend developer. Generate complete, self-contained HTML/CSS/JS. No external dependencies except vanilla JS. The app must be fully functional standalone. Return ONLY the complete HTML. No explanation. No markdown fences. Start with <!DOCTYPE html>.`;
+  // System prompt rewritten 2026-05-25: explicit conciseness rules added
+  // after Haiku consistently hit stop_reason=max_tokens at 8000 with
+  // verbose, comment-heavy output. The 12000-token budget is the hard
+  // ceiling; the model still has to fit a complete document inside it,
+  // so we instruct it to prioritize working code over polish. The
+  // "stop_reason=end_turn is required" line gives the model an explicit
+  // success criterion it can self-check against.
+  const systemPrompt = `You are an expert frontend developer. Generate complete, self-contained HTML/CSS/JS. No external dependencies except vanilla JS. The app must be fully functional standalone. Return ONLY the complete HTML. No explanation. No markdown fences. Start with <!DOCTYPE html>.
 
+CRITICAL — TOKEN BUDGET DISCIPLINE:
+- You must complete the full HTML document within the token budget. Prioritize working code over polish.
+- No code comments — neither HTML comments (<!-- -->) nor JS comments (// or /* */).
+- Minimal whitespace. Collapse blank lines. Single-line CSS rules where possible. No decorative indentation.
+- No decorative or aspirational code: no animations beyond the minimum, no easter eggs, no unused helpers.
+- Single file only. Inline all CSS in <style>, all JS in <script>. No <link>, no external <script src>.
+- stop_reason=end_turn is required. The response MUST end with the literal string </html>. If you sense you are running out of budget, simplify or shorten earlier sections rather than truncating at the end.`;
+
+  // ── Paywall DISABLED (2026-05-25) ────────────────────────────────────────
+  // Returning the full result to every visitor for now while we validate the
+  // end-to-end generation + render flow. The design spec still carries
+  // free_tier_reveals / paid_tier_reveals / cta_label fields, but the prompt
+  // tells the model to ignore the free/paid split and show paid_tier_reveals
+  // (the full reveal) unconditionally on submit. No paywall overlay, no
+  // window.TXAPP.purchase(), no checkToken gating.
+  //
+  // The window.TXAPP global is still required because future re-introduction
+  // of the paywall will need it — keeping it in the contract avoids breaking
+  // the asset shape. purchase() and checkToken() are kept as no-op stubs so
+  // any leftover references in older designs don't 500 the runtime.
+  //
+  // When re-introducing paywall: restore the "Free tier"/"Paid tier" split
+  // and the paywall-overlay markup blocks below. Keep the {{...}} placeholder
+  // substitution logic — it's still wired downstream.
   const userPrompt = `Generate a complete HTML file for this business mini-app based on this spec:
 
 ${JSON.stringify(design, null, 2)}
 
 REQUIREMENTS:
-- Self-contained single HTML file
-- Mobile-first responsive design
-- Brand accent color: ${design.accent_color}
-- Free tier: show all questions, then a teaser result (use free_tier_reveals)
-- Paid tier: locked behind .paywall-overlay div (use paid_tier_reveals + cta_label)
-- Paywall overlay HTML structure:
-    <div class='paywall-overlay' id='paywall'>
-      <div class='paywall-inner'>
-        <h3>Unlock Your Full Results</h3>
-        <p>${design.paid_tier_reveals.replace(/'/g, "&#39;")}</p>
-        <button onclick='window.TXAPP.purchase()'>${design.cta_label.replace(/'/g, "&#39;")} →</button>
-      </div>
-    </div>
-- window.TXAPP global object MUST be included verbatim:
+- Self-contained single HTML file.
+- Mobile-first responsive design.
+- Brand accent color: ${design.accent_color}.
+- Show all questions in the spec. On submit, show the FULL result — use paid_tier_reveals from the spec as the result body. Do NOT split into free vs paid. Do NOT render any paywall overlay. Do NOT render any "Unlock", "Purchase", or "Upgrade" button. Every visitor gets the full result.
+- result_logic from the spec governs how to compute / present the result. Render the full result inline below the questions on submit.
+- window.TXAPP global object MUST be included verbatim (kept as a no-op stub for future re-introduction of paywall; do NOT call its methods from the UI):
     window.TXAPP = {
       businessId: '{{BUSINESS_ID}}',
       assetId: '{{ASSET_ID}}',
       apiBase: '{{API_BASE}}',
-      visitorToken: localStorage.getItem('tx_vt_{{BUSINESS_ID}}') || null,
-      purchase: function() {
-        window.location.href = window.TXAPP.apiBase + '/api/generated-apps/{{BUSINESS_ID}}/purchase';
-      },
-      checkToken: async function() {
-        if (!window.TXAPP.visitorToken) return false;
-        const r = await fetch(window.TXAPP.apiBase + '/api/generated-apps/{{BUSINESS_ID}}/verify-token', {
-          method: 'POST',
-          headers: { 'x-visitor-token': window.TXAPP.visitorToken }
-        });
-        return r.ok;
-      }
+      visitorToken: null,
+      purchase: function() { /* paywall disabled */ },
+      checkToken: async function() { return true; }
     };
-- On submit: call window.TXAPP.checkToken()
-    true → show full results, hide paywall
-    false → show teaser + paywall overlay
-- On page load: read ?vt=xxx query param. If present, store to localStorage as tx_vt_{{BUSINESS_ID}}, then set window.TXAPP.visitorToken.
-- Clean, professional design matching business brand (use accent_color liberally)
-- Include error handling for API failures
+- Clean, professional design matching business brand (use accent_color liberally).
+- Include error handling for any API failures in the result rendering path.
 
 Start with <!DOCTYPE html>. No markdown fences. Return only HTML.`;
 
@@ -187,7 +202,7 @@ Start with <!DOCTYPE html>. No markdown fences. Return only HTML.`;
     business_id: business.id,
     task_run_id: taskRunId,
     model: htmlModel,
-    max_tokens: 8000,
+    max_tokens: 12000,
     prompt_chars: systemPrompt.length + userPrompt.length,
     timeout_ms: CALL_TIMEOUT_MS,
     stream: true,
@@ -221,7 +236,7 @@ Start with <!DOCTYPE html>. No markdown fences. Return only HTML.`;
       const stream = anthropic.messages.stream(
         {
           model: htmlModel,
-          max_tokens: 8000,
+          max_tokens: 12000,
           system: systemPrompt,
           messages: [{ role: "user", content: userPrompt }],
         },

@@ -33,8 +33,11 @@ import appsInstancesRoutes from "./routes/apps-instances";
 import xaiFyiRoutes from "./routes/xai-fyi";
 import generatedAppsRoutes from "./routes/generated-apps";
 import internalRoutes from "./routes/internal";
+import appLogsRoutes from "./routes/app-logs";
 import { runHeartbeatWatchdog } from "./cron/heartbeatWatchdog";
 import { runGenAppStaleSweep } from "./cron/genAppStaleSweep";
+import { processAppGenHtmlBatch } from "./queues/app-gen-html-consumer";
+import type { HtmlJobMessage } from "./queues/types";
 import { createClient } from "@supabase/supabase-js";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -96,6 +99,10 @@ app.route("/api/business-apps", appsInstancesRoutes);
 app.route("/xai-fyi", xaiFyiRoutes);
 app.route("/api/generated-apps", generatedAppsRoutes);
 app.route("/api/internal", internalRoutes);
+// Dedicated /api/app-logs prefix — see src/routes/app-logs.ts for the
+// reason it lives outside /api/businesses (multi-sub-app mount fall-
+// through wasn't reliably matching the new handler).
+app.route("/api/app-logs", appLogsRoutes);
 
 
 app.notFound((c) =>
@@ -129,5 +136,33 @@ export default {
     // Default (covers "* * * * *" and any future schedule we forget to
     // branch on — heartbeat is safe to run more often than needed).
     await runHeartbeatWatchdog(supabase);
+  },
+
+  /**
+   * Cloudflare Queue consumer entry point. CF dispatches incoming batches
+   * here based on the [[queues.consumers]] declarations in wrangler.toml.
+   * Each consumer invocation gets a fresh wall-clock budget (~15 min on
+   * Workers Standard) — this is the key reason we moved
+   * generate-business-app-html off the Service Binding chain.
+   *
+   * Branches by `batch.queue` (the queue name as a string). New queue
+   * consumers add their dispatch line here.
+   */
+  async queue(
+    batch: MessageBatch<unknown>,
+    env: Env,
+    _ctx: ExecutionContext,
+  ): Promise<void> {
+    if (
+      batch.queue === "textos-app-gen-html-prod" ||
+      batch.queue === "textos-app-gen-html-test"
+    ) {
+      await processAppGenHtmlBatch(batch as MessageBatch<HtmlJobMessage>, env);
+      return;
+    }
+    // Unknown queue — log and ack all (don't loop). New queues need an
+    // explicit branch above.
+    log.error("queue_unknown_consumer", { queue: batch.queue });
+    for (const m of batch.messages) m.ack();
   },
 };
