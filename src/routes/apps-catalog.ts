@@ -70,24 +70,50 @@ router.post("/provision", requireAuth, async (c) => {
     return c.json(errBody("App already installed for this business"), 409);
   }
 
-  // Create business_apps row — status provisioning
+  // Create or update business_apps row
   const ownerId = isAdmin ? biz.user_id : user_id;
   const trialEndsAt = new Date(
     Date.now() + app.trial_days * 24 * 60 * 60 * 1000
   ).toISOString();
 
-  const { data: instance, error: insertErr } = await sb
-    .from("business_apps")
-    .upsert({
-      business_id,
-      app_id: app.id,
-      user_id: ownerId,
-      status: "provisioning",
-      config,
-      trial_ends_at: trialEndsAt,
-    })
-    .select()
-    .single();
+  let instance;
+  let insertErr;
+
+  if (existing && existing.status === "deprovisioned") {
+    // Update the existing deprovisioned instance
+    const { data: updated, error: updateErr } = await sb
+      .from("business_apps")
+      .update({
+        user_id: ownerId,
+        status: "provisioning",
+        config,
+        trial_ends_at: trialEndsAt,
+        deactivated_at: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", existing.id)
+      .select()
+      .single();
+    instance = updated;
+    insertErr = updateErr;
+  } else {
+    // Insert new instance
+    const { data: inserted, error: insertError } = await sb
+      .from("business_apps")
+      .insert({
+        business_id,
+        app_id: app.id,
+        user_id: ownerId,
+        status: "provisioning",
+        config,
+        trial_ends_at: trialEndsAt,
+      })
+      .select()
+      .single();
+    instance = inserted;
+    insertErr = insertError;
+  }
+
   if (insertErr || !instance) {
     log.error("apps.provision_insert_failed", {
       error: insertErr?.message,

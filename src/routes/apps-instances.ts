@@ -75,6 +75,39 @@ router.post("/:id/pause", requireAuth, async (c) => {
   return c.json({ success: true });
 });
 
+// ── POST /api/business-apps/:id/resume ───────────────────────────
+// Resume a paused app instance
+router.post("/:id/resume", requireAuth, async (c) => {
+  const { user_id } = c.get("auth");
+  const { id } = c.req.param();
+  const sb = createSupabaseClient(c.env);
+
+  const { data: instance } = await sb
+    .from("business_apps")
+    .select("id, user_id, status")
+    .eq("id", id)
+    .maybeSingle();
+  if (!instance) return c.json(errBody("App instance not found"), 404);
+
+  const { data: userRow } = await sb
+    .from("users")
+    .select("is_admin")
+    .eq("id", user_id)
+    .maybeSingle();
+  const isAdmin = userRow?.is_admin === true;
+  if (!isAdmin && instance.user_id !== user_id) {
+    return c.json(errBody("Unauthorized"), 403);
+  }
+
+  const { error } = await sb
+    .from("business_apps")
+    .update({ status: "active", updated_at: new Date().toISOString() })
+    .eq("id", id);
+  if (error) return c.json(errBody("Failed to resume app"), 500);
+
+  return c.json({ success: true });
+});
+
 // ── DELETE /api/business-apps/:id ────────────────────────────────
 // Deprovision an app instance
 router.delete("/:id", requireAuth, async (c) => {
