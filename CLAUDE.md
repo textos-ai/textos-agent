@@ -418,6 +418,41 @@ behavior. Read the source, fix, ship — logs aren't needed for
 
 ---
 
+## stream_events is the platform logging table
+
+Every significant background operation writes to stream_events. It's
+the durable, queryable log of platform activity per business — used
+by the free-build orchestrator, by the generate-business-app chain
+(rows with event_type LIKE 'gen_app_%'), and by future async
+features. New background work should follow the same pattern.
+
+Schema (read-only invariant):
+  run_id      uuid    — the task_run_id (or build run_id for orchestrator)
+  business_id uuid    — scope for owner-filtered queries
+  seq         int     — monotonic per run_id, used for ordering replays
+  event_type  text    — namespaced string (e.g. 'gen_app_html_anthropic_call_start')
+  event_data  jsonb   — caller-supplied payload (no need to repeat ids/ts)
+  created_at  timestamptz default now()
+
+Writer convention: namespace event_type by feature prefix
+('gen_app_*', 'free_build_*', etc.) so per-feature queries stay
+clean. Frontend reads via a per-feature route that filters by
+prefix (e.g. GET /api/businesses/:slug/app-logs filters
+'gen_app_%').
+
+task_runs.work_log (jsonb array) holds the per-task structured log
+snapshot for the run currently in flight or most recently completed.
+genAppLog writes it as a full-buffer idempotent snapshot on every
+fire so a single read of task_runs returns the entire trace without
+joining stream_events.
+
+wrangler tail is for development only. It captures only future
+events, only while the subscription is live, and dies on Worker
+redeploys. The two durable lanes above survive redeploys and
+remain queryable from the UI.
+
+---
+
 ## CODE CONFIDENCE RULE
 
 NEVER make assumptions about code. Before recommending
