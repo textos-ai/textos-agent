@@ -13,7 +13,9 @@ import { log } from "../lib/logger";
 // catalog) — see "apps-catalog.ts" / "apps-businesses.ts" / "apps-instances.ts".
 //
 // Routes (registered under /api/generated-apps):
-//   GET    /:businessId/app-html       public        fetch the saved HTML
+//   GET    /:businessId/app-html       public        fetch the saved HTML (singleton — kept for backward compat; deprecated)
+//   GET    /:businessId/by-slug/:slug  public        fetch a specific app by its slug (Phase 1 multi-app)
+//   GET    /:businessId/list           owner-only    list all apps for a business (Phase 1 multi-app)
 //   POST   /:businessId/purchase       public        create Stripe Checkout
 //   POST   /webhook/stripe             public, sig'd handle checkout completed
 //   POST   /:businessId/verify-token   public, hdr   decrement a visitor token
@@ -473,6 +475,240 @@ app.patch("/:businessId/config", requireAuth, async (c) => {
   }
 
   return c.json({ ok: true });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /:businessId/list — owner-only listing of generated apps for a business.
+//
+// Returns one entry per app row (asset_type='app') plus the in-progress draft
+// (asset_type='app_draft') and any recent failed task_runs that didn't yield
+// a row. Stats (views/completions/lead_captures) are placeholders — once a
+// view/completion/lead tracking surface exists we'll populate them from there;
+// for now return 0 so the frontend list rendering is stable.
+//
+// Default filter: is_current=true only. Pass ?include_history=true to also
+// surface superseded rows (operator history). The is_current=true filter
+// applies only to the asset_type='app' query — drafts and failed task_runs
+// have their own implicit "active right now" semantics already.
+// ─────────────────────────────────────────────────────────────────────────────
+app.get("/:businessId/list", requireAuth, async (c) => {
+  const { user_id } = c.get("auth");
+  const businessId = c.req.param("businessId");
+  const includeHistory = c.req.query("include_history") === "true";
+  const sb = createSupabaseClient(c.env);
+
+  // Ownership check — mirrors the pattern from PATCH /:businessId/config.
+  const { data: biz } = await sb
+    .from("businesses")
+    .select("id")
+    .eq("id", businessId)
+    .eq("user_id", user_id)
+    .eq("is_active", true)
+    .maybeSingle();
+  if (!biz) return c.json(errBody("not_found", "business not found"), 404);
+
+  // ── Active apps (asset_type='app') ────────────────────────────────────
+  let appsQuery = sb
+    .from("business_assets")
+    .select(
+      "id, app_slug, app_icon, asset_data, asset_subtype, is_current, created_at, task_run_id",
+    )
+    .eq("business_id", businessId)
+    .eq("asset_type", "app")
+    .order("created_at", { ascending: false });
+  if (!includeHistory) appsQuery = appsQuery.eq("is_current", true);
+  const { data: appRows, error: appErr } = await appsQuery;
+  if (appErr) {
+    log.error("generated_apps.list.apps_failed", {
+      business_id: businessId,
+      err: appErr.message,
+    });
+    return c.json(errBody("internal", "apps_lookup_failed"), 500);
+  }
+
+  // ── In-progress draft (asset_type='app_draft', is_current=true) ───────
+  const { data: draftRows, error: draftErr } = await sb
+    .from("business_assets")
+    .select("id, asset_data, created_at, task_run_id")
+    .eq("business_id", businessId)
+    .eq("asset_type", "app_draft")
+    .eq("is_current", true)
+    .order("created_at", { ascending: false });
+  if (draftErr) {
+    log.error("generated_apps.list.drafts_failed", {
+      business_id: businessId,
+      err: draftErr.message,
+    });
+    return c.json(errBody("internal", "drafts_lookup_failed"), 500);
+  }
+
+  // ── Failed gen-app task_runs without an asset row ─────────────────────
+  // "failed without a row" = status='failed' on a gen-app task slug AND
+  // we did NOT find an asset row tied to that task_run_id above. The
+  // join is done client-side because PostgREST doesn't do anti-joins
+  // cleanly through .from() chains.
+  const { data: failedTasksRaw, error: failedErr } = await sb
+    .from("task_runs")
+    .select("id, error, created_at, tasks!inner(slug)")
+    .eq("business_id", businessId)
+    .eq("status", "failed")
+    .like("tasks.slug", "generate-business-app%")
+    .order("created_at", { ascending: false })
+    .limit(20);
+  if (failedErr) {
+    log.error("generated_apps.list.failed_runs_failed", {
+      business_id: businessId,
+      err: failedErr.message,
+    });
+    // Non-fatal — show what we have.
+  }
+  type FailedRun = {
+    id: string;
+    error: string | null;
+    created_at: string;
+    tasks: { slug: string };
+  };
+  const failedTasks = (failedTasksRaw ?? []) as unknown as FailedRun[];
+  const taskRunIdsWithRow = new Set<string>(
+    [
+      ...((appRows ?? []) as Array<{ task_run_id: string | null }>),
+      ...((draftRows ?? []) as Array<{ task_run_id: string | null }>),
+    ]
+      .map((r) => r.task_run_id)
+      .filter((v): v is string => typeof v === "string"),
+  );
+  const orphanFailed = failedTasks.filter((r) => !taskRunIdsWithRow.has(r.id));
+
+  // ── Shape the response ────────────────────────────────────────────────
+  // Stats placeholders. When per-app tracking exists (app_usage_log
+  // already records visits but isn't aggregated; views/lead_capture
+  // tracking doesn't exist yet) we'll fill these in from a separate
+  // count query. Returning 0 keeps the frontend rendering stable today.
+  type AppEntry = {
+    id: string;
+    app_slug: string | null;
+    app_title: string;
+    app_tagline: string;
+    app_icon: string | null;
+    app_type: string;
+    status: "active" | "building" | "failed";
+    created_at: string;
+    is_current?: boolean;
+    error?: string | null;
+    views: number;
+    completions: number;
+    lead_captures: number;
+  };
+
+  const activeEntries: AppEntry[] = ((appRows ?? []) as Array<{
+    id: string;
+    app_slug: string | null;
+    app_icon: string | null;
+    asset_data: Record<string, unknown> | null;
+    asset_subtype: string | null;
+    is_current: boolean;
+    created_at: string;
+  }>).map((r) => ({
+    id: r.id,
+    app_slug: r.app_slug,
+    app_title: (r.asset_data?.app_title as string) ?? "",
+    app_tagline: (r.asset_data?.app_tagline as string) ?? "",
+    app_icon: r.app_icon,
+    app_type: (r.asset_data?.app_type as string) ?? "",
+    status: "active" as const,
+    created_at: r.created_at,
+    is_current: r.is_current,
+    views: 0,
+    completions: 0,
+    lead_captures: 0,
+  }));
+
+  const buildingEntries: AppEntry[] = ((draftRows ?? []) as Array<{
+    id: string;
+    asset_data: Record<string, unknown> | null;
+    created_at: string;
+  }>).map((r) => {
+    const design = (r.asset_data?.design as Record<string, unknown> | undefined) ?? {};
+    return {
+      id: r.id,
+      app_slug: null,
+      app_title: (design.app_title as string) ?? (r.asset_data?.app_title as string) ?? "",
+      app_tagline: (design.app_tagline as string) ?? (r.asset_data?.app_tagline as string) ?? "",
+      app_icon: (design.app_icon as string) ?? null,
+      app_type: (design.app_type as string) ?? (r.asset_data?.app_type as string) ?? "",
+      status: "building" as const,
+      created_at: r.created_at,
+      views: 0,
+      completions: 0,
+      lead_captures: 0,
+    };
+  });
+
+  const failedEntries: AppEntry[] = orphanFailed.map((r) => ({
+    id: r.id, // task_run id, not asset id — no asset row exists for failed runs
+    app_slug: null,
+    app_title: "",
+    app_tagline: "",
+    app_icon: null,
+    app_type: "",
+    status: "failed" as const,
+    created_at: r.created_at,
+    error: r.error,
+    views: 0,
+    completions: 0,
+    lead_captures: 0,
+  }));
+
+  // Active first (already created_at DESC), then building, then failed.
+  return c.json({
+    apps: [...activeEntries, ...buildingEntries, ...failedEntries],
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /:businessId/by-slug/:slug — PUBLIC. Visitor iframe reads the specific
+// app identified by its app_slug. Mirrors the response shape of the existing
+// /:businessId/app-html endpoint (id, html, app_title, app_tagline, app_type)
+// plus the new top-level app_icon field.
+//
+// is_current=true gates the read so superseded versions of the same slug
+// don't leak to visitors.
+// ─────────────────────────────────────────────────────────────────────────────
+app.get("/:businessId/by-slug/:slug", async (c) => {
+  const businessId = c.req.param("businessId");
+  const slug = c.req.param("slug");
+  const sb = createSupabaseClient(c.env);
+
+  const { data: asset, error } = await sb
+    .from("business_assets")
+    .select("id, asset_data, app_icon")
+    .eq("business_id", businessId)
+    .eq("asset_type", "app")
+    .eq("app_slug", slug)
+    .eq("is_current", true)
+    .maybeSingle();
+
+  if (error) {
+    log.error("generated_apps.by_slug.fetch_failed", {
+      businessId,
+      slug,
+      err: error.message,
+    });
+    return c.json(errBody("internal", "fetch_failed"), 500);
+  }
+  if (!asset) {
+    return c.json(errBody("not_found", "no app for this business/slug"), 404);
+  }
+
+  const data = asset.asset_data as Record<string, unknown> | null;
+  return c.json({
+    id: asset.id,
+    html: (data?.html as string) ?? "",
+    app_title: (data?.app_title as string) ?? "",
+    app_tagline: (data?.app_tagline as string) ?? "",
+    app_type: (data?.app_type as string) ?? "",
+    app_icon: asset.app_icon ?? null,
+  });
 });
 
 export default app;

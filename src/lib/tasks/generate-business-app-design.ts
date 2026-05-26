@@ -28,6 +28,7 @@ interface AppDesign {
   app_title: string;
   app_tagline: string;
   app_description: string;
+  app_icon: string;
   questions: Array<{
     id: string;
     text: string;
@@ -45,6 +46,52 @@ interface AppDesign {
 
 function stripFences(s: string): string {
   return s.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+}
+
+/**
+ * Validate an LLM-supplied emoji icon. Accept if it's a short string (<=12
+ * chars after trimming) containing at least one Extended_Pictographic code
+ * point — this catches both single emoji and short emoji sequences while
+ * rejecting plain text labels like "rocket".
+ */
+function isReasonableIcon(v: unknown): v is string {
+  if (typeof v !== "string") return false;
+  const t = v.trim();
+  if (!t || t.length > 12) return false;
+  return /\p{Extended_Pictographic}/u.test(t);
+}
+
+/**
+ * Deterministic fallback when the LLM didn't supply a reasonable icon.
+ * Order matters: 'quiz' is checked before 'assessment' so 'assessment_quiz'
+ * → 🎯 (the quizzy thing) rather than ✅ (the generic assessment).
+ */
+function fallbackIconForAppType(appType: string): string {
+  const t = (appType || "").toLowerCase();
+  if (t.includes("quiz")) return "🎯";
+  if (t.includes("calculator")) return "🧮";
+  if (t.includes("recommendation")) return "✨";
+  if (t.includes("pricing")) return "💰";
+  if (t.includes("generator")) return "⚡";
+  if (t.includes("comparison")) return "🔬";
+  if (t.includes("planner")) return "📋";
+  if (t.includes("assessment")) return "✅";
+  return "🧩";
+}
+
+/**
+ * Apply the icon validation chain to a design returned from the LLM:
+ *   1. LLM-picked icon if reasonable
+ *   2. Deterministic map by app_type
+ *   3. '🧩' (the catchall lives in fallbackIconForAppType)
+ *
+ * Returns the chosen icon string. Caller is expected to write it back to
+ * design.app_icon so downstream (html step + DB column promotion) sees a
+ * non-empty value.
+ */
+function resolveAppIcon(design: AppDesign): string {
+  if (isReasonableIcon(design.app_icon)) return design.app_icon.trim();
+  return fallbackIconForAppType(design.app_type);
 }
 
 function resolveAgentUrl(env: TaskCtx["env"]): string {
@@ -215,6 +262,7 @@ Return JSON:
   "app_title": "string",
   "app_tagline": "string",
   "app_description": "string (shown to visitor)",
+  "app_icon": "string — a single emoji representing the app's purpose (e.g. 🎯 for a quiz, 🧮 for a calculator). One emoji only, no surrounding text.",
   "questions": [
     {
       "id": "q1",
@@ -288,6 +336,22 @@ Return JSON:
       response_chars: text.length,
     });
     design = JSON.parse(stripFences(text.trim())) as AppDesign;
+    // ── Icon validation chain (Phase 1, 2026-05-26) ─────────────────────
+    // LLM-picked icon → deterministic by app_type → '🧩'. resolveAppIcon
+    // returns a guaranteed-non-empty string. Stored back on design so the
+    // app_draft row carries it through to the HTML step, which then
+    // promotes it onto the top-level app_icon column at INSERT time.
+    const originalIcon = (design as { app_icon?: unknown }).app_icon;
+    const resolvedIcon = resolveAppIcon(design);
+    design.app_icon = resolvedIcon;
+    genAppLog("design_icon_resolved", {
+      business_id: business.id,
+      task_run_id: taskRunId,
+      app_type: design.app_type,
+      llm_supplied: typeof originalIcon === "string" ? originalIcon : null,
+      llm_supplied_reasonable: isReasonableIcon(originalIcon),
+      resolved: resolvedIcon,
+    });
   } catch (err) {
     genAppLog("design_anthropic_call_failed", {
       business_id: business.id,

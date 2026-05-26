@@ -30,6 +30,7 @@ interface AppDesign {
   app_title: string;
   app_tagline: string;
   app_description: string;
+  app_icon?: string;
   questions: Array<{
     id: string;
     text: string;
@@ -47,6 +48,68 @@ interface AppDesign {
 
 function stripFences(s: string): string {
   return s.replace(/^```(?:html)?\s*/i, "").replace(/\s*```$/i, "").trim();
+}
+
+/**
+ * Turn a free-form app_title into a URL-safe slug.
+ * Phase 1 multi-app: this slug becomes the per-app discriminator in the
+ * unique partial index `(business_id, app_slug) WHERE asset_type='app'
+ * AND app_slug IS NOT NULL`. 60-char cap matches the column width used
+ * by similar business slugs elsewhere in the schema.
+ */
+function slugifyTitle(s: string): string {
+  return (s || "")
+    .toLowerCase()
+    .normalize("NFKD")
+    // Strip combining diacritics (Unicode block U+0300..U+036F) so titles
+    // like "Café Picker" slugify to "cafe-picker" rather than "caf-picker".
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .replace(/-+/g, "-")
+    .slice(0, 60);
+}
+
+/**
+ * Pick a unique app_slug for this business by scanning existing rows
+ * whose slug starts with the candidate, then appending -2, -3, ...
+ * until a free value is found.
+ *
+ * One DB round-trip via LIKE narrows the candidate set; precise
+ * matching (exact OR exact-prefix-with-dash-number) happens client-side
+ * so we don't trip over `coolapp` colliding with `cool` or vice versa.
+ *
+ * Race-safe enough at our concurrency (single Worker invocation per
+ * HTML run, the unique partial index is the authoritative guard). If a
+ * concurrent insert races us, the INSERT will throw on the unique
+ * constraint and the caller will see the error.
+ */
+async function pickUniqueAppSlug(
+  supabase: { from: (t: string) => any },
+  businessId: string,
+  candidateBase: string,
+): Promise<string> {
+  const base = candidateBase || ("app-" + Date.now().toString(36).slice(-6));
+  // LIKE narrows; client-side filter is exact.
+  const { data } = await supabase
+    .from("business_assets")
+    .select("app_slug")
+    .eq("business_id", businessId)
+    .eq("asset_type", "app")
+    .like("app_slug", base + "%");
+  const taken = new Set<string>();
+  for (const row of (data ?? []) as Array<{ app_slug: string | null }>) {
+    const s = row.app_slug;
+    if (typeof s !== "string") continue;
+    if (s === base || s.startsWith(base + "-")) taken.add(s);
+  }
+  if (!taken.has(base)) return base;
+  for (let n = 2; n < 1000; n++) {
+    const candidate = base + "-" + n;
+    if (!taken.has(candidate)) return candidate;
+  }
+  // Pathological — should never happen at our scale.
+  return base + "-" + Date.now().toString(36).slice(-6);
 }
 
 function resolveAgentUrl(env: TaskCtx["env"]): string {
@@ -351,12 +414,38 @@ Start with <!DOCTYPE html>. No markdown fences. Return only HTML.`;
 
   await emit({ type: "cmd", text: "Saving your app...", ts: Date.now() });
 
+  // ── Phase 1 multi-app: derive top-level app_slug + app_icon ────────────────
+  // app_slug becomes the per-app URL discriminator (unique partial index
+  // `(business_id, app_slug) WHERE asset_type='app'`). Slugified from
+  // app_title with collision-handled -2, -3 suffix.
+  //
+  // app_icon was already validated and stored on design.app_icon by the
+  // Design step (resolveAppIcon chain). We just promote it to the top-level
+  // column here so list/by-slug endpoints don't have to dig into asset_data.
+  // Fallback to '🧩' if for any reason design.app_icon is missing —
+  // shouldn't happen post-Phase-1 but cheap insurance against drift.
+  const candidateBase = slugifyTitle(design.app_title);
+  const appSlug = await pickUniqueAppSlug(supabase, business.id, candidateBase);
+  const appIcon =
+    typeof design.app_icon === "string" && design.app_icon.trim().length > 0
+      ? design.app_icon.trim()
+      : "🧩";
+  genAppLog("html_slug_resolved", {
+    business_id: business.id,
+    task_run_id: taskRunId,
+    app_title: design.app_title,
+    candidate_base: candidateBase,
+    resolved_slug: appSlug,
+    app_icon: appIcon,
+  });
+
   // ── Insert final asset row (need its id to substitute placeholders) ────────
   genAppLog("html_asset_insert_start", {
     business_id: business.id,
     task_run_id: taskRunId,
     asset_type: "app",
     html_length: html.length,
+    app_slug: appSlug,
   });
   const { data: assetRow, error: assetErr } = await supabase
     .from("business_assets")
@@ -366,6 +455,8 @@ Start with <!DOCTYPE html>. No markdown fences. Return only HTML.`;
       asset_type: "app",
       asset_subtype: "mini_app",
       asset_url: plannedUrl,
+      app_slug: appSlug,
+      app_icon: appIcon,
       asset_data: {
         html: null,
         app_type: design.app_type,
