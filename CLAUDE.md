@@ -10,6 +10,54 @@ Sprint 2; future product changes go in `../textos-web/ROADMAP.md`).
 
 ---
 
+## ⚠️ Recurring Trap: Test Frontend → Prod Agent
+
+This trap has bitten us multiple times. Before deep-debugging any
+"new agent feature deployed but didn't run" issue, FIRST verify which
+agent the frontend is actually calling.
+
+**Symptoms:**
+- Agent code changes deploy cleanly to test/prod (this repo)
+- Frontend triggers the agent flow successfully (e.g., app generates)
+- The action completes (row inserts, response comes back)
+- But the NEW behavior didn't happen (new columns NULL, new events
+  absent, new fields missing in the response)
+- No errors in agent logs — looks like the new code just didn't run
+
+**Cause:**
+textos-web bakes `PUBLIC_AGENT_URL` at build time from its `.env`
+files. If the wrong build mode is used on the textos-web side, the
+test frontend silently calls **this** prod agent (which lacks the
+new code that lives only on `textos-agent-test`).
+
+This repo's environments and their canonical URLs / `/version`
+`environment` field:
+- `textos-agent-test` (test) → ENVIRONMENT="test" → called by
+  `textos-web-test.pages.dev`
+- `textos-agent-dev` (prod — historical name) → ENVIRONMENT="dev" →
+  called by `app.textos.ai`
+
+A startup assertion in textos-web's `src/layouts/LiveLayout.astro`
+fetches `${PUBLIC_AGENT_URL}/version` once per browser session and
+logs a loud `console.warn` if the agent's `environment` doesn't
+match what the frontend hostname expects.
+
+**Diagnostic (do this FIRST when "code deployed but didn't run"):**
+1. Open the relevant frontend page in browser.
+2. DevTools → Console — look for `[textos] ⚠️ environment mismatch`.
+3. DevTools → Network — trigger the flow. Confirm the request URL
+   contains the **expected** agent host (`textos-agent-test` for
+   test, `textos-agent-dev` for prod), not the other one.
+4. Only after the URL is confirmed correct, dig into agent logs /
+   `task_runs` / `stream_events` for actual behavior bugs.
+
+If you arrive here debugging an agent issue and find the frontend is
+calling the wrong agent: the fix lives in textos-web (`.env.test`,
+`.env.production`, or the build command). See textos-web's CLAUDE.md
+section of the same title.
+
+---
+
 
 ## CRITICAL: POWERSHELL ENCODING FOR ASTRO FILES
 
