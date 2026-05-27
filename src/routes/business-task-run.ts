@@ -497,6 +497,40 @@ app.get("/:slug/task_runs/:id", async (c) => {
   return c.json(row);
 });
 
+// ── GET /:slug/is-owner ────────────────────────────────────────────────
+// Returns { is_owner: boolean } for the authed user against this business
+// slug. Used by the public homepage (/sites/{slug}/) client-side to
+// decide whether to reveal the "Create another app" nudge card without
+// leaking ownership info to non-owners (the public payload of
+// /api/sites/{slug} doesn't expose user_id).
+//
+// Auth: required (Bearer token). 404 if business slug doesn't exist —
+// keeps the "is this real" answer the same as the public site would
+// return, so an enumeration attacker can't tell "slug exists but I'm
+// not the owner" from "slug doesn't exist".
+app.get("/:slug/is-owner", async (c) => {
+  const auth = c.get("auth");
+  const slug = c.req.param("slug");
+  const supabase = createSupabaseClient(c.env);
+
+  const { data: biz, error } = await supabase
+    .from("businesses")
+    .select("user_id")
+    .eq("slug", slug)
+    .eq("is_active", true)
+    .maybeSingle();
+
+  if (error) {
+    log.error("[is-owner] lookup_failed", { slug, err: error.message });
+    return c.json(errBody("internal", "business_lookup_failed"), 500);
+  }
+  if (!biz) {
+    return c.json(errBody("not_found", `business '${slug}' not found`), 404);
+  }
+
+  return c.json({ is_owner: (biz as { user_id: string }).user_id === auth.user_id });
+});
+
 // NOTE (2026-05-25): the previous GET /:slug/app-logs handler that
 // lived here was moved to src/routes/app-logs.ts and remounted at the
 // dedicated prefix /api/app-logs. The /api/businesses prefix has five

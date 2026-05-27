@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { Env } from "../env";
 import { requireAuth } from "../lib/jwt";
-import { createSupabaseClient } from "../services/supabase";
+import { createSupabaseClient, persistStreamEvent } from "../services/supabase";
 import { errBody } from "../lib/errors";
 import { log } from "../lib/logger";
 
@@ -16,6 +16,7 @@ import { log } from "../lib/logger";
 //   GET    /:businessId/app-html       public        fetch the saved HTML (singleton — kept for backward compat; deprecated)
 //   GET    /:businessId/by-slug/:slug  public        fetch a specific app by its slug (Phase 1 multi-app)
 //   GET    /:businessId/list           owner-only    list all apps for a business (Phase 1 multi-app)
+//   DELETE /:businessId/:appId         owner-only    hard delete + cascade (Brief 2)
 //   POST   /:businessId/purchase       public        create Stripe Checkout
 //   POST   /webhook/stripe             public, sig'd handle checkout completed
 //   POST   /:businessId/verify-token   public, hdr   decrement a visitor token
@@ -709,6 +710,233 @@ app.get("/:businessId/by-slug/:slug", async (c) => {
     app_type: (data?.app_type as string) ?? "",
     app_icon: asset.app_icon ?? null,
   });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DELETE /:businessId/:appId — owner-only hard delete of a generated app.
+//
+// The :appId param can be one of two things:
+//   - `kind='asset'`     — a business_assets.id (the row for a successful or
+//                          in-progress generation). Cascade order:
+//                            1. app_configs  WHERE asset_id = :appId
+//                            2. app_bug_log  WHERE asset_id = :appId
+//                            3. business_assets WHERE id = :appId AND business_id
+//                          The unique partial index on (business_id, app_slug)
+//                          WHERE asset_type='app' means a half-deleted state
+//                          isn't catastrophic — the slug becomes reusable as
+//                          soon as the asset row goes.
+//   - `kind='task_run'`  — a task_runs.id for a failed gen-app run that never
+//                          produced an asset row. /list surfaces these in the
+//                          operator UI so the operator can clear them out;
+//                          this branch just deletes the one task_runs row
+//                          (and only if the linked tasks.slug starts with
+//                          'generate-business-app' — defensive against the
+//                          endpoint being used to nuke unrelated task_runs).
+//
+// We try the asset path first; if no row matches, we fall back to the task_run
+// path. If neither matches → 404.
+//
+// Auth: requireAuth + ownership re-verify on `businesses.user_id`. 401 unauthed,
+// 403 owner mismatch, 404 if neither lookup matches, 500 on any DB error
+// (with structured log).
+//
+// Logs an `app_deleted` row to stream_events for both paths, with
+// event_data.kind set to 'asset' or 'task_run' so the difference is
+// queryable later.
+// ─────────────────────────────────────────────────────────────────────────────
+app.delete("/:businessId/:appId", requireAuth, async (c) => {
+  const { user_id } = c.get("auth");
+  const businessId = c.req.param("businessId");
+  const appId = c.req.param("appId");
+  const sb = createSupabaseClient(c.env);
+
+  // Ownership check
+  const { data: biz, error: bizErr } = await sb
+    .from("businesses")
+    .select("id, user_id")
+    .eq("id", businessId)
+    .eq("is_active", true)
+    .maybeSingle();
+  if (bizErr) {
+    log.error("generated_apps.delete.business_lookup_failed", {
+      businessId,
+      err: bizErr.message,
+    });
+    return c.json(errBody("internal", "business_lookup_failed"), 500);
+  }
+  if (!biz) {
+    return c.json(errBody("not_found", "business not found"), 404);
+  }
+  if ((biz as { user_id: string }).user_id !== user_id) {
+    log.warn("generated_apps.delete.forbidden", {
+      businessId,
+      appId,
+      attempting_user_id: user_id,
+    });
+    return c.json(errBody("forbidden", "not owner"), 403);
+  }
+
+  // ── 1) Try the asset path first ─────────────────────────────────────
+  const { data: asset, error: assetErr } = await sb
+    .from("business_assets")
+    .select("id, app_slug")
+    .eq("id", appId)
+    .eq("business_id", businessId)
+    .eq("asset_type", "app")
+    .maybeSingle();
+  if (assetErr) {
+    log.error("generated_apps.delete.asset_lookup_failed", {
+      businessId,
+      appId,
+      err: assetErr.message,
+    });
+    return c.json(errBody("internal", "asset_lookup_failed"), 500);
+  }
+
+  if (asset) {
+    // Cascade. Each step logs but continues — if step N fails we still
+    // report 500 at the end. The asset row delete is the critical one;
+    // if 1 or 2 fails but 3 succeeds, the orphaned rows are eventually-
+    // consistent garbage that an admin sweep can clean up.
+    const errors: string[] = [];
+
+    const { error: cfgErr } = await sb
+      .from("app_configs")
+      .delete()
+      .eq("asset_id", appId);
+    if (cfgErr) {
+      errors.push(`app_configs: ${cfgErr.message}`);
+      log.error("generated_apps.delete.app_configs_failed", {
+        appId,
+        err: cfgErr.message,
+      });
+    }
+
+    const { error: bugErr } = await sb
+      .from("app_bug_log")
+      .delete()
+      .eq("asset_id", appId);
+    if (bugErr) {
+      errors.push(`app_bug_log: ${bugErr.message}`);
+      log.error("generated_apps.delete.app_bug_log_failed", {
+        appId,
+        err: bugErr.message,
+      });
+    }
+
+    const { error: assetDelErr } = await sb
+      .from("business_assets")
+      .delete()
+      .eq("id", appId)
+      .eq("business_id", businessId);
+    if (assetDelErr) {
+      errors.push(`business_assets: ${assetDelErr.message}`);
+      log.error("generated_apps.delete.business_assets_failed", {
+        appId,
+        businessId,
+        err: assetDelErr.message,
+      });
+      return c.json(
+        errBody("internal", `delete_failed: ${assetDelErr.message}`),
+        500,
+      );
+    }
+
+    await persistStreamEvent(
+      sb,
+      appId,
+      businessId,
+      1,
+      "app_deleted",
+      {
+        kind: "asset",
+        asset_id: appId,
+        app_slug: (asset as { app_slug: string | null }).app_slug,
+        deleted_by_user_id: user_id,
+        deleted_at: new Date().toISOString(),
+        cascade_errors: errors.length > 0 ? errors : undefined,
+      },
+    );
+
+    log.info("generated_apps.delete.complete", {
+      businessId,
+      appId,
+      kind: "asset",
+      cascade_errors: errors.length,
+    });
+
+    return c.json({ deleted: true, kind: "asset" });
+  }
+
+  // ── 2) Fallback: try the task_run path ──────────────────────────────
+  // Failed gen-app runs have no asset row (that's how they surface in
+  // /list as `status='failed'`). The id from the UI is the task_run_id.
+  // Guard the lookup so this endpoint can't be used to delete unrelated
+  // task_runs — we require an inner join against tasks with a slug that
+  // starts with 'generate-business-app'.
+  const { data: tr, error: trErr } = await sb
+    .from("task_runs")
+    .select("id, status, tasks!inner(slug)")
+    .eq("id", appId)
+    .eq("business_id", businessId)
+    .like("tasks.slug", "generate-business-app%")
+    .maybeSingle();
+  if (trErr) {
+    log.error("generated_apps.delete.task_run_lookup_failed", {
+      businessId,
+      appId,
+      err: trErr.message,
+    });
+    return c.json(errBody("internal", "task_run_lookup_failed"), 500);
+  }
+  if (!tr) {
+    return c.json(errBody("not_found", "no app or run matches this id"), 404);
+  }
+
+  type FoundTaskRun = { id: string; status: string; tasks: { slug: string } };
+  const trRow = tr as unknown as FoundTaskRun;
+
+  const { error: trDelErr } = await sb
+    .from("task_runs")
+    .delete()
+    .eq("id", appId)
+    .eq("business_id", businessId);
+  if (trDelErr) {
+    log.error("generated_apps.delete.task_run_delete_failed", {
+      appId,
+      businessId,
+      err: trDelErr.message,
+    });
+    return c.json(
+      errBody("internal", `delete_failed: ${trDelErr.message}`),
+      500,
+    );
+  }
+
+  await persistStreamEvent(
+    sb,
+    appId,
+    businessId,
+    1,
+    "app_deleted",
+    {
+      kind: "task_run",
+      task_run_id: appId,
+      task_slug: trRow.tasks.slug,
+      previous_status: trRow.status,
+      deleted_by_user_id: user_id,
+      deleted_at: new Date().toISOString(),
+    },
+  );
+
+  log.info("generated_apps.delete.complete", {
+    businessId,
+    appId,
+    kind: "task_run",
+    task_slug: trRow.tasks.slug,
+  });
+
+  return c.json({ deleted: true, kind: "task_run" });
 });
 
 export default app;

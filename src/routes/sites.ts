@@ -56,6 +56,45 @@ app.get("/:slug", async (c) => {
 
   const ctx = ctxRaw as Record<string, unknown> | null;
 
+  // ── Phase 1 multi-app: list of generated apps for this business ────────
+  // Public — same auth posture as the rest of this endpoint. Source:
+  // business_assets WHERE asset_type='app' AND is_current=true. Newest
+  // first. app_slug and app_icon come from the top-level columns added
+  // in the Phase 1 migration; app_title/tagline/type live in asset_data
+  // (where the HTML step also stores them on insert).
+  const { data: appRowsRaw, error: appsErr } = await supabase
+    .from("business_assets")
+    .select("id, app_slug, app_icon, asset_data, created_at")
+    .eq("business_id", business.id)
+    .eq("asset_type", "app")
+    .eq("is_current", true)
+    .order("created_at", { ascending: false });
+  if (appsErr) {
+    log.warn("site_apps_lookup_failed", { slug, err: appsErr.message });
+    // Non-fatal — render the site with an empty apps list rather than 500.
+  }
+  type AppRow = {
+    id: string;
+    app_slug: string | null;
+    app_icon: string | null;
+    asset_data: Record<string, unknown> | null;
+    created_at: string;
+  };
+  const apps = ((appRowsRaw ?? []) as AppRow[])
+    // Drop legacy rows that pre-date the slug migration — they'd render
+    // without a routable URL. New rows always have app_slug; this is a
+    // safety filter, not a frequent path.
+    .filter((r) => typeof r.app_slug === "string" && r.app_slug.length > 0)
+    .map((r) => ({
+      id: r.id,
+      app_slug: r.app_slug as string,
+      app_title: (r.asset_data?.app_title as string) ?? "",
+      app_tagline: (r.asset_data?.app_tagline as string) ?? "",
+      app_icon: r.app_icon,
+      app_type: (r.asset_data?.app_type as string) ?? "",
+      created_at: r.created_at,
+    }));
+
   c.header("Cache-Control", "public, max-age=300");
   return c.json({
     // id is read by app.astro (`/sites/{slug}/app`) and the embedded
@@ -118,6 +157,9 @@ app.get("/:slug", async (c) => {
     positioning_statement:    ctx?.positioning_statement ?? null,
     key_differentiators:      ctx?.key_differentiators  ?? [],
     agent_name:               ctx?.agent_name           ?? null,
+    // Phase 1 multi-app: list of generated apps for this business.
+    // Empty array when the biz has none or the lookup failed.
+    apps,
   });
 });
 
