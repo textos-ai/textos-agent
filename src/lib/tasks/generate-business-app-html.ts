@@ -241,6 +241,7 @@ REQUIREMENTS:
 - Brand accent color: ${design.accent_color}.
 - Show all questions in the spec. On submit, show the FULL result — use paid_tier_reveals from the spec as the result body. Do NOT split into free vs paid. Do NOT render any paywall overlay. Do NOT render any "Unlock", "Purchase", or "Upgrade" button. Every visitor gets the full result.
 - result_logic from the spec governs how to compute / present the result. Render the full result inline below the questions on submit.
+- Add class="txapp-result" to whatever container you use for the result screen — this enables a Download-as-PDF button to be added automatically.
 - window.TXAPP global object MUST be included verbatim (kept as a no-op stub for future re-introduction of paywall; do NOT call its methods from the UI):
     window.TXAPP = {
       businessId: '{{BUSINESS_ID}}',
@@ -486,11 +487,143 @@ Start with <!DOCTYPE html>. No markdown fences. Return only HTML.`;
     asset_id: assetId,
   });
 
-  // Substitute placeholders now that we know all three values.
-  const finalHtml = html
+  // Substitute placeholders now that we know all values. {{BUSINESS_NAME}}
+  // and {{BUSINESS_URL}} feed the PDF footer injected below. URL points at
+  // the public site for this business so a downloaded PDF carries a route
+  // back to the source.
+  const businessName = String(business.name ?? "").replace(/</g, "&lt;");
+  const businessUrl = `${frontendUrl}/sites/${business.slug}/`;
+  const substituted = html
     .replace(/\{\{BUSINESS_ID\}\}/g, business.id)
     .replace(/\{\{ASSET_ID\}\}/g, assetId)
-    .replace(/\{\{API_BASE\}\}/g, agentUrl);
+    .replace(/\{\{API_BASE\}\}/g, agentUrl)
+    .replace(/\{\{BUSINESS_NAME\}\}/g, businessName)
+    .replace(/\{\{BUSINESS_URL\}\}/g, businessUrl);
+
+  // ── PDF download injection ───────────────────────────────────────────────
+  // Runs AFTER sanitizeGeneratedHtml (which executed earlier at ~line 385).
+  // The injected <script> contains no patterns the sanitizer would strip
+  // (no fetch/external URLs, no localStorage outside tx_vt_*, no cookies,
+  // no XHR, no window.parent), but if you ever tighten the sanitizer rules
+  // make sure to either re-run sanitize after injection OR confirm the
+  // new rules don't false-positive on this block. Selector contract: the
+  // LLM is required to emit a <div class="txapp-result" hidden>…</div>
+  // wrapper around the result content (see system prompt above).
+  const accent = (design.accent_color && /^#[0-9a-fA-F]{3,8}$/.test(design.accent_color))
+    ? design.accent_color
+    : "#f59e0b";
+  const pdfBlock = `
+<style>
+  /* padding-top reserves clear space for the absolute-positioned PDF
+     button so it never overlaps the result's first heading. */
+  .txapp-result { position: relative; padding-top: 52px; }
+  .txapp-pdf-btn {
+    position: absolute; top: 12px; right: 12px;
+    background: ${accent}; color: #fff; border: none;
+    padding: 7px 12px; border-radius: 6px;
+    font-family: inherit; font-size: 12px; font-weight: 600;
+    letter-spacing: 0.04em; cursor: pointer; z-index: 50;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.12);
+  }
+  .txapp-pdf-btn:hover { opacity: 0.9; }
+  .txapp-pdf-footer { display: none; }
+  @media print {
+    /* Visibility-isolation pattern: hide everything, then unhide the
+       result wrapper and its descendants. Works regardless of how deep
+       the LLM nested the wrapper (body > main > .container > .result,
+       etc.). Absolute-positioning the wrapper collapses the empty
+       space the hidden elements still occupy. */
+    body * { visibility: hidden !important; }
+    .txapp-result, .txapp-result * { visibility: visible !important; }
+    .txapp-result {
+      position: absolute !important; top: 0; left: 0; right: 0;
+      padding: 0 !important; background: #fff !important;
+    }
+    .txapp-result, .txapp-result * {
+      color: #000 !important; background: transparent !important;
+      box-shadow: none !important; text-shadow: none !important;
+    }
+    .txapp-result h1, .txapp-result h2, .txapp-result h3 { color: ${accent} !important; }
+    .txapp-pdf-btn { display: none !important; }
+    .txapp-pdf-footer {
+      display: block !important; margin-top: 24px; padding-top: 12px;
+      border-top: 1px solid #ccc; font-size: 11px; color: #555 !important;
+    }
+    @page { margin: 0.75in; }
+  }
+</style>
+<script>
+  (function () {
+    // Result-wrapper detection. The prompt nudges the LLM toward
+    // class="txapp-result", but compliance is imperfect — older apps and
+    // some new ones use id="result" / class="result" / "outcome" / etc.
+    // Strategy:
+    //   1. Prefer the canonical .txapp-result if present.
+    //   2. Fall back to any element whose id OR class contains
+    //      "result" or "outcome" (case-insensitive).
+    //   3. Restrict to block containers (div / section / article / main).
+    //   4. Drop candidates contained by another candidate (outermost wins).
+    //   5. Among ties, pick the largest by textContent length — that's
+    //      the actual result-screen wrapper, not the inner score span.
+    //   6. Skip injection if nothing plausible was found.
+    function findResultWrapper() {
+      var canonical = document.querySelector('.txapp-result');
+      if (canonical) return canonical;
+      var raw = Array.prototype.slice.call(document.querySelectorAll(
+        '[id*="result" i], [class*="result" i], [id*="outcome" i], [class*="outcome" i]'
+      ));
+      if (raw.length === 0) return null;
+      var wrappers = raw.filter(function (el) {
+        var t = (el.tagName || '').toLowerCase();
+        return t === 'div' || t === 'section' || t === 'article' || t === 'main';
+      });
+      if (wrappers.length === 0) wrappers = raw;
+      var outer = wrappers.filter(function (el) {
+        return !wrappers.some(function (o) { return o !== el && o.contains(el); });
+      });
+      if (outer.length === 0) outer = wrappers;
+      outer.sort(function (a, b) {
+        return (b.textContent || '').length - (a.textContent || '').length;
+      });
+      return outer[0] || null;
+    }
+
+    function attach() {
+      var r = findResultWrapper();
+      if (!r) {
+        console.log('[txapp-pdf] no result wrapper found — PDF button skipped');
+        return;
+      }
+      if (r.dataset.txPdfWired === '1') return;
+      r.dataset.txPdfWired = '1';
+      // Tag the wrapper so the @media print stylesheet (which targets
+      // .txapp-result) picks it up even when the LLM used a different name.
+      if (!r.classList.contains('txapp-result')) r.classList.add('txapp-result');
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'txapp-pdf-btn';
+      btn.textContent = 'Download as PDF';
+      btn.addEventListener('click', function () { window.print(); });
+      r.appendChild(btn);
+      var foot = document.createElement('div');
+      foot.className = 'txapp-pdf-footer';
+      foot.textContent = 'Generated by ${businessName.replace(/'/g, "\\'")} — ${businessUrl}';
+      r.appendChild(foot);
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', attach);
+    } else {
+      attach();
+    }
+  })();
+</script>
+`;
+  // Inject before </body>. Case-insensitive match; falls back to appending
+  // if the LLM somehow omitted </body> (defensive — the prompt requires a
+  // complete document).
+  const finalHtml = /<\/body\s*>/i.test(substituted)
+    ? substituted.replace(/<\/body\s*>/i, pdfBlock + "</body>")
+    : substituted + pdfBlock;
 
   genAppLog("html_asset_update_start", {
     business_id: business.id,

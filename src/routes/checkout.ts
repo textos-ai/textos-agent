@@ -6,6 +6,7 @@ import { createSupabaseClient } from "../services/supabase";
 import { errBody } from "../lib/errors";
 import { log, persistError } from "../lib/logger";
 import { stripeCustomerIdColumn } from "../lib/stripe-mode";
+import { validateReturnTo } from "../lib/validate-return-to";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -26,13 +27,26 @@ function topupCancelUrl(env: Env, slug: string): string {
   const base = env.FRONTEND_URL ?? DEFAULT_FRONTEND_URL;
   return `${base}/business/${slug}/builder?topup=canceled`;
 }
-function subSuccessUrl(env: Env, slug: string): string {
-  const base = env.FRONTEND_URL ?? DEFAULT_FRONTEND_URL;
-  return `${base}/business/${slug}/live?stripe_success=1`;
+// returnPath is a pre-validated path starting with "/" (no host). If null,
+// the default per-business `/live` page is used. The Stripe flag is appended
+// using the existing query separator so callers can pass paths that already
+// contain a query string.
+function appendStripeFlag(path: string, flag: "stripe_success=1" | "stripe_cancel=1"): string {
+  const hashIdx = path.indexOf("#");
+  const before = hashIdx >= 0 ? path.slice(0, hashIdx) : path;
+  const hash   = hashIdx >= 0 ? path.slice(hashIdx)   : "";
+  const sep    = before.includes("?") ? "&" : "?";
+  return `${before}${sep}${flag}${hash}`;
 }
-function subCancelUrl(env: Env, slug: string): string {
+function subSuccessUrl(env: Env, slug: string, returnPath: string | null): string {
   const base = env.FRONTEND_URL ?? DEFAULT_FRONTEND_URL;
-  return `${base}/business/${slug}/live?stripe_cancel=1`;
+  const path = returnPath ?? `/business/${slug}/live`;
+  return `${base}${appendStripeFlag(path, "stripe_success=1")}`;
+}
+function subCancelUrl(env: Env, slug: string, returnPath: string | null): string {
+  const base = env.FRONTEND_URL ?? DEFAULT_FRONTEND_URL;
+  const path = returnPath ?? `/business/${slug}/live`;
+  return `${base}${appendStripeFlag(path, "stripe_cancel=1")}`;
 }
 
 // ── Stripe helper ─────────────────────────────────────────────────────────────
@@ -92,6 +106,7 @@ async function getOrCreateStripeCustomer(
 
 const SubscriptionBody = z.object({
   business_id: z.string().uuid(),
+  return_to: z.string().optional(),
 });
 
 app.post("/subscription", async (c) => {
@@ -108,6 +123,7 @@ app.post("/subscription", async (c) => {
     return c.json(errBody("bad_request", "invalid body", String(err)), 400);
   }
   const { business_id } = parsed;
+  const returnPath = validateReturnTo(parsed.return_to);
 
   const supabase = createSupabaseClient(c.env);
 
@@ -184,8 +200,8 @@ app.post("/subscription", async (c) => {
       "metadata[textos_user_id]": user_id,
       "metadata[business_id]": business_id,
       "customer_update[address]": "auto",
-      success_url: subSuccessUrl(c.env, business.slug as string),
-      cancel_url: subCancelUrl(c.env, business.slug as string),
+      success_url: subSuccessUrl(c.env, business.slug as string, returnPath),
+      cancel_url: subCancelUrl(c.env, business.slug as string, returnPath),
     },
     c.env.STRIPE_SECRET_KEY,
   );
@@ -202,7 +218,12 @@ app.post("/subscription", async (c) => {
   }
 
   const session = (await sessionRes.json()) as { url: string };
-  log.info("[checkout] subscription_session_created", { user_id, business_id });
+  log.info("[checkout] subscription_session_created", {
+    user_id,
+    business_id,
+    return_to_raw: parsed.return_to ?? null,
+    return_to_used: returnPath ?? `/business/${business.slug}/live`,
+  });
   return c.json({ url: session.url });
 });
 

@@ -21,6 +21,7 @@ import { errBody } from "../lib/errors";
 import { log, persistError } from "../lib/logger";
 import { stripeCustomerIdColumn } from "../lib/stripe-mode";
 import { loadUserProfile } from "../lib/user-profile";
+import { validateReturnToOrRoot } from "../lib/validate-return-to";
 
 const app = new Hono<{ Bindings: Env }>();
 app.use("*", requireAuth);
@@ -29,26 +30,6 @@ app.use("*", requireAuth);
 
 function frontendUrl(env: Env): string {
   return env.FRONTEND_URL ?? "https://app.textos.ai";
-}
-
-/**
- * Sanitize a frontend-supplied `return_to` so the Stripe Portal can't be used
- * as an open redirect. Returns the validated path (always starts with "/") or
- * "/" if anything looks off.
- *
- * Rules:
- *  - must be a string
- *  - must start with a single "/" (rejects protocol-relative "//evil.com")
- *  - reject backslashes / angle brackets (defensive against weird XSS framing)
- *  - cap at 500 chars
- */
-function validateReturnTo(raw: string | undefined | null): string {
-  if (!raw || typeof raw !== "string") return "/";
-  if (raw.length > 500) return "/";
-  if (!raw.startsWith("/")) return "/";
-  if (raw.startsWith("//")) return "/";
-  if (/[\\<>]/.test(raw)) return "/";
-  return raw;
 }
 
 /**
@@ -168,7 +149,7 @@ app.get("/me/portal", async (c) => {
 
   // Caller passes ?return_to=/some/path so Stripe Portal returns to the
   // surface they invoked it from. Validated to prevent open-redirect abuse.
-  const returnPath = withPortalReturnFlag(validateReturnTo(c.req.query("return_to")));
+  const returnPath = withPortalReturnFlag(validateReturnToOrRoot(c.req.query("return_to")));
   const returnUrl = `${frontendUrl(c.env)}${returnPath}`;
   const res = await fetch("https://api.stripe.com/v1/billing_portal/sessions", {
     method: "POST",
