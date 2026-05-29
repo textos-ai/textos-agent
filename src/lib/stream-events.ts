@@ -88,6 +88,107 @@ export interface StreamErrorEvent {
   ts?: number;
 }
 
+// ── V2 App Generation Events ──────────────────────────────────────────────────
+
+/** V2 app generation started */
+export interface V2AppStartedEvent {
+  type: "v2_app_started";
+  seq: number;
+  data: {
+    archetype_id: string;
+    description: string;
+    task_run_id: string;
+  };
+}
+
+/** V2 archetype loaded */
+export interface V2ArchetypeLoadedEvent {
+  type: "v2_archetype_loaded";
+  seq: number;
+  data: {
+    archetype_name: string;
+    business_name: string;
+    task_run_id: string;
+  };
+}
+
+/** V2 LLM call started */
+export interface V2LlmCallStartedEvent {
+  type: "v2_llm_call_started";
+  seq: number;
+  data: {
+    model: string;
+    tier: string;
+    task_run_id: string;
+  };
+}
+
+/** V2 LLM call completed */
+export interface V2LlmCallCompletedEvent {
+  type: "v2_llm_call_completed";
+  seq: number;
+  data: {
+    input_tokens: number;
+    output_tokens: number;
+    task_run_id: string;
+  };
+}
+
+/** V2 content validated */
+export interface V2ContentValidatedEvent {
+  type: "v2_content_validated";
+  seq: number;
+  data: {
+    archetype_id: string;
+    task_run_id: string;
+  };
+}
+
+/** V2 assembly completed */
+export interface V2AssemblyCompletedEvent {
+  type: "v2_assembly_completed";
+  seq: number;
+  data: {
+    html_bytes: number;
+    manifest_summary: {
+      component_count: number;
+      validation_warnings: number;
+    };
+    task_run_id: string;
+  };
+}
+
+/** V2 asset stored */
+export interface V2AssetStoredEvent {
+  type: "v2_asset_stored";
+  seq: number;
+  data: {
+    asset_id: string;
+    app_slug: string;
+    task_run_id: string;
+  };
+}
+
+/** V2 app completed */
+export interface V2AppCompletedEvent {
+  type: "v2_app_completed";
+  seq: number;
+  data: {
+    asset_url: string;
+    task_run_id: string;
+  };
+}
+
+/** V2 app failed */
+export interface V2AppFailedEvent {
+  type: "v2_app_failed";
+  seq: number;
+  data: {
+    failure_reason: string;
+    task_run_id: string;
+  };
+}
+
 export type StreamEvent =
   | NarrativeEvent
   | CmdEvent
@@ -96,7 +197,16 @@ export type StreamEvent =
   | TaskFailedEvent
   | BuildCompleteEvent
   | StatusEvent
-  | StreamErrorEvent;
+  | StreamErrorEvent
+  | V2AppStartedEvent
+  | V2ArchetypeLoadedEvent
+  | V2LlmCallStartedEvent
+  | V2LlmCallCompletedEvent
+  | V2ContentValidatedEvent
+  | V2AssemblyCompletedEvent
+  | V2AssetStoredEvent
+  | V2AppCompletedEvent
+  | V2AppFailedEvent;
 
 // ── Helper: serialise for SSE ──────────────────────────────────────────────
 

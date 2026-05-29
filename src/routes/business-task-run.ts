@@ -14,6 +14,7 @@
 import { Hono } from "hono";
 import Anthropic from "@anthropic-ai/sdk";
 import type { Env } from "../env";
+import { createAnthropicClient } from "../services/anthropic";
 import { requireAuth } from "../lib/jwt";
 import { log } from "../lib/logger";
 import { errBody } from "../lib/errors";
@@ -97,16 +98,21 @@ app.post("/:slug/tasks/:taskSlug/run", async (c) => {
   // 3. Runnability checks — fail fast with structured 400/403/409/402
 
   if (task.kind === "configured") {
-    return c.json(
-      {
-        error: "task_is_configured",
-        message:
-          "This task is configured via its dedicated page. Navigate to config_page_path.",
-        config_page_path:
-          task.config_page_path?.replace("{slug}", business.slug) ?? null,
-      },
-      400,
-    );
+    // Allow configured tasks that have dedicated handlers (e.g. generate-business-app-v2)
+    // and no config_page_path to run directly
+    const hasDedicatedHandler = task.slug in FREE_BUILD_TASK_HANDLERS;
+    if (!hasDedicatedHandler || task.config_page_path) {
+      return c.json(
+        {
+          error: "task_is_configured",
+          message:
+            "This task is configured via its dedicated page. Navigate to config_page_path.",
+          config_page_path:
+            task.config_page_path?.replace("{slug}", business.slug) ?? null,
+        },
+        400,
+      );
+    }
   }
 
   if (task.kind === "system") {
@@ -653,7 +659,7 @@ export async function runTaskInBackground(
       throw new Error("user_not_found");
     }
 
-    const anthropic = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+    const anthropic = createAnthropicClient(env);
 
     // runId is free-build-orchestrator-specific. Generic runs reuse the
     // task_run_id here — the runner doesn't read it, but TaskCtx requires

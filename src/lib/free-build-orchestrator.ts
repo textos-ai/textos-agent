@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import Anthropic from "@anthropic-ai/sdk";
 import type { Env } from "../env";
+import { createAnthropicClient } from "../services/anthropic";
 import type { StreamEvent } from "./stream-events";
 import type { BusinessRow, BusinessContextRow, UserRow } from "../services/supabase";
 import {
@@ -38,6 +39,7 @@ import { runColdEmailOutreach } from "./tasks/cold-email-outreach";
 import { runFindAUniqueBusinessName } from "./tasks/find-a-unique-business-name";
 import { runGenerateBusinessAppDesign } from "./tasks/generate-business-app-design";
 import { runGenerateBusinessAppHtml } from "./tasks/generate-business-app-html";
+import { runGenerateBusinessAppV2 } from "./tasks/generate-business-app-v2";
 
 // Slug → TaskFn dispatch map. Acceptable code constant per CLAUDE.md:
 // it maps slug → handler function, which is execution logic, not DB data.
@@ -64,6 +66,8 @@ export const FREE_BUILD_TASK_HANDLERS: Record<string, TaskFn> = {
   // runs in its own Worker invocation with Call 2 + finalize.
   "generate-business-app":          runGenerateBusinessAppDesign,
   "generate-business-app-html":     runGenerateBusinessAppHtml,
+  // V2: archetype-driven single-step pipeline
+  "generate-business-app-v2":       runGenerateBusinessAppV2,
 };
 
 /**
@@ -83,7 +87,7 @@ export async function runFreeBuild(
   sseEmit: (evt: StreamEvent) => Promise<void>,
   cfLocation?: { lat: number; lng: number } | null,
 ): Promise<void> {
-  const anthropic = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+  const anthropic = createAnthropicClient(env);
 
   // ── Load the free-build pipeline from the DB ──────────────────────
   // Single source of truth: tasks WHERE is_default=true AND status=active.

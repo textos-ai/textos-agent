@@ -3,7 +3,10 @@ import type { Env } from "../env";
 import { MODEL_IDS, type ModelTier } from "../agent/model-router";
 
 export function createAnthropicClient(env: Env): Anthropic {
-  return new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+  return new Anthropic({
+    apiKey: env.ANTHROPIC_API_KEY,
+    timeout: 90_000,  // 90 seconds per call
+  });
 }
 
 /**

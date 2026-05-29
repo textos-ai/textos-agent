@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import Anthropic from "@anthropic-ai/sdk";
 import type { Env } from "../env";
+import { createAnthropicClient } from "../services/anthropic";
 import { errBody } from "../lib/errors";
 import { log } from "../lib/logger";
 import { runAnonymousResearch, ContentRejectedError, type AnonymousInput } from "../lib/anonymous-research";
@@ -115,7 +116,7 @@ app.post("/snapshot", async (c) => {
     // Non-fatal — generation proceeds regardless
   }
 
-  const anthropic = new Anthropic({ apiKey: c.env.ANTHROPIC_API_KEY });
+  const anthropic = createAnthropicClient(c.env);
   const genStart = Date.now();
   let snapshot;
 

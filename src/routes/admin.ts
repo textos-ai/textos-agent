@@ -7,6 +7,7 @@ import { createSupabaseClient } from "../services/supabase";
 import { errBody } from "../lib/errors";
 import { log } from "../lib/logger";
 import Anthropic from "@anthropic-ai/sdk";
+import { createAnthropicClient } from "../services/anthropic";
 import { pickVisualChoices, fetchUnsplashPhoto } from "../lib/pick-visual-choices";
 
 const admin = new Hono<{ Bindings: Env }>();
@@ -181,7 +182,7 @@ admin.post("/email-queue/:id/edit", async (c) => {
 // If slug is omitted, processes all businesses missing accent_color.
 admin.post("/backfill-public-site", async (c) => {
   const supabase = createSupabaseClient(c.env);
-  const anthropic = new Anthropic({ apiKey: c.env.ANTHROPIC_API_KEY });
+  const anthropic = createAnthropicClient(c.env);
 
   const force = c.req.query("force") === "true";
 
