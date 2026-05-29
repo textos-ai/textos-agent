@@ -35,10 +35,19 @@ describe('assembleApp — end-to-end smoke', () => {
     expect(out.manifest.html_bytes).toBe(out.html.length);
   });
 
-  it('strategy: contains hero title, wizard markup, paywall modal, result wrapper', () => {
+  it('strategy: contains hero title, Homer wizard markup, paywall modal, result wrapper', () => {
     const out = assembleApp(baseInput('strategy', STRATEGY_CONTENT));
     expect(out.html).toContain(STRATEGY_CONTENT.hero.title);
-    expect(out.html).toContain('tx-wizard-step');
+    // Multi-step inputs now compose the Homer c_wizard catalog component
+    // (not the old hand-rolled .tx-wizard-step markup).
+    expect(out.html).toContain('data-wizard');          // Homer wizard wrapper
+    expect(out.html).toContain('wizard-tabs');          // Homer nav tabs
+    expect(out.html).toContain('data-wizard-content');  // Homer tab-pane container
+    expect(out.html).toContain('btn-check');            // radio-cards (Homer button-radio)
+    expect(out.html).not.toContain('tx-wizard-step');   // old hand-rolled markup gone
+    // 'wizard' is recorded so form-wizard.js is auto-loaded.
+    expect(out.manifest.rendered_components).toContain('wizard');
+    expect(out.html).toContain('/homer/js/pages/form-wizard.js');
     expect(out.html).toContain('tx-phase-paywall');
     expect(out.html).toContain('txapp-result');
     // CTA url placeholder should be substituted.
