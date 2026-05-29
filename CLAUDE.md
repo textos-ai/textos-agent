@@ -58,6 +58,39 @@ captures full request/response JSON at runtime; `prompt-schema.md` defines the e
 
 ---
 
+## Apps Platform Component Catalog — Homer (MANDATORY REVIEW)
+
+The authoritative component catalog for all generated apps is:
+
+  C:\code\textos-web\.homer-reference\catalog-recon-report.md
+
+This file and any companion files in
+C:\code\textos-web\.homer-reference\ document the Homer
+components — controls, classes, asset paths, markup patterns —
+that the apps platform MUST assemble from when generating any
+asset_type='app' artifact (including all v2 archetypes:
+strategy, assessment, calculator, and any future archetype).
+
+Rules:
+1. Before any work on textos-agent/src/lib/component-catalog/*,
+   textos-agent/src/lib/apps-platform/assembler/*, or any
+   handler that emits app HTML (generate-business-app-v2.ts,
+   future archetypes), Claude Code MUST first read
+   catalog-recon-report.md.
+2. NEVER hand-write template HTML, Mustache, or CSS for app
+   components. Every visual element of a generated app — hero,
+   radio cards, text inputs, buttons, sections, ctas — MUST
+   come from the Homer catalog.
+3. If a component-catalog file in textos-agent does not
+   currently use Homer per the report, that file is wrong. The
+   fix is to rewrite it to assemble Homer components — NOT to
+   improve the hand-written template.
+4. If the catalog-recon-report.md is missing a component the
+   apps platform needs, STOP and surface that gap to Rob. Do
+   NOT invent a replacement.
+
+---
+
 ## ⚠️ Recurring Trap: Test Frontend → Prod Agent
 
 This trap has bitten us multiple times. Before deep-debugging any
