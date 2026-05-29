@@ -165,9 +165,13 @@ function emitOrchestrationScript(archetype: Archetype): string {
   });
 
   // Paywall submit (email form) reveals the result.
+  // Bug 3: the paywall CTA renders as <button type="submit"> with no wrapping
+  // <form>, so the old type==='button'-only check never wired it and the
+  // result never revealed. Handle type==='submit' too (preventDefault so a
+  // bare submit button outside a form doesn't attempt navigation).
   document.querySelectorAll('.tx-phase-paywall form, .tx-phase-paywall button').forEach(function (el) {
-    if (el.tagName === 'BUTTON' && el.type === 'button') {
-      el.addEventListener('click', function () { unlock(); });
+    if (el.tagName === 'BUTTON' && (el.type === 'button' || el.type === 'submit')) {
+      el.addEventListener('click', function (e) { e.preventDefault(); unlock(); });
     } else if (el.tagName === 'FORM') {
       el.addEventListener('submit', function (e) { e.preventDefault(); unlock(); });
     }

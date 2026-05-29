@@ -70,7 +70,6 @@ export function renderPhase(ctx: PhaseRenderContext): string {
     const heroComp = phase.components.find((pc) => pc.component_id === 'section-hero');
     const wizardComp = phase.components.find((pc) => pc.component_id === 'wizard');
     const progressComp = phase.components.find((pc) => pc.component_id === 'progress-bar');
-    const submitComp = phase.components.find((pc) => pc.component_id === 'submit-button');
     if (!wizardComp) return '';
 
     const stepComponents = phase.components.filter((pc) => typeof pc.step === 'number');
@@ -97,11 +96,21 @@ export function renderPhase(ctx: PhaseRenderContext): string {
         .map((pc) => renderOne(pc, ctx))
         .filter(Boolean)
         .join('\n');
+      // Bug 3: the final step's terminal action is hardcoded here (mirroring
+      // the hardcoded "Next →" for non-final steps) rather than rendered from
+      // the submit-button catalog component. The catalog template's
+      // `{{label|Submit}}` default syntax isn't valid Mustache and the recipe
+      // bound `label:'submit_label'` (a field the v2 transform never emits),
+      // so renderOne() produced an empty `<button type="submit">`. It was also
+      // type="submit", which the inputs orchestration (document-wrapper) does
+      // not wire. A hardcoded type="button" with a real label is picked up by
+      // the existing inputs→paywall handler.
+      const isLastStep = step === stepKeys[stepKeys.length - 1];
       sections.push(
         `<div class="tx-wizard-step" data-step="${step}"${step !== stepKeys[0] ? ' hidden' : ''}>` +
           stepInner +
-          (step === stepKeys[stepKeys.length - 1] && submitComp
-            ? '\n' + renderOne(submitComp, ctx)
+          (isLastStep
+            ? '\n<button type="button" class="btn btn-primary tx-wizard-submit">See My Results →</button>'
             : '\n<button type="button" class="btn btn-primary tx-wizard-next" data-step-action="next">Next →</button>') +
           (step !== stepKeys[0]
             ? '\n<button type="button" class="btn btn-link tx-wizard-prev" data-step-action="prev">← Back</button>'

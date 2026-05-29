@@ -261,10 +261,14 @@ Respond with ONLY valid JSON matching the required shape.`;
           type: q.type === 'single_choice' ? 'radio_cards' : 'text',
           required: true,
           ...(q.options && q.type === 'single_choice' ? {
+            // Bug 2: do NOT synthesize a `desc` — the LLM's option label is
+            // the only content. `desc` is optional in StrategyOptionSchema and
+            // the radio-cards template guards on {{#desc}}, so omitting it
+            // renders just the label (no "Choose X for your strategy" echo).
+            // Per docs/backlog-v2-architectural-debt.md: no invented content.
             options: q.options.map((opt: string, optIndex: number) => ({
               value: `option_${optIndex + 1}`,
-              title: opt,
-              desc: `Choose ${opt} for your strategy`
+              title: opt
             }))
           } : {})
         })),
@@ -382,10 +386,21 @@ Respond with ONLY valid JSON matching the required shape.`;
     });
 
     // 11. Store in business_assets
+    // Bug 4: persist app_title / app_tagline / app_type at the top level of
+    // asset_data — that's where the renderers read them (generated-apps /list
+    // reads asset_data.app_title/app_tagline/app_type; /by-slug feeds the
+    // manage page the same fields). Previously these lived only at
+    // content.hero.*, so the list showed "Untitled app" and manage showed
+    // "App". appTitle is the extractAppTitle() value computed above; tagline
+    // comes from the same hero block; app_type is the archetype id.
+    const appTagline = extractAppTagline(validatedContent);
     const assetData = {
       html: assemblerResult.html,
       generation_version: 2,
       archetype_id: config.archetype_id,
+      app_title: appTitle,
+      app_tagline: appTagline,
+      app_type: config.archetype_id,
       content: validatedContent,
       manifest: assemblerResult.manifest,
       llm_tier: llmTier,
@@ -515,6 +530,25 @@ function extractAppTitle(content: unknown, archetypeId: string): string {
   };
 
   return fallbacks[archetypeId as keyof typeof fallbacks] || 'Mini-App';
+}
+
+/**
+ * Extract the app tagline from validated content (hero.subtitle).
+ * Bug 4: stored top-level on asset_data so the list + manage renderers can
+ * read it. Returns '' when absent — the renderers already treat tagline as
+ * optional (no invented fallback, per the no-fallbacks rule).
+ */
+function extractAppTagline(content: unknown): string {
+  if (content && typeof content === 'object' && content !== null) {
+    const obj = content as Record<string, unknown>;
+    if (obj.hero && typeof obj.hero === 'object' && obj.hero !== null) {
+      const hero = obj.hero as Record<string, unknown>;
+      if (typeof hero.subtitle === 'string' && hero.subtitle.trim().length > 0) {
+        return hero.subtitle.trim();
+      }
+    }
+  }
+  return '';
 }
 
 /**
