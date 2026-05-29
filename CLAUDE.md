@@ -10,6 +10,54 @@ Sprint 2; future product changes go in `../textos-web/ROADMAP.md`).
 
 ---
 
+## API Request/Response Schemas — `docs/prompt-schema.md` (MANDATORY REVIEW)
+
+`docs/prompt-schema.md` is the single source of truth for the exact shape of every request
+we send to, and every response we receive from, external APIs (Anthropic first; fal.ai,
+SendGrid, Stripe, Hunter.io, Blotato to follow). It exists because on 2026-05-28 we lost ~6
+hours to a `generate-business-app-v2` call that hung 5 minutes with no error — the cause was a
+**documented** Anthropic limit (grammar-compilation timeout on complex tool/output schemas)
+that we didn't know about. This file prevents a repeat.
+
+**Rules for BOTH Claude and Claude Code:**
+
+1. **At the start of every session that will touch API calls, prompts, schemas, tool
+   definitions, or output parsing, read `docs/prompt-schema.md`** (at minimum the section for
+   the API in question).
+
+2. **Review-before-build.** Before writing or changing any code that sends a request to or
+   parses a response from an external API, consult the relevant section of
+   `docs/prompt-schema.md`. Confirm the request shape, response shape, and limits.
+
+3. **Tie the schema to the selected model.** Every Anthropic call is associated with a model
+   (`src/agent/model-router.ts` / `MODEL_IDS`). Capabilities and limits differ by model
+   (structured-outputs support, max output tokens, prefill support). When choosing or changing
+   a call's model, re-verify the request shape is valid for that model per
+   `docs/prompt-schema.md` §3.
+
+4. **Respect the hard limits** in `docs/prompt-schema.md` §4 — especially: union types
+   (`anyOf`) ≤ 16, optional parameters ≤ 24, and the **180-second grammar-compilation timeout**
+   that surfaces in Cloudflare Workers as a silent ~5-minute hang. Avoid `anyOf`/unions, deep
+   nesting, and blanket `additionalProperties: true` in any schema sent on the wire.
+
+5. **Prefer the right structured-data mechanism** (`docs/prompt-schema.md` §2):
+   plain-text JSON + Zod validate (safe default today) → structured outputs
+   (`output_config.format`, on a 4.5/4.6+ model) → forced tool use only when an agent loop
+   genuinely needs it, and only with simple schemas.
+
+6. **Stream large outputs in Cloudflare Workers** (`docs/prompt-schema.md` §5). `stream:false`
+   on a large/slow generation can hang silently. SDK `timeout`/AbortController are unreliable
+   in Workers — do not rely on them as the primary guard.
+
+7. **Keep the file current.** If official docs and `prompt-schema.md` disagree, the docs win —
+   then update the file and bump its "last verified" date. Local doc copies live in
+   `docs/api-docs/<provider>/`.
+
+This complements (does not replace) `docs/backlog-json-logging-mandate.md`: that mandate
+captures full request/response JSON at runtime; `prompt-schema.md` defines the expected shapes.
+
+---
+
 ## ⚠️ Recurring Trap: Test Frontend → Prod Agent
 
 This trap has bitten us multiple times. Before deep-debugging any
