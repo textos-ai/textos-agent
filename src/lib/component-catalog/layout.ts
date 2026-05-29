@@ -54,7 +54,7 @@ export const c_section_hero: ComponentCatalogEntry = {
   source_verification: 'verbatim',
   source_demo_path: '.homer-reference/landing.html',
   html_template: `<section class="position-relative overflow-hidden" style="background-color:#1f2933;background-image:url({{bg_url}});background-size:cover;background-position:center;">
-  <div class="d-flex align-items-center flex-column gap-3 justify-content-center text-center p-5" style="min-height:300px;">
+  <div class="d-flex align-items-center flex-column gap-3 justify-content-center text-center p-4" style="min-height:200px;">
     <h3 class="text-white fw-bold mb-0">{{headline}}</h3>
     <p class="text-white text-opacity-75">{{tagline}}</p>
     {{#cta_label}}<a href="{{cta_url}}" class="btn btn-primary rounded-pill">{{cta_label}}</a>{{/cta_label}}
