@@ -60,34 +60,52 @@ captures full request/response JSON at runtime; `prompt-schema.md` defines the e
 
 ## Apps Platform Component Catalog — Homer (MANDATORY REVIEW)
 
-The authoritative component catalog for all generated apps is:
+The apps platform composes generated mini-apps from a curated
+Homer component library. The architectural intent is documented
+in two PRDs (project knowledge):
+
+  - textos-component-factory-prd.md   (generated apps — primary spec)
+  - textos-homer-platform-prd.md      (platform UI companion)
+
+The component catalog itself is documented in:
 
   C:\code\textos-web\.homer-reference\catalog-recon-report.md
+  (recon survey of Homer v3.2.0 — 42 catalog entries with verbatim
+   html_template, archetype_fits, js_dependencies, reliability_tier)
 
-This file and any companion files in
-C:\code\textos-web\.homer-reference\ document the Homer
-components — controls, classes, asset paths, markup patterns —
-that the apps platform MUST assemble from when generating any
-asset_type='app' artifact (including all v2 archetypes:
-strategy, assessment, calculator, and any future archetype).
+The catalog is transcribed into:
 
-Rules:
+  textos-agent/src/lib/component-catalog/*.ts
+
+Rules — every one of these is non-negotiable:
+
 1. Before any work on textos-agent/src/lib/component-catalog/*,
-   textos-agent/src/lib/apps-platform/assembler/*, or any
-   handler that emits app HTML (generate-business-app-v2.ts,
-   future archetypes), Claude Code MUST first read
-   catalog-recon-report.md.
+   textos-agent/src/lib/assembler/* (or apps-platform/assembler/*),
+   or any handler that emits app HTML (generate-business-app-v2.ts,
+   any future archetype), Claude Code MUST:
+   - Re-read the relevant PRD section (factory PRD §3, §4 minimum)
+   - Re-read catalog-recon-report.md entries for any component
+     being added or modified
+   - Re-read the existing component-catalog/*.ts entry for that
+     component if one exists
+
 2. NEVER hand-write template HTML, Mustache, or CSS for app
-   components. Every visual element of a generated app — hero,
-   radio cards, text inputs, buttons, sections, ctas — MUST
-   come from the Homer catalog.
-3. If a component-catalog file in textos-agent does not
-   currently use Homer per the report, that file is wrong. The
-   fix is to rewrite it to assemble Homer components — NOT to
-   improve the hand-written template.
-4. If the catalog-recon-report.md is missing a component the
-   apps platform needs, STOP and surface that gap to Rob. Do
+   components. Every visual element — hero, radio cards, text
+   inputs, buttons, sections, ctas, multi-step navigation — MUST
+   compose Homer components from the catalog.
+
+3. The PRDs are the source of truth for INTENT. If the current
+   implementation conflicts with the PRDs, the implementation is
+   the bug. Fix the implementation; don't justify the drift.
+
+4. If a component the apps platform needs is genuinely missing
+   from the Homer catalog, STOP and surface the gap to Rob. Do
    NOT invent a replacement.
+
+5. The "drift document" docs/apps-platform-state.md is the
+   reconciliation between PRD intent and current implementation.
+   Read it before any apps-platform work. Update it after any
+   apps-platform commit.
 
 ---
 
