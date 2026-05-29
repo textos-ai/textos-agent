@@ -26,6 +26,7 @@ import type {
 import { CATALOG } from '../component-catalog/index';
 import { resolveSlotBindings, type ResolverContext } from './slot-resolver';
 import { renderTemplate } from './template';
+import { AssemblerError } from './types';
 import type { AssemblyManifest, ValidationWarning } from './types';
 
 export interface PhaseRenderContext {
@@ -67,10 +68,32 @@ export function renderPhase(ctx: PhaseRenderContext): string {
   // ── inner helpers (close over ctx) ─────────────────────────────────
 
   function renderWizardInputs(_c: PhaseRenderContext): string {
+    // PRD §3 "compose, don't generate": the multi-step UI is the Homer
+    // c_wizard catalog component, rendered from its html_template — NOT
+    // hand-rolled markup. We group the recipe's stepped components, compose
+    // each step's inner HTML via renderOne, and feed a steps[] view to the
+    // wizard template. form-wizard.js (auto-loaded because 'wizard' enters
+    // the manifest) drives tab nav, the progress bar, and Next/Back; the
+    // template emits the terminal type="submit" button natively via {{#last}}.
     const heroComp = phase.components.find((pc) => pc.component_id === 'section-hero');
     const wizardComp = phase.components.find((pc) => pc.component_id === 'wizard');
-    const progressComp = phase.components.find((pc) => pc.component_id === 'progress-bar');
-    if (!wizardComp) return '';
+    // No-fallbacks (PRD §4.3): a wizard inputs phase with no wizard component,
+    // or a catalog with no 'wizard' entry, is a recipe/catalog bug — throw.
+    if (!wizardComp) {
+      throw new AssemblerError(
+        'missing_component',
+        `inputs phase "${phase.id}" has no wizard component in its recipe`,
+        { phase: phase.id },
+      );
+    }
+    const wizardCat = CATALOG.by_id['wizard'];
+    if (!wizardCat) {
+      throw new AssemblerError(
+        'missing_catalog_entry',
+        'catalog entry "wizard" not found — cannot compose multi-step inputs',
+        { component_id: 'wizard' },
+      );
+    }
 
     const stepComponents = phase.components.filter((pc) => typeof pc.step === 'number');
     const stepsMap = new Map<number, PhaseComponent[]>();
@@ -81,44 +104,43 @@ export function renderPhase(ctx: PhaseRenderContext): string {
     }
     const stepKeys = [...stepsMap.keys()].sort((a, b) => a - b);
 
-    const sections: string[] = [];
-    if (heroComp) sections.push(renderOne(heroComp, ctx));
-    if (progressComp) sections.push(renderOne(progressComp, ctx));
-
-    // Per-step content blocks rendered manually (we don't use the wizard
-    // catalog template's {{#steps}} iterator because per-step component
-    // composition is too rich for a single field binding).
-    sections.push('<div class="tx-wizard" data-tx-wizard>');
-    for (const step of stepKeys) {
+    // Build the steps[] view for c_wizard.html_template. Each step's inner
+    // components are composed via renderOne (submit-button excluded — the
+    // wizard template provides the terminal submit natively via {{#last}}).
+    // Per-step title/icon are placeholders ("Step N") pending archetype
+    // generalization (backlog #1). slot:content (→ {{{content}}} after the
+    // template preprocessor) carries each step's composed inner HTML raw.
+    const steps = stepKeys.map((step, idx) => {
       const comps = stepsMap.get(step)!;
-      const stepInner = comps
+      const content = comps
         .filter((pc) => pc.component_id !== 'submit-button')
         .map((pc) => renderOne(pc, ctx))
         .filter(Boolean)
         .join('\n');
-      // Bug 3: the final step's terminal action is hardcoded here (mirroring
-      // the hardcoded "Next →" for non-final steps) rather than rendered from
-      // the submit-button catalog component. The catalog template's
-      // `{{label|Submit}}` default syntax isn't valid Mustache and the recipe
-      // bound `label:'submit_label'` (a field the v2 transform never emits),
-      // so renderOne() produced an empty `<button type="submit">`. It was also
-      // type="submit", which the inputs orchestration (document-wrapper) does
-      // not wire. A hardcoded type="button" with a real label is picked up by
-      // the existing inputs→paywall handler.
-      const isLastStep = step === stepKeys[stepKeys.length - 1];
-      sections.push(
-        `<div class="tx-wizard-step" data-step="${step}"${step !== stepKeys[0] ? ' hidden' : ''}>` +
-          stepInner +
-          (isLastStep
-            ? '\n<button type="button" class="btn btn-primary tx-wizard-submit">See My Results →</button>'
-            : '\n<button type="button" class="btn btn-primary tx-wizard-next" data-step-action="next">Next →</button>') +
-          (step !== stepKeys[0]
-            ? '\n<button type="button" class="btn btn-link tx-wizard-prev" data-step-action="prev">← Back</button>'
-            : '') +
-          '</div>',
-      );
+      return {
+        id: `tx-step-${step}`,
+        title: `Step ${idx + 1}`,
+        subtitle: '',
+        icon: 'circle-dot',
+        content,
+        first: idx === 0,
+        hasPrev: idx > 0,
+        hasNext: idx < stepKeys.length - 1,
+        last: idx === stepKeys.length - 1,
+      };
+    });
+
+    const wizardHtml = renderTemplate(wizardCat.html_template, { steps });
+
+    // Record 'wizard' so jsDependencies() auto-loads form-wizard.js (the
+    // catalog entry's js_dependencies include /homer/js/pages/form-wizard.js).
+    if (!manifest.rendered_components.includes('wizard')) {
+      manifest.rendered_components.push('wizard');
     }
-    sections.push('</div>');
+
+    const sections: string[] = [];
+    if (heroComp) sections.push(renderOne(heroComp, ctx));
+    sections.push(wizardHtml);
     return sections.join('\n');
   }
 
