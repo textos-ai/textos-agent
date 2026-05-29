@@ -1,14 +1,9 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// generate-business-app-v2 — Homer archetype-driven app generation
-//
-// Single-step pipeline that generates a mini-app via:
-//   1. Load archetype from src/lib/archetypes/
-//   2. LLM call with tool_use for structured content generation
-//   3. Content validation via assembler
-//   4. App assembly and storage
-//
-// Unlike v1's dual-step chain (design → HTML), this is a single handler that
-// produces the complete assembled app in one invocation.
+// generate-business-app-v2: plain-JSON Anthropic call + transformation layer →
+// assembled app stored in business_assets with generation_version=2.
+// Currently strategy-only; archetype generalization deferred.
+// See docs/v1-vs-v2-prompt-comparison.md for the 2026-05-28 incident background
+// and docs/backlog-v2-architectural-debt.md for the deferred debts.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type { TaskCtx, TaskResult } from "./types";
@@ -24,7 +19,6 @@ import {
   type Archetype
 } from "../archetypes";
 import {
-  validateContent,
   assembleApp,
   type AssemblerOutput
 } from "../assembler";
@@ -89,7 +83,7 @@ export async function runGenerateBusinessAppV2(taskCtx: TaskCtx): Promise<TaskRe
     const baseSystemPrompt = buildSystemPrompt(config.archetype_id, archetype.name, businessContext, config.description);
     const userPrompt = buildUserPrompt(config.description);
 
-    // Add JSON output instructions to system prompt (copying v1 pattern)
+    // Add JSON output instructions to system prompt
     const systemPrompt = `${baseSystemPrompt}
 
 Return ONLY valid JSON matching this exact structure:
@@ -97,26 +91,14 @@ ${JSON.stringify(jsonSchemaRef, null, 2)}
 
 Respond with ONLY a valid JSON object matching this structure. No markdown, no code fences, no explanatory text before or after the JSON. First character must be {.`;
 
-    // Plain text request (no tools, copying v1 pattern)
-    const requestBody = {
-      model,
-      max_tokens: 4000,
-      temperature: 0.7,
-      system: systemPrompt,
-      messages: [{ role: "user" as const, content: userPrompt }]
-    };
-
-    // Helper function to strip markdown fences (from v1)
+    // Strip markdown code fences from the model's text response.
     function stripFences(s: string): string {
       return s.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
     }
 
-    // LLM call with AbortController timeout (copying v1 pattern)
     let contentPayload: unknown;
     const callStart = Date.now();
 
-    // V2 SIMPLIFIED: Use v1-style simple prompt approach
-    console.log('[v2-simple] Using v1-style simple prompt approach');
     const workingSystemPrompt = `You are designing a strategy app for ${business.name}. Return ONLY valid JSON. First character must be {.`;
 
     const simpleAppPrompt = `Design a simple strategy app with this structure:
@@ -139,58 +121,34 @@ Respond with ONLY a valid JSON object matching this structure. No markdown, no c
 
 Create exactly 10 questions about: "${config.description}"`;
 
-    // Override the minimal prompt with the simple app structure
-    const workingSystemPrompt2 = workingSystemPrompt;
-
     // Environment-conditional full prompt logging for test/dev
     const isDevOrTest = taskCtx.env.ENVIRONMENT === 'test' || taskCtx.env.ENVIRONMENT === 'dev';
-
-    // Use the simple app prompt instead
-    const minimalUserPrompt = simpleAppPrompt;
 
     await appendWorkLog(taskCtx, V2_EVENTS.LLM_CALL_STARTED, {
       model,
       llm_tier: llmTier,
-      prompt_chars: workingSystemPrompt2.length + minimalUserPrompt.length,
+      prompt_chars: workingSystemPrompt.length + simpleAppPrompt.length,
       request_type: 'no_tool_instructions',
       ...(isDevOrTest && {
         full_system_prompt: workingSystemPrompt,
-        full_user_prompt: minimalUserPrompt,
+        full_user_prompt: simpleAppPrompt,
         original_user_prompt: userPrompt,
         original_system_prompt_preview: systemPrompt.slice(0, 500) + '...[TRUNCATED]...' + systemPrompt.slice(-200)
       })
     });
 
     try {
-
-      console.log('[v2-experiment] Working system prompt length:', workingSystemPrompt.length);
-      console.log('[v2-experiment] Original system prompt length:', systemPrompt.length);
-
-      // Clean logging without formatting characters
-      console.log('[v2-prompt] Working system prompt length:', workingSystemPrompt.length);
-      console.log('[v2-prompt] Minimal user prompt length:', minimalUserPrompt.length);
-
-      // Use simple v1-style prompts
-      const callPromise = anthropic.messages.create({
+      const msg = await anthropic.messages.create({
         model: "claude-sonnet-4-20250514",
         max_tokens: 2000,
         stream: false,
-        system: workingSystemPrompt2,
-        messages: [{ role: "user", content: minimalUserPrompt }],
+        system: workingSystemPrompt,
+        messages: [{ role: "user", content: simpleAppPrompt }],
       });
-
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("content_generation_timeout")), 45000)
-      );
-
-      const msg = await Promise.race([callPromise, timeoutPromise]);
       const block = msg.content[0];
       const text = block && block.type === "text" ? (block as { text: string }).text : "";
       const stopReason = (msg as { stop_reason?: string }).stop_reason ?? "unknown";
       const usage = (msg as { usage?: { input_tokens?: number; output_tokens?: number } }).usage ?? {};
-
-      console.log('[v2-experiment] FINAL FIX SUCCESS - response length:', text.length);
-      console.log('[v2-experiment] Generated content preview:', text.slice(0, 500));
 
       await appendWorkLog(taskCtx, V2_EVENTS.LLM_CALL_COMPLETED, {
         stop_reason: stopReason,
@@ -205,7 +163,7 @@ Create exactly 10 questions about: "${config.description}"`;
         })
       });
 
-      // Parse JSON response (copying v1 pattern)
+      // Parse JSON response
       const cleanedText = stripFences(text.trim());
       let parsedContent: unknown;
 
@@ -279,10 +237,6 @@ Respond with ONLY valid JSON matching the required shape.`;
     let validationWarnings: any[] = [];
 
     try {
-      console.log('[v2-simple] Attempting simple validation and transformation');
-      console.log('[v2-simple] Content payload keys:', Object.keys(contentPayload || {}));
-      console.log('[v2-simple] Content payload preview:', JSON.stringify(contentPayload).slice(0, 300));
-
       // Basic validation - ensure required fields exist
       const content = contentPayload as any;
       if (!content.app_title || !content.questions || !Array.isArray(content.questions)) {
@@ -355,13 +309,8 @@ Respond with ONLY valid JSON matching the required shape.`;
 
       validatedContent = transformedContent;
       validationWarnings = [];
-
-      console.log('[v2-simple] Transformation and validation SUCCESS');
     } catch (validationErr) {
       const validationErrorMessage = validationErr instanceof Error ? validationErr.message : String(validationErr);
-
-      console.log('[v2-simple] Validation FAILED:', validationErrorMessage);
-      console.log('[v2-simple] Actual content structure:', JSON.stringify(contentPayload, null, 2).slice(0, 1000));
 
       await appendWorkLog(taskCtx, V2_EVENTS.CONTENT_VALIDATION_FAILED, {
         content_payload: contentPayload,
