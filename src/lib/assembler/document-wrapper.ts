@@ -115,21 +115,10 @@ function emitOrchestrationScript(archetype: Archetype): string {
   function show(id)   { var n = findPhase(id); if (n) n.hidden = false; }
   function hide(id)   { var n = findPhase(id); if (n) n.hidden = true;  }
 
-  // Wizard advance / back wiring.
-  document.querySelectorAll('[data-step-action]').forEach(function (btn) {
-    btn.addEventListener('click', function () {
-      var step = btn.closest('.tx-wizard-step');
-      if (!step) return;
-      var action = btn.getAttribute('data-step-action');
-      var siblings = Array.from(step.parentNode.querySelectorAll('.tx-wizard-step'));
-      var idx = siblings.indexOf(step);
-      var next = action === 'next' ? idx + 1 : idx - 1;
-      if (next < 0 || next >= siblings.length) return;
-      step.hidden = true;
-      siblings[next].hidden = false;
-      EV.emit('wizard_step_complete', 'inputs', { from: idx + 1, to: next + 1 });
-    });
-  });
+  // Wizard step navigation (tabs, progress, Next/Back) is owned by Homer's
+  // form-wizard.js, which auto-inits on [data-wizard]. We no longer hand-roll
+  // step show/hide here — the old [data-step-action] block was removed when
+  // the renderer switched to composing the c_wizard catalog component.
 
   // Inputs phase change events.
   document.querySelectorAll('.tx-phase-inputs input, .tx-phase-inputs textarea, .tx-phase-inputs select').forEach(function (el) {
@@ -138,11 +127,14 @@ function emitOrchestrationScript(archetype: Archetype): string {
     });
   });
 
-  // Submit button(s) inside the inputs phase reveal the paywall.
-  document.querySelectorAll('.tx-phase-inputs button[type="button"], .tx-phase-inputs button:not([type])').forEach(function (btn) {
-    // Skip wizard-internal next/back buttons (they have data-step-action).
-    if (btn.hasAttribute('data-step-action')) return;
-    btn.addEventListener('click', function () {
+  // The wizard form's submit (the c_wizard template's final-step
+  // type="submit" button) reveals the paywall. form-wizard.js owns step
+  // navigation and only sets the progress bar to 100% on submit; we own the
+  // terminal inputs→paywall transition. preventDefault stops the actual form
+  // submission (we drive the flow in-page).
+  document.querySelectorAll('.tx-phase-inputs form[data-wizard-validation]').forEach(function (form) {
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
       // Run archetype-specific synthesis before revealing the paywall, so
       // teaser content can use computed values.
       try {
@@ -155,8 +147,8 @@ function emitOrchestrationScript(archetype: Archetype): string {
         } else if (ARCHETYPE === 'calculator' && window.__txAssembler && window.__txAssembler.calculator) {
           window.__txAssembler.computed = window.__txAssembler.calculator.run();
         }
-      } catch (e) {
-        console.warn('[tx-orchestration] computed synthesis failed', e);
+      } catch (e2) {
+        console.warn('[tx-orchestration] computed synthesis failed', e2);
       }
       EV.emit('paywall_shown', 'paywall', {});
       hide('inputs');
