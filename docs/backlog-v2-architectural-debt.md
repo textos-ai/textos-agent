@@ -59,6 +59,21 @@ Four distinct sub-defects, all in the assembler, compound here:
 **(a) `card-basic` slot mismatch → intro + every section body render blank.**
 `c_card_basic.html_template` (`src/lib/component-catalog/display.ts:16-23`) emits the body via `{{slot:content}}`. The strategy result recipe binds `content: 'result.intro'` and `content: 'result.sections[].body'` (`src/lib/archetypes/strategy.ts:213-218`, `221-225`), and the slot resolver returns a view keyed `content` — there is no key `slot:content`. The template engine is plain Mustache (`src/lib/assembler/template.ts`), which treats `{{slot:content}}` as a lookup of a key literally named `slot:content`, finds nothing, and renders empty. Net: the title (`{{title}}`) renders, the body never does. `{{slot:content}}` is a homemade token that Mustache does not understand; either the catalog templates need a pre-pass that rewrites `{{slot:X}}`→`{{X}}` (or `{{{X}}}` for trusted markup), or the templates should use plain Mustache tags. Check every catalog template for `{{slot:...}}` — `container` and `row-col` use it too (`layout.ts:16`, `35`).
 
+> **Update 2026-05-30 (engine half done):** the recommended pre-pass is
+> implemented — `src/lib/assembler/template.ts` `preprocessHomerConstructs()`
+> rewrites `{{slot:X}}`→`{{{X}}}` (plus `{{k|default}}`, `{{k?class}}`,
+> `{{k?a:b}}`), with `assembler/__tests__/template.test.ts` coverage. Homer
+> slots/defaults/conditional classes now render. **Still open** (re-verified
+> in code 2026-05-30): **5(b)** — `renderResult()` in `phase-renderer.ts`
+> maps `phase.components` once with no `sections[]` fan-out, and
+> `slot-resolver.ts` `tokenize()` turns `sections[]` into index 0, so only
+> the first section renders. **5(c)** — `shouldSkipCandidate()` still
+> `return true`s for any optional non-multi-candidate, so the `action_items`
+> list-group is skipped. **5(d)** — `generate-business-app-v2.ts:309` still
+> emits `cta_url_placeholder: "/business/{{business_slug}}/contact"`, which
+> is not the `cta_url_placeholder` sentinel `slot-resolver.ts` substitutes,
+> so the raw templated path renders into the href.
+
 **(b) `result.sections[]` array iteration is not implemented → only the first section renders.**
 The recipe says "One card-basic per `result.sections[]` entry. Assembler iterates." (`strategy.ts:221-227`) — but `renderResult()` in `src/lib/assembler/phase-renderer.ts:134-141` just maps over `phase.components` **once** and calls `renderOne` per component; there is no per-array-element fan-out. Worse, the empty-bracket path `result.sections[].heading` tokenizes to index **0**, not "all": in `src/lib/assembler/slot-resolver.ts:108-110`, `Number(path.slice(i+1, close))` on `[]` is `Number('')` === `0`, which is finite, so the resolver silently reads `result.sections[0]`. Combined, exactly the **first** section's heading renders and the rest are dropped. Fix needs a real iteration construct in the phase renderer (expand a `foo[]`-bound component into one rendered instance per array element, with each element's scalar paths resolved against that element) — this is shared machinery the Assessment/Calculator result phases will also want.
 

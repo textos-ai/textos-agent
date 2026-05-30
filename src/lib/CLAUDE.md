@@ -55,6 +55,12 @@ the bug** — fix the implementation, don't justify the drift.
    **excludes `experimental`** — don't rely on experimental components
    in a shipping path.
 
+> Future direction: the catalog currently lives in TS
+> (`component-catalog/*.ts`). The component-factory PRD §4.2 envisions it
+> eventually moving to a Supabase `app_components` table (tracked as
+> `apps-platform-state.md` drift #1). Until then the TS catalog is
+> operative and edits to it are code changes.
+
 ---
 
 ## Slot / template conventions (`assembler/template.ts`)

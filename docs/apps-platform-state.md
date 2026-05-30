@@ -1,6 +1,6 @@
 # Apps Platform — Current State vs PRDs
 
-Last updated: 2026-05-29
+Last updated: 2026-05-30 (items #2 and #3 verified RESOLVED in code — see notes; was 2026-05-29)
 
 This document is the reconciliation between the apps-platform PRD intent
 (`textos-component-factory-prd.md` — generated apps, primary spec;
@@ -110,23 +110,29 @@ Each delta: `{ item, intent_per_prd, current_state, blocking_or_followup, relate
      conditional classes (renders empty). Net effect: faithful Homer
      components render their chrome but drop slotted bodies / defaults /
      conditional classes.
-   - blocking_or_followup: **blocking** the apps platform from producing
-     correct visuals — this is the core engine gap to fix next.
-   - related_backlog_item: backlog #5 (result phase renders nearly empty:
-     `card-basic {{slot:content}}` blank, etc.).
+   - blocking_or_followup: ✅ **RESOLVED 2026-05-30.** `assembler/template.ts`
+     now runs `preprocessHomerConstructs()` before Mustache, rewriting
+     `{{slot:NAME}}`→`{{{NAME}}}`, `{{key|default}}`, `{{key?class}}`, and
+     `{{key?truthy:falsy}}` (covered by `assembler/__tests__/template.test.ts`).
+     Homer slots, pipe-defaults, and conditional classes now render. (The
+     result phase can still look thin — that's backlog #5(b)/(c), the
+     array-iteration and optional-gating gaps, NOT the template engine.)
+   - related_backlog_item: backlog #5 (engine half done; 5(b)/(c)/(d) open).
 
 3. **Multi-step renderer**
    - intent_per_prd: multi-step apps use the Homer `wizard` catalog
      component (`.ins-wizard` + `data-wizard-*` + `form-wizard.js`).
-   - current_state: `assembler/phase-renderer.ts` hand-rolls its own
-     `.tx-wizard` markup and Next/Back buttons, wired by an emitted
-     inline orchestration script in `document-wrapper.ts`; the Homer
-     `wizard` catalog entry exists but is not used by the strategy recipe.
-   - blocking_or_followup: follow-up (functional after the Bug-3 wiring
-     fix, but diverges from the Homer wizard intent; wire-up is the
-     planned next pass alongside the template engine).
+   - current_state: ✅ **RESOLVED 2026-05-30.** `phase-renderer.ts`
+     `renderWizardInputs()` now composes the Homer `c_wizard` catalog
+     component (`CATALOG.by_id['wizard']` → `renderTemplate(wizardCat.html_template,
+     { steps })`), records `wizard` in the manifest so `form-wizard.js`
+     auto-loads, and throws (no-fallbacks) if the wizard component or its
+     catalog entry is missing — no more hand-rolled `.tx-wizard`.
+   - blocking_or_followup: resolved. (Per-step "Step N" titles are still
+     placeholders pending archetype generalization — that is backlog #1, a
+     separate item, not the wizard-composition drift.)
    - related_backlog_item: backlog #3 (terminal submit button) — fixed;
-     wizard-component adoption still outstanding.
+     wizard-component adoption — now done (2026-05-30).
 
 4. **Per-archetype generation (strategy-only)**
    - intent_per_prd: strategy, assessment, and calculator archetypes all
