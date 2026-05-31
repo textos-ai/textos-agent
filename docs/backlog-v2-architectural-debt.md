@@ -153,7 +153,12 @@ pointer, not a restatement — the authoritative rules stay in `prompt-schema.md
 ## 9. Result phase is a blank spinner during Opus generation (no progressive render)
 
 **Captured:** 2026-05-31 (same fix).
-**Tag:** UX polish. Post-verification — do after the streaming fix is confirmed working.
+**Priority:** ELEVATED 2026-05-31 (Increment 2 sign-off review). Strong Increment 3
+candidate — the ~29s blank spinner is the visitor's actual experience, and now that
+the result endpoint is confirmed streaming server-side, surfacing sections as they
+arrive is a **front-end-only** change. Tracked alongside the Increment 3 polish list
+in `textos-backlog-master.md`.
+**Tag:** UX polish — now front-end-only (the agent-side streaming groundwork is done).
 **Context:** The result-endpoint Opus call now streams server-side
 (`anthropic.messages.stream` + `finalMessage()` in `generated-apps.ts`), but the
 endpoint still returns a single JSON blob only after the full generation completes

@@ -85,6 +85,16 @@ access, result, or both?). Decide one source of truth; don't leave both live.
 
 ## App builder — Increment 2 follow-ups
 
+> **Increment 2 — SIGNED OFF (2026-05-31, Rob).** Build pipeline + runtime
+> result endpoint both verified working. Result is genuinely input-responsive:
+> two runs with different guest-count / service-style / theme / date / org
+> produced correspondingly different plans (meat counts, service model,
+> timeline, and presentation concept all tracked the answers). No fallback
+> content observed. Wizard renders well (dark hero, stepper, rich radio cards,
+> validation). The result-endpoint 502 is closed (streaming + max_tokens 6000 +
+> truncation guard — commits `0efa65d`, `661f55d`). Next: **Increment 3**
+> (frame / hero / wizard styling) — see polish items below.
+
 - **§13 test fixtures stale.** `src/lib/assembler/fixtures/strategy.fixture.ts`
   still holds the pre-§13 shape (`hero` / `plan_title` / baked `result.sections`);
   `assembler/__tests__/assembler.test.ts` + `validation.test.ts` import it and
@@ -100,3 +110,19 @@ access, result, or both?). Decide one source of truth; don't leave both live.
   the design prompt to the recipe's fixed 7-question layout (2 text, 1 textarea,
   2 radio, 1 text, 1 textarea). Make the wizard render each question by its
   LLM-chosen type (as assessment already does) so the layout isn't hardcoded.
+
+---
+
+## App builder — Increment 3 (frame / hero / wizard / result polish)
+
+- **PDF button shows before the result exists.** Captured 2026-05-31 (Increment 2
+  screenshot review). The "Download as PDF" button is visible during the
+  "Building your plan…" spinner state, before any result has rendered. Hide or
+  disable it until the result phase is populated. Front-end only; folds into this
+  increment's wizard/result polish pass.
+- **Progressive/streamed result render — now elevated (see
+  `backlog-v2-architectural-debt.md` #9).** Bumped UP in priority 2026-05-31: the
+  ~29s blank spinner is the visitor's actual experience, and since the result
+  endpoint already streams server-side (`anthropic.messages.stream`), surfacing
+  sections as they arrive is a **front-end-only** change. Strong candidate for
+  Increment 3.
