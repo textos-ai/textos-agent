@@ -32,9 +32,14 @@ The handler accepts `archetype_id` of `strategy | assessment | calculator` (vali
 
 ## 3. Model is hardcoded in the executed call
 
+> **→ Folded into the LLM Management Feature** (`textos-backlog-master.md`, 2026-05-31).
+> The model-string swap and the 2026-06-15 retirement deadline are tracked there.
+> The standalone "Sonnet swap" framing is retired; the architectural fix that
+> remains here is to resolve the model from the DB registry rather than hardcode it.
+
 The live `anthropic.messages.create` call hardcodes `model: "claude-sonnet-4-20250514"`, **not** the `model` variable resolved from the tier (`resolveModelForTier(llmTier)`) at the top of the handler. The retry path and work_log already use the resolved `model`, so the two can diverge.
 
-**Fix:** Use the resolved `model` variable in the primary call. Verify the swap is a no-op for the `sonnet` tier before shipping (confirm `resolveModelForTier('sonnet')` === `claude-sonnet-4-20250514`).
+**Fix:** Use the resolved `model` variable in the primary call (and, once the LLM registry lands, resolve from it). Verify the swap is a no-op for the `sonnet` tier before shipping (confirm `resolveModelForTier('sonnet')` === `claude-sonnet-4-20250514`).
 
 **Time pressure:** `claude-sonnet-4-20250514` is a Sonnet-4-class ID scheduled to **retire from the API on 2026-06-15** (`docs/api-docs/anthropic/model-deprecations-and-lifecycle.md`, `docs/prompt-schema.md` §3). v2 must move off it — likely to `claude-sonnet-4-6` (1M context, 64K output, structured-outputs support) — before that date. This ties into the structured-outputs migration noted in `docs/prompt-schema.md` §7 follow-ups.
 
