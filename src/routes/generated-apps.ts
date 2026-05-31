@@ -5,6 +5,10 @@ import { requireAuth } from "../lib/jwt";
 import { createSupabaseClient, persistStreamEvent } from "../services/supabase";
 import { errBody } from "../lib/errors";
 import { log } from "../lib/logger";
+import { createAnthropicClient } from "../services/anthropic";
+import { APP_RESULT_MODEL } from "../lib/app-models";
+import { buildStrategyResultPrompt } from "../lib/prompts/app-content-prompts";
+import { StrategyResultSchema } from "../lib/assembler/validation/schemas";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // /api/generated-apps/* — runtime for AI-generated per-business mini-apps.
@@ -709,6 +713,152 @@ app.get("/:businessId/by-slug/:slug", async (c) => {
     app_tagline: (data?.app_tagline as string) ?? "",
     app_type: (data?.app_type as string) ?? "",
     app_icon: asset.app_icon ?? null,
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /:businessId/by-slug/:slug/result — PUBLIC. Runtime strategy result.
+//
+// The visitor completes the wizard; the client POSTs { responses } (a map of
+// question id → answer). We generate the result FROM those answers with
+// APP_RESULT_MODEL — a single call, AbortController-bounded, capped max_tokens
+// (NO Promise.race) — validate against StrategyResultSchema (no-fallbacks), and
+// return { headline, summary, sections[], cta }. Per-IP and per-app KV rate
+// limits guard cost/abuse from day one.
+// ─────────────────────────────────────────────────────────────────────────────
+async function rateLimitOk(
+  env: Env,
+  scopeKey: string,
+  max: number,
+  windowSec: number,
+): Promise<boolean> {
+  const kv = env.SNAPSHOT_KV;
+  if (!kv) return true; // binding absent → don't hard-block the feature
+  const bucket = Math.floor(Date.now() / 1000 / windowSec);
+  const key = `rl:appresult:${scopeKey}:${bucket}`;
+  const cur = parseInt((await kv.get(key)) || "0", 10) || 0;
+  if (cur >= max) return false;
+  await kv.put(key, String(cur + 1), { expirationTtl: windowSec * 2 });
+  return true;
+}
+
+app.post("/:businessId/by-slug/:slug/result", async (c) => {
+  const businessId = c.req.param("businessId");
+  const slug = c.req.param("slug");
+  const ip = c.req.header("cf-connecting-ip") || "unknown";
+
+  // Rate limit: per-IP-per-app (abuse) AND per-app (cost cap). Both windowed.
+  const perIpOk = await rateLimitOk(c.env, `${businessId}:${slug}:${ip}`, 8, 60);
+  const perAppOk = await rateLimitOk(c.env, `${businessId}:${slug}:_all`, 60, 60);
+  if (!perIpOk || !perAppOk) {
+    return c.json(errBody("rate_limited", "Too many requests — please wait a moment."), 429);
+  }
+
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json(errBody("bad_request", "invalid JSON"), 400);
+  }
+  const responsesRaw = (body as { responses?: unknown } | null)?.responses;
+  if (!responsesRaw || typeof responsesRaw !== "object") {
+    return c.json(errBody("bad_request", "responses object required"), 400);
+  }
+  const responses: Record<string, string> = {};
+  for (const [k, v] of Object.entries(responsesRaw as Record<string, unknown>)) {
+    responses[k] = typeof v === "string" ? v : String(v ?? "");
+  }
+
+  const sb = createSupabaseClient(c.env);
+  const { data: asset, error } = await sb
+    .from("business_assets")
+    .select("id, asset_data")
+    .eq("business_id", businessId)
+    .eq("asset_type", "app")
+    .eq("app_slug", slug)
+    .eq("is_current", true)
+    .maybeSingle();
+  if (error) return c.json(errBody("internal", "fetch_failed"), 500);
+  if (!asset) return c.json(errBody("not_found", "no app for this business/slug"), 404);
+
+  const ad = (asset.asset_data as Record<string, any> | null) || {};
+  if (ad.archetype_id !== "strategy") {
+    return c.json(errBody("bad_request", "result generation is only for strategy apps"), 400);
+  }
+  const content = ad.content as any;
+  const bc = ad.build_context as any;
+  const sectionPlan = content?.result?.section_plan;
+  const questions = content?.questions;
+  if (!Array.isArray(sectionPlan) || !Array.isArray(questions) || !bc) {
+    return c.json(errBody("internal", "app is missing build content/context"), 500);
+  }
+
+  const { system, user } = buildStrategyResultPrompt({
+    bc,
+    appTitle: (ad.app_title as string) || content.app_title,
+    sectionPlan: sectionPlan.map((s: any) => ({ heading: s.heading, directive: s.directive })),
+    questions: questions.map((q: any) => ({ id: q.id, text: q.text })),
+    responses,
+  });
+
+  // Single call, AbortController-bounded, capped max_tokens. No Promise.race.
+  const anthropic = createAnthropicClient(c.env);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 25000);
+  let parsed: unknown;
+  try {
+    const msg = await anthropic.messages.create(
+      {
+        model: APP_RESULT_MODEL,
+        max_tokens: 1500,
+        stream: false,
+        system,
+        messages: [{ role: "user", content: user }],
+      },
+      { signal: controller.signal },
+    );
+    const block = msg.content[0];
+    const text = block && block.type === "text" ? (block as { text: string }).text : "";
+    parsed = JSON.parse(text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim());
+  } catch (err) {
+    clearTimeout(timer);
+    log.error("generated_apps.result.generation_failed", {
+      businessId,
+      slug,
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return c.json(errBody("internal", "result generation failed — please retry"), 502);
+  }
+  clearTimeout(timer);
+
+  let result: ReturnType<typeof StrategyResultSchema.parse>;
+  try {
+    result = StrategyResultSchema.parse(parsed);
+  } catch (zerr) {
+    log.error("generated_apps.result.validation_failed", {
+      businessId,
+      slug,
+      err: zerr instanceof Error ? zerr.message : String(zerr),
+    });
+    return c.json(errBody("internal", "result validation failed — please retry"), 502);
+  }
+
+  // Build-time CTA with the operator URL substituted for the sentinel (closes 5d).
+  const operatorUrl = (ad.operator_url as string) || "";
+  const cta = (content?.result?.cta as Record<string, unknown>) || {};
+  const sub = (v: unknown) =>
+    v === "cta_url_placeholder" ? operatorUrl : typeof v === "string" ? v : "";
+
+  return c.json({
+    headline: result.headline,
+    summary: result.summary,
+    sections: result.sections,
+    cta: {
+      primary_text: (cta.primary_text as string) ?? "",
+      primary_url: sub(cta.primary_action),
+      secondary_text: (cta.secondary_text as string) ?? "",
+      secondary_url: sub(cta.secondary_action),
+    },
   });
 });
 

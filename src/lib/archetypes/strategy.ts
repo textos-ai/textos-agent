@@ -43,8 +43,8 @@ export const STRATEGY_ARCHETYPE: Archetype = {
         {
           component_id: 'section-hero',
           slot_bindings: {
-            headline: 'hero.title',
-            tagline: 'hero.subtitle',
+            headline: 'app_title',
+            tagline: 'app_tagline',
           },
           notes: 'Hero stays visible above the wizard on the inputs phase.',
         },
@@ -63,7 +63,7 @@ export const STRATEGY_ARCHETYPE: Archetype = {
           slot_bindings: {
             id: 'questions[0].id',
             name: 'questions[0].id',
-            label: 'questions[0].label',
+            label: 'questions[0].text',
             placeholder: 'questions[0].placeholder',
             required: 'questions[0].required',
           },
@@ -74,7 +74,7 @@ export const STRATEGY_ARCHETYPE: Archetype = {
           slot_bindings: {
             id: 'questions[1].id',
             name: 'questions[1].id',
-            label: 'questions[1].label',
+            label: 'questions[1].text',
             placeholder: 'questions[1].placeholder',
             required: 'questions[1].required',
           },
@@ -85,7 +85,7 @@ export const STRATEGY_ARCHETYPE: Archetype = {
           slot_bindings: {
             id: 'questions[2].id',
             name: 'questions[2].id',
-            label: 'questions[2].label',
+            label: 'questions[2].text',
             placeholder: 'questions[2].placeholder',
             rows: 'questions[2].rows',
           },
@@ -95,7 +95,7 @@ export const STRATEGY_ARCHETYPE: Archetype = {
           component_id: 'radio-cards',
           step: 2,
           slot_bindings: {
-            label: 'questions[3].label',
+            label: 'questions[3].text',
             name: 'questions[3].id',
             id: 'questions[3].id',
             options: 'questions[3].options',
@@ -105,7 +105,7 @@ export const STRATEGY_ARCHETYPE: Archetype = {
           component_id: 'radio-cards',
           step: 2,
           slot_bindings: {
-            label: 'questions[4].label',
+            label: 'questions[4].text',
             name: 'questions[4].id',
             id: 'questions[4].id',
             options: 'questions[4].options',
@@ -118,7 +118,7 @@ export const STRATEGY_ARCHETYPE: Archetype = {
           slot_bindings: {
             id: 'questions[5].id',
             name: 'questions[5].id',
-            label: 'questions[5].label',
+            label: 'questions[5].text',
             placeholder: 'questions[5].placeholder',
             required: 'questions[5].required',
           },
@@ -129,7 +129,7 @@ export const STRATEGY_ARCHETYPE: Archetype = {
           slot_bindings: {
             id: 'questions[6].id',
             name: 'questions[6].id',
-            label: 'questions[6].label',
+            label: 'questions[6].text',
             placeholder: 'questions[6].placeholder',
             rows: 'questions[6].rows',
           },
@@ -138,7 +138,7 @@ export const STRATEGY_ARCHETYPE: Archetype = {
           component_id: 'submit-button',
           step: 3,
           slot_bindings: {
-            label: 'submit_label',
+            label: 'submit_button_text',
           },
         },
         {

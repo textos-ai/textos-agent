@@ -48,6 +48,10 @@ export function renderPhase(ctx: PhaseRenderContext): string {
   // `steps` slot; we feed it a pre-rendered HTML chunk per step.
   const isWizardPhase = phase.components.some((pc) => pc.component_id === 'wizard');
 
+  // GATE SEAM: access — visitor monetization, see backlog "Visitor-facing monetization"
+  // access_gate is hardwired pass-through ('free') this increment: the app is
+  // usable immediately, no gate before the inputs phase. Enforcement wires later.
+
   if (phase.type === 'inputs' && isWizardPhase) {
     chunks.push(renderWizardInputs(ctx));
   } else if (phase.type === 'inputs') {
@@ -163,7 +167,23 @@ export function renderPhase(ctx: PhaseRenderContext): string {
   }
 
   function renderResult(_c: PhaseRenderContext): string {
-    // Result phase wraps in .txapp-result so the PDF block can target it.
+    // GATE SEAM: result — visitor monetization, see backlog "Visitor-facing monetization"
+    // result_gate is hardwired pass-through ('free') this increment: no paywall,
+    // no charge, no email capture before the result shows. Enforcement wires later.
+    if (archetype.id === 'strategy') {
+      // Strategy result is generated at RUNTIME from the visitor's answers
+      // (POST /api/generated-apps/:businessId/by-slug/:slug/result) and injected
+      // client-side by the orchestration script. The assembler emits only the
+      // mount point + a generating state; bodies are never baked at build time.
+      // No inner `hidden` — the phase <section> controls visibility; the
+      // orchestration script fills #tx-result-root when the result is ready.
+      return [
+        '<div class="txapp-result">',
+        '  <div id="tx-result-root" class="tx-result-root"></div>',
+        '</div>',
+      ].join('\n');
+    }
+    // Assessment / calculator: existing component-rendered result (client-computed).
     const inner = phase.components
       .map((pc) => renderOne(pc, ctx))
       .filter(Boolean)

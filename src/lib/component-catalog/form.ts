@@ -301,8 +301,8 @@ export const c_radio_cards: ComponentCatalogEntry = {
       <input type="radio" class="btn-check" name="{{name}}" id="{{id}}_{{value}}" value="{{value}}" autocomplete="off">
       <label class="btn btn-outline-primary w-100 text-start p-3" for="{{id}}_{{value}}">
         {{#icon}}<i class="ti ti-{{icon}} fs-24 d-block mb-2"></i>{{/icon}}
-        <span class="fw-semibold d-block">{{title}}</span>
-        {{#desc}}<small class="text-muted">{{desc}}</small>{{/desc}}
+        <span class="fw-semibold d-block">{{label}}</span>
+        {{#description}}<small class="text-muted">{{description}}</small>{{/description}}
       </label>
     </div>
     {{/options}}

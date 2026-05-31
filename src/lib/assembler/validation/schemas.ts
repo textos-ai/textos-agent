@@ -30,39 +30,71 @@ const CtaSchema = z.object({
   cta_url_placeholder: z.string().min(1),
 }).passthrough();
 
-// ── Strategy ─────────────────────────────────────────────────────────
+// ── Strategy (§13-aligned, build-time) ───────────────────────────────
+// STYLE_GUIDE §13 is the locked contract. This is the BUILD-TIME schema:
+// questions + a result DIRECTIVE (section_plan) + the conversion cta.
+// The result BODIES are generated at runtime from the visitor's answers
+// (StrategyResultSchema below), not baked here. No-fallbacks: every
+// required field must be present or validation throws — no defaults.
+
+const StrategyOptionSchema = z.object({
+  label: z.string().min(1),                 // §13: option label (was `title`)
+  value: z.string().min(1),
+  icon: z.string().min(1),                  // §4 requires a Tabler icon per option
+  description: z.string().optional(),        // §13 (was `desc`)
+}).passthrough();
 
 const StrategyQuestionSchema = z.object({
   id: z.string().min(1),
   step: z.union([z.number(), z.enum(['1', '2', '3'])]),
-  label: z.string().min(1),
+  text: z.string().min(1),                  // §13: question text (was `label`)
   placeholder: z.string().optional(),
-  type: z.enum(['text', 'textarea', 'radio_cards']),
+  type: z.enum(['text', 'textarea', 'radio']),  // §13 vocab (was `radio_cards`)
   required: z.boolean(),
   rows: z.number().optional(),
-  options: z.array(z.object({
-    value: z.string().min(1),
-    title: z.string().min(1),
-    desc: z.string().optional(),
-  }).passthrough()).optional(),
+  options: z.array(StrategyOptionSchema).optional(),
 }).passthrough();
 
-const StrategyResultSectionSchema = z.object({
+// Build-time directive: heading + what the runtime result should analyze
+// for this section. The runtime fills the body from the visitor's answers.
+const StrategySectionPlanSchema = z.object({
   heading: z.string().min(1),
-  body: z.string().min(1),
-  action_items: z.array(z.string()).optional(),
+  directive: z.string().min(1),
+}).passthrough();
+
+// §13 cta: two explicit actions (primary + secondary). Build-time.
+const StrategyCtaSchema = z.object({
+  primary_text: z.string().min(1),
+  primary_action: z.string().min(1),
+  secondary_text: z.string().min(1),
+  secondary_action: z.string().min(1),
 }).passthrough();
 
 export const StrategyContentSchema = z.object({
-  hero: HeroSchema,
+  app_title: z.string().min(1),             // §13 (was hero.title)
+  app_tagline: z.string().min(1),           // §13 (was hero.subtitle)
+  hero_icon: z.string().min(1),             // §13: Tabler slug (was emoji)
+  image_prompt: z.string().min(1),          // §13: stored now; fal.ai wires in 3b
+  submit_button_text: z.string().min(1),    // §13
   questions: z.array(StrategyQuestionSchema).min(1),
-  paywall: PaywallCopySchema,
+  // Gate copy CONTAINER (Item 2): ratified shape, contents deferred —
+  // gates default 'free', so nothing is emitted/required this increment.
+  paywall: PaywallCopySchema.optional(),
   result: z.object({
-    plan_title: z.string().min(1),
-    intro: z.string().min(1),
-    sections: z.array(StrategyResultSectionSchema).min(1),
-    cta: CtaSchema,
+    section_plan: z.array(StrategySectionPlanSchema).min(1),
+    cta: StrategyCtaSchema,
   }).passthrough(),
+}).passthrough();
+
+// ── Strategy runtime result (generated FROM the visitor's answers) ────
+// Emitted by the runtime endpoint, not the build step. No-fallbacks.
+export const StrategyResultSchema = z.object({
+  headline: z.string().min(1),
+  summary: z.string().min(1),
+  sections: z.array(z.object({
+    heading: z.string().min(1),
+    body: z.string().min(1),
+  }).passthrough()).min(1),
 }).passthrough();
 
 // ── Assessment ───────────────────────────────────────────────────────

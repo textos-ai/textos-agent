@@ -74,7 +74,7 @@ export function wrapDocument(d: DocumentWrapperInput): string {
     app_id: input.app_id,
   });
 
-  const orchestration = emitOrchestrationScript(archetype);
+  const orchestration = emitOrchestrationScript(archetype, input.api_base);
 
   return [
     '<!DOCTYPE html>',
@@ -103,17 +103,58 @@ export function wrapDocument(d: DocumentWrapperInput): string {
 
 /** Emit the small phase-orchestration script that wires submit → paywall
  *  → result. Independent of archetype-specific scoring/calc logic. */
-function emitOrchestrationScript(archetype: Archetype): string {
+function emitOrchestrationScript(archetype: Archetype, apiBase: string): string {
   const archId = JSON.stringify(archetype.id);
+  const apiBaseLit = JSON.stringify((apiBase || '').replace(/\/$/, ''));
   return `
 // ── Phase orchestration (emitted by assembler) ─────────────────────
 (function () {
   var EV = (window.__txAssembler && window.__txAssembler.events) || { emit: function () {} };
   var ARCHETYPE = ${archId};
+  var API_BASE = ${apiBaseLit};
 
   function findPhase(id) { return document.querySelector('.tx-phase-' + id); }
   function show(id)   { var n = findPhase(id); if (n) n.hidden = false; }
   function hide(id)   { var n = findPhase(id); if (n) n.hidden = true;  }
+  function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+  // The app runs in a same-origin srcdoc iframe; the visitor URL is on the
+  // parent frame (/sites/{biz}/apps/{app}/). Derive the slugs from there.
+  function resolveAppPath() {
+    var p = '';
+    try { p = window.parent.location.pathname; } catch (e) { p = window.location.pathname; }
+    var m = p.match(/\\/sites\\/([^/]+)\\/apps\\/([^/]+)/);
+    return m ? { bizSlug: m[1], appSlug: m[2] } : null;
+  }
+
+  function collectResponses() {
+    var r = {};
+    document.querySelectorAll('.tx-phase-inputs input, .tx-phase-inputs textarea, .tx-phase-inputs select').forEach(function (el) {
+      if (el.type === 'radio') { if (el.checked) r[el.name] = el.value; }
+      else if (el.name) { r[el.name] = el.value; }
+    });
+    return r;
+  }
+
+  function renderStrategyResult(root, data) {
+    if (!root) return;
+    var html = '';
+    if (data.headline) html += '<h2 class="mb-2">' + esc(data.headline) + '</h2>';
+    if (data.summary)  html += '<p class="text-muted mb-4">' + esc(data.summary) + '</p>';
+    (data.sections || []).forEach(function (s) {
+      html += '<div class="card mb-3"><div class="card-body">'
+        + '<h5 class="card-title">' + esc(s.heading) + '</h5>'
+        + '<p class="card-text">' + esc(s.body).replace(/\\n/g, '<br>') + '</p>'
+        + '</div></div>';
+    });
+    if (data.cta && data.cta.primary_text) {
+      html += '<div class="card border-primary"><div class="card-body text-center">';
+      if (data.cta.primary_url) html += '<a class="btn btn-primary me-2" href="' + esc(data.cta.primary_url) + '">' + esc(data.cta.primary_text) + '</a>';
+      if (data.cta.secondary_text && data.cta.secondary_url) html += '<a class="btn btn-link" href="' + esc(data.cta.secondary_url) + '">' + esc(data.cta.secondary_text) + '</a>';
+      html += '</div></div>';
+    }
+    root.innerHTML = html;
+  }
 
   // Wizard step navigation (tabs, progress, Next/Back) is owned by Homer's
   // form-wizard.js, which auto-inits on [data-wizard]. We no longer hand-roll
@@ -135,6 +176,39 @@ function emitOrchestrationScript(archetype: Archetype): string {
   document.querySelectorAll('.tx-phase-inputs form[data-wizard-validation]').forEach(function (form) {
     form.addEventListener('submit', function (e) {
       e.preventDefault();
+
+      if (ARCHETYPE === 'strategy') {
+        // GATE SEAM: result is hardwired 'free' this increment — no paywall
+        // before the result. The result is generated from the visitor's
+        // answers by POST .../by-slug/{app}/result and rendered in-place.
+        var responses = collectResponses();
+        var loc = resolveAppPath();
+        var root = document.getElementById('tx-result-root');
+        hide('inputs'); show('result');
+        if (root) root.innerHTML = '<div class="text-center p-4"><div class="spinner-border text-primary" role="status"></div><p class="mt-3 text-muted">Building your plan…</p></div>';
+        EV.emit('result_requested', 'result', {});
+        if (!loc || !API_BASE) { if (root) root.innerHTML = '<p class="p-4 text-danger">Could not load your plan (missing app context).</p>'; return; }
+        fetch(API_BASE + '/api/sites/' + encodeURIComponent(loc.bizSlug))
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (biz) {
+            if (!biz || !biz.id) throw new Error('business not found');
+            return fetch(API_BASE + '/api/generated-apps/' + biz.id + '/by-slug/' + encodeURIComponent(loc.appSlug) + '/result', {
+              method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ responses: responses })
+            });
+          })
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            if (!data || data.error || !data.headline) throw new Error((data && data.message) || 'no result');
+            renderStrategyResult(root, data);
+            EV.emit('result_viewed', 'result', {});
+          })
+          .catch(function (err) {
+            if (root) root.innerHTML = '<div class="p-4 text-center"><p class="text-danger mb-1">We could not build your plan right now.</p><p class="text-muted small">Please refresh and try again.</p></div>';
+            console.error('[tx] strategy result failed', err);
+          });
+        return;
+      }
+
       // Run archetype-specific synthesis before revealing the paywall, so
       // teaser content can use computed values.
       try {

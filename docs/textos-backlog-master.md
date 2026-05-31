@@ -71,3 +71,32 @@ build pipeline is solid:
 - Enforcement logic at the two // GATE SEAM points
 
 Find the seams by grepping "GATE SEAM" in the assembler.
+
+**Schema reconciliation (do before wiring):** `app_configs` already carries
+pre-existing visitor-monetization columns — `free_tier_enabled`,
+`paid_tier_price_cents`, `token_cost_per_use` — that predate the gate model.
+Migration 042 adds `access_gate` / `result_gate` alongside them. When
+monetization wires, reconcile the two schemes so there aren't two parallel
+ways to express "is this app/result free or paid" (e.g. does `access_gate='paywall'`
+supersede `free_tier_enabled=false`? where does `paid_tier_price_cents` apply —
+access, result, or both?). Decide one source of truth; don't leave both live.
+
+---
+
+## App builder — Increment 2 follow-ups
+
+- **§13 test fixtures stale.** `src/lib/assembler/fixtures/strategy.fixture.ts`
+  still holds the pre-§13 shape (`hero` / `plan_title` / baked `result.sections`);
+  `assembler/__tests__/assembler.test.ts` + `validation.test.ts` import it and
+  would fail at runtime against the new `StrategyContentSchema`. Update the
+  fixture to the §13 build shape (app_title, app_tagline, hero_icon,
+  image_prompt, submit_button_text, questions[text + options.icon],
+  result.section_plan + cta) and re-point the two tests. Not deploy-blocking —
+  tests aren't bundled.
+- **Fresh §13 pipeline tests.** The 6 old `generate-business-app-v2*.test.ts`
+  (tool_use / buildSystemPrompt / placeholder transform) were removed; write new
+  tests for the plain-JSON §13 build step and the runtime result endpoint.
+- **Strategy question-type dispatch (was backlog #6).** Increment 2 constrains
+  the design prompt to the recipe's fixed 7-question layout (2 text, 1 textarea,
+  2 radio, 1 text, 1 textarea). Make the wizard render each question by its
+  LLM-chosen type (as assessment already does) so the layout isn't hardcoded.
