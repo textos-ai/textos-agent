@@ -115,6 +115,59 @@ The slot resolver only swaps the **exact** sentinel string `cta_url_placeholder`
 
 ---
 
+## 7. `prompt-schema.md` §3 model table is stale (missing opus-4-8, sonnet-4-6)
+
+**Captured:** 2026-05-31 (result-endpoint streaming fix — `generated-apps.ts`).
+**Tag:** docs / reference drift. Not a correctness bug, but it weakens the
+"review-before-build" mandate when the model a call actually uses isn't in the table.
+**Context:** `APP_RESULT_MODEL = claude-opus-4-8` (`src/lib/app-models.ts:23`) and the
+`sonnet` tier's likely migration target `claude-sonnet-4-6` are both absent from the
+§3 model table in `docs/prompt-schema.md`, which was last verified 2026-05-28 and tops
+out at `claude-opus-4-7`. Per §0 mandatory rule #2 ("schema must be tied to the selected
+model") a developer checking limits for the result call finds no row for its model.
+
+**Fix:** Re-verify against official docs and add rows for `claude-opus-4-8` and
+`claude-sonnet-4-6` (context window, max output tokens, structured-outputs support),
+and bump the "Last verified" date. Per the §Appendix maintenance rule, re-download the
+local doc copies under `/docs/api-docs/anthropic/` while doing so.
+
+---
+
+## 8. `src/routes/CLAUDE.md` does not exist — route files don't auto-load the prompt-schema mandate
+
+**Captured:** 2026-05-31 (same fix).
+**Tag:** guardrail gap. The prompt-schema "MANDATORY review before touching any
+external-API call/prompt/schema" rule lives only at `textos-agent/CLAUDE.md:70-71`.
+Claude Code auto-loads directory-level CLAUDE.md files by walking UP from the edited
+file; there is no `src/routes/CLAUDE.md`, so editing an API-calling route file (e.g.
+`generated-apps.ts`, which makes a live Anthropic call) does not surface the mandate
+in context unless the repo-root file happens to be loaded.
+
+**Fix:** Add a short `src/routes/CLAUDE.md` pointing at `docs/prompt-schema.md` (review-
+before-build for any route that calls an external API), mirroring the existing
+directory-file pattern (`src/lib/CLAUDE.md`, `src/lib/tasks/CLAUDE.md`). Keep it a
+pointer, not a restatement — the authoritative rules stay in `prompt-schema.md`.
+
+---
+
+## 9. Result phase is a blank spinner during Opus generation (no progressive render)
+
+**Captured:** 2026-05-31 (same fix).
+**Tag:** UX polish. Post-verification — do after the streaming fix is confirmed working.
+**Context:** The result-endpoint Opus call now streams server-side
+(`anthropic.messages.stream` + `finalMessage()` in `generated-apps.ts`), but the
+endpoint still returns a single JSON blob only after the full generation completes
+(~30–60s on Opus). The visitor stares at a blank spinner the whole time.
+
+**Fix:** Surface the result text as it arrives — stream `content_block_delta` text out
+to the client (SSE or chunked response) and progressively render the result phase,
+matching the dashboard chat panel's live-streaming UX (`chatWithClaude` /
+`src/services/anthropic.ts`). Touches both repos: agent (stream the endpoint response)
+and web (incremental render of `.tx-phase-result`). Independent of #5/#6, which are
+about *what* renders; this is about *when* it appears.
+
+---
+
 ## Notes
 
 - Path A scope was **pure removal of debug scaffolding** (console.logs, diagnostic comments, dead `requestBody`, redundant aliases, the documented-ineffective `Promise.race` + `setTimeout` wrapper) plus adapting the v2 unit tests. No behavior change to the working strategy path.
