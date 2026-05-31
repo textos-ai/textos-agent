@@ -53,14 +53,18 @@ export const c_section_hero: ComponentCatalogEntry = {
   source_page: 'landing.html',
   source_verification: 'verbatim',
   source_demo_path: '.homer-reference/landing.html',
-  html_template: `<section class="position-relative overflow-hidden" style="background-color:#1f2933;background-image:url({{bg_url}});background-size:cover;background-position:center;">
+  // `light` (boolean slot): when truthy, the hero drops the dark slab and
+  // renders title+tagline directly on the page background with dark text.
+  // DEFAULT (slot omitted / falsy) is the original dark style
+  // (#1f2933 + text-white) so every existing use is byte-identical.
+  html_template: `<section class="position-relative overflow-hidden" style="background-color:{{light?transparent:#1f2933}};background-image:url({{bg_url}});background-size:cover;background-position:center;">
   <div class="d-flex align-items-center flex-column gap-3 justify-content-center text-center p-4" style="min-height:200px;">
-    <h3 class="text-white fw-bold mb-0">{{headline}}</h3>
-    <p class="text-white text-opacity-75">{{tagline}}</p>
+    <h3 class="{{light?text-dark:text-white}} fw-bold mb-0">{{headline}}</h3>
+    <p class="{{light?text-secondary:text-white text-opacity-75}}">{{tagline}}</p>
     {{#cta_label}}<a href="{{cta_url}}" class="btn btn-primary rounded-pill">{{cta_label}}</a>{{/cta_label}}
   </div>
 </section>`,
-  fillable_slots: ['bg_url', 'headline', 'tagline', 'cta_url', 'cta_label', 'height'],
+  fillable_slots: ['bg_url', 'headline', 'tagline', 'cta_url', 'cta_label', 'height', 'light'],
   js_init: 'noop',
   js_dependencies: [],
   mobile_responsive: true,

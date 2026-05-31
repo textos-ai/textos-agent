@@ -22,7 +22,9 @@ export const STRATEGY_PROOF_COMPOSITION: CompositionBlock[] = [
     slot_values: {
       headline: 'Your Holiday Grazing-Table Game Plan',
       tagline: 'A custom charcuterie strategy for Whitmore & Boudreaux — built from your answers.',
-      // bg_url intentionally omitted; cta_label omitted so the hero CTA arm stays empty.
+      light: true,
+      // light hero (catalog `light` slot): title+tagline on the page background,
+      // no dark slab, dark text. bg_url + cta_label omitted (empty arms).
     },
   },
 
