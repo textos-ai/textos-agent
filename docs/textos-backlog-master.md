@@ -47,3 +47,11 @@ standalone items where they existed — `backlog-v2-architectural-debt.md`
 #3 (model hardcoded in the executed call) now points here for the
 swap + deadline; its remaining architectural-debt note (resolve the
 model from the registry rather than hardcode) stays in that file.
+
+**Hardcoded app-builder model (to be made admin-configurable):**
+The app design + build pipeline currently hardcodes claude-opus-4-8
+via the APP_BUILDER_MODEL constant. This is deliberate interim state.
+Once the LLM registry + admin panel ship, the app-builder model must
+be selectable from the admin panel (per-pipeline model assignment),
+not a code constant. Migrate APP_BUILDER_MODEL → registry-driven
+lookup at that time.
