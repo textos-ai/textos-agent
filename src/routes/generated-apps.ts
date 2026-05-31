@@ -812,11 +812,26 @@ app.post("/:businessId/by-slug/:slug/result", async (c) => {
   try {
     const stream = anthropic.messages.stream({
       model: APP_RESULT_MODEL,
-      max_tokens: 1500,
+      max_tokens: 6000,
       system,
       messages: [{ role: "user", content: user }],
     });
     const msg = await stream.finalMessage();
+    // Truncation guard (prompt-schema.md §6): a max_tokens stop means the JSON
+    // is cut off mid-string — fail with a clear, diagnosable error instead of a
+    // confusing "Unterminated string in JSON" downstream parse failure.
+    if (msg.stop_reason === "max_tokens") {
+      log.error("generated_apps.result.result_truncated", {
+        businessId,
+        slug,
+        max_tokens: 6000,
+        output_tokens: msg.usage?.output_tokens,
+      });
+      return c.json(
+        errBody("internal", "result generation was truncated — please retry"),
+        502,
+      );
+    }
     const block = msg.content[0];
     const text = block && block.type === "text" ? (block as { text: string }).text : "";
     parsed = JSON.parse(text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim());
