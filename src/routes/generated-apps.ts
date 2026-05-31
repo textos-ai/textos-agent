@@ -721,8 +721,8 @@ app.get("/:businessId/by-slug/:slug", async (c) => {
 //
 // The visitor completes the wizard; the client POSTs { responses } (a map of
 // question id → answer). We generate the result FROM those answers with
-// APP_RESULT_MODEL — a single call, AbortController-bounded, capped max_tokens
-// (NO Promise.race) — validate against StrategyResultSchema (no-fallbacks), and
+// APP_RESULT_MODEL — a single streaming call (prompt-schema.md §5), capped
+// max_tokens — validate against StrategyResultSchema (no-fallbacks), and
 // return { headline, summary, sections[], cta }. Per-IP and per-app KV rate
 // limits guard cost/abuse from day one.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -801,27 +801,26 @@ app.post("/:businessId/by-slug/:slug/result", async (c) => {
     responses,
   });
 
-  // Single call, AbortController-bounded, capped max_tokens. No Promise.race.
+  // Streaming call (prompt-schema.md §5): incremental content_block_delta
+  // events keep the Workers connection live, so a slow Opus generation does
+  // not stall silently at the runtime/waitUntil cap. AbortController/setTimeout
+  // are unreliable guards on a blocked non-streaming call (§5) — the SDK
+  // client's 90s `timeout` (createAnthropicClient) is the generous backstop.
+  // Output is plain-text JSON (§2.1): parse + Zod-validate the assembled text.
   const anthropic = createAnthropicClient(c.env);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 25000);
   let parsed: unknown;
   try {
-    const msg = await anthropic.messages.create(
-      {
-        model: APP_RESULT_MODEL,
-        max_tokens: 1500,
-        stream: false,
-        system,
-        messages: [{ role: "user", content: user }],
-      },
-      { signal: controller.signal },
-    );
+    const stream = anthropic.messages.stream({
+      model: APP_RESULT_MODEL,
+      max_tokens: 1500,
+      system,
+      messages: [{ role: "user", content: user }],
+    });
+    const msg = await stream.finalMessage();
     const block = msg.content[0];
     const text = block && block.type === "text" ? (block as { text: string }).text : "";
     parsed = JSON.parse(text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim());
   } catch (err) {
-    clearTimeout(timer);
     log.error("generated_apps.result.generation_failed", {
       businessId,
       slug,
@@ -829,7 +828,6 @@ app.post("/:businessId/by-slug/:slug/result", async (c) => {
     });
     return c.json(errBody("internal", "result generation failed — please retry"), 502);
   }
-  clearTimeout(timer);
 
   let result: ReturnType<typeof StrategyResultSchema.parse>;
   try {
