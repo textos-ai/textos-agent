@@ -55,3 +55,19 @@ Once the LLM registry + admin panel ship, the app-builder model must
 be selectable from the admin panel (per-pipeline model assignment),
 not a code constant. Migrate APP_BUILDER_MODEL → registry-driven
 lookup at that time.
+
+---
+
+## Visitor-facing monetization (deferred — post app-build)
+
+The business owner configures per-app access_gate + result_gate
+(free|paywall|email). Architecture lands in Increment 2 (fields +
+assembler seams, defaulted to free, unwired). Deferred until the app
+build pipeline is solid:
+- Stripe Connect for business→visitor payment (separate flow from
+  operator→TextOS tokens — do not conflate)
+- Visitor token charge at the gate
+- Email capture → leads table
+- Enforcement logic at the two // GATE SEAM points
+
+Find the seams by grepping "GATE SEAM" in the assembler.
