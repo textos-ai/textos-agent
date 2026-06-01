@@ -136,8 +136,16 @@ function inputBlockFor(q: CollectQuestion): CompositionBlock {
  * Assemble the full COLLECT inner HTML (hero + wizard) from the catalog, plus
  * the page scaffolding (loading + result mount points) and the client wizard
  * script. Returns { innerHtml, inlineScript } for the document shell.
+ *
+ * opts.postUrl — absolute URL the wizard POSTs answers to. REQUIRED for the
+ * published /sites/ app: inside the apps-shell iframe the document is loaded
+ * via srcdoc, so `window.location` is `about:srcdoc` and a relative POST would
+ * fail. When omitted (the /dev/ same-origin pages), it falls back to
+ * window.location.pathname.
  */
-export function buildStrategyCollectPage(): { innerHtml: string; inlineScript: string } {
+export function buildStrategyCollectPage(
+  opts: { postUrl?: string } = {},
+): { innerHtml: string; inlineScript: string } {
   const n = STRATEGY_COLLECT_QUESTIONS.length;
 
   // 1. Each question → its catalog input HTML (rendered first, injected raw
@@ -182,6 +190,7 @@ export function buildStrategyCollectPage(): { innerHtml: string; inlineScript: s
   const inlineScript = `
 (function(){
   var QUESTIONS = ${JSON.stringify(qMeta)};
+  var POST_URL = ${JSON.stringify(opts.postUrl ?? null)} || window.location.pathname;
   var collect = document.getElementById('fv2-collect');
   var loading = document.getElementById('fv2-loading');
   var result  = document.getElementById('fv2-result');
@@ -203,7 +212,7 @@ export function buildStrategyCollectPage(): { innerHtml: string; inlineScript: s
     var answers = QUESTIONS.map(function(q){ return { question: q.text, answer: answerFor(q) }; });
     collect.classList.add('d-none');
     loading.classList.remove('d-none');
-    fetch(window.location.pathname, {
+    fetch(POST_URL, {
       method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ answers: answers })
     }).then(function(r){ return r.text().then(function(t){ return { ok:r.ok, t:t }; }); })
       .then(function(res){

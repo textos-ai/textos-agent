@@ -35,6 +35,7 @@ import generatedAppsRoutes from "./routes/generated-apps";
 import internalRoutes from "./routes/internal";
 import factoryV2ProofRoutes from "./routes/factory-v2-proof"; // TEMP: factory-v2 step-3 proof (delete after)
 import factoryV2AppRoutes from "./routes/factory-v2-app"; // TEMP DEV: factory-v2 step-4 wizard app (retire at cutover)
+import factoryV2ApiRoutes from "./routes/factory-v2-api"; // STABLE: factory-v2 published-app result endpoint + publish action
 import appLogsRoutes from "./routes/app-logs";
 import { runHeartbeatWatchdog } from "./cron/heartbeatWatchdog";
 import { runGenAppStaleSweep } from "./cron/genAppStaleSweep";
@@ -103,6 +104,7 @@ app.route("/api/generated-apps", generatedAppsRoutes);
 app.route("/api/internal", internalRoutes);
 app.route("/api/factory-v2-proof", factoryV2ProofRoutes); // TEMP: factory-v2 step-3 proof (delete after)
 app.route("/dev/factory-strategy-app", factoryV2AppRoutes); // TEMP DEV: factory-v2 step-4 wizard app (retire at cutover)
+app.route("/api/factory-v2", factoryV2ApiRoutes); // STABLE: factory-v2 published-app result endpoint + publish action
 // Dedicated /api/app-logs prefix — see src/routes/app-logs.ts for the
 // reason it lives outside /api/businesses (multi-sub-app mount fall-
 // through wasn't reliably matching the new handler).

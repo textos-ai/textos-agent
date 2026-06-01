@@ -84,6 +84,31 @@ export async function loadRealBusiness(
   return { business: business as BusinessRow, ctx: (ctx as BusinessContextRow | null) ?? null };
 }
 
+/** Load the real business + its context by business id (the published-app
+ *  result endpoint is keyed by businessId, mirroring /api/generated-apps). */
+export async function loadRealBusinessById(
+  client: SupabaseClient,
+  businessId: string,
+): Promise<{ business: BusinessRow; ctx: BusinessContextRow | null }> {
+  const { data: business, error } = await client
+    .from('businesses')
+    .select('*')
+    .eq('id', businessId)
+    .eq('is_active', true)
+    .maybeSingle();
+  if (error) throw error;
+  if (!business) throw new BusinessNotFoundError(businessId);
+
+  const { data: ctx, error: ctxErr } = await client
+    .from('business_context')
+    .select('*')
+    .eq('business_id', businessId)
+    .maybeSingle();
+  if (ctxErr) throw ctxErr;
+
+  return { business: business as BusinessRow, ctx: (ctx as BusinessContextRow | null) ?? null };
+}
+
 /** Which required fields are present vs missing — used by validation AND ?debug. */
 export function requiredFieldReport(
   business: BusinessRow | null,
