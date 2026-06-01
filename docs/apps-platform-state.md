@@ -1,6 +1,9 @@
 # Apps Platform — Current State vs PRDs
 
-Last updated: 2026-05-30 (items #2 and #3 verified RESOLVED in code — see notes; was 2026-05-29)
+Last updated: 2026-06-01 (added §4 — the clean factory-v2 pipeline now runs
+end-to-end as a wizard→LLM→locked-recipe→catalog-compose→themed-result app on
+/dev/; the §2 raw-HTML pipeline is now slated for retirement at cutover. Prior:
+2026-05-30, items #2/#3 RESOLVED)
 
 This document is the reconciliation between the apps-platform PRD intent
 (`textos-component-factory-prd.md` — generated apps, primary spec;
@@ -37,6 +40,15 @@ backlog this drift summary points at.
 ---
 
 ## 2. Current implementation
+
+> **Retirement notice (2026-06-01):** the pipeline described in this section
+> (the `generate-business-app-v2` → `assembleApp()` →
+> `phase-renderer`/`document-wrapper` path, with its code-side transform and
+> emitted orchestration script) is the path shipping today, but it is **slated
+> for retirement at cutover** in favour of the clean factory-v2 pipeline in
+> **§4**, which now runs the full wizard→LLM→locked-recipe→catalog-compose→
+> themed-result flow end-to-end. Until cutover this §2 path remains the
+> production generator; do not delete it yet.
 
 Describes only what is actually shipped right now, with file citations.
 
@@ -183,3 +195,78 @@ Each delta: `{ item, intent_per_prd, current_state, blocking_or_followup, relate
      the href.
    - blocking_or_followup: follow-up.
    - related_backlog_item: backlog #5(d).
+
+---
+
+## 4. Clean factory-v2 pipeline (NEW — running end-to-end on /dev/)
+
+A from-scratch reimplementation of the apps platform that honours the PRD
+"compose, never generate" mandate literally, built up in steps and now a
+**running app**, not just a static proof. It lives in `src/lib/factory-v2/`
+(plus two TEMP routes) and is independent of the §2 path — it shares only the
+read-only `src/lib/component-catalog/*` catalog.
+
+### 4.1 The chain (all stages working)
+
+1. **COLLECT (wizard).** `strategy-collect-recipe.ts` composes the running
+   wizard 100% from the catalog: `section-hero[light]` + the Homer `wizard`
+   component (progress + Back/Next + Submit) with one catalog input per §13
+   question (`text-input` / `textarea` / `radio-cards`). No hand-written app
+   HTML; `form-wizard.js` drives step nav.
+2. **Real answers → LLM (content only).** On submit the visitor's REAL answers
+   POST back and feed `strategy-live-generator.ts`
+   (`generateStrategyContentFromAnswers`) — Opus 4.8, streaming, plain-text
+   JSON + Zod (`strategy-content-schema.ts`), reusing the parameterized
+   `buildStrategyLivePrompt`. The proven sample generator
+   (`strategy-content-generator.ts`) is left untouched. The LLM supplies
+   **content only** — no HTML, no component choices.
+3. **Locked recipe → catalog compose.** `strategy-result-recipe.ts` maps the
+   validated content onto the LOCKED result order (`section-hero[light]` →
+   `card-basic ×N` → `list-group` → `card-cta` → `share-bar` →
+   `download-button`); `assemble.ts` renders each block ONLY from its catalog
+   `html_template` and **throws `UnknownComponentError` on any unknown id**
+   (no fallback). `template-render.ts` is the clean-room re-impl of the Homer
+   construct preprocessing (`{{slot:…}}`, `{{key|default}}`, `{{key?class}}`,
+   `{{key?truthy:falsy}}`), mirroring `assembler/template.ts`.
+4. **Themed result.** `document-shell.ts` stamps the chosen Homer skin +
+   light scheme once on the root — `<html data-skin="{skin}"
+   data-bs-theme="light">` — and every catalog component inherits the palette
+   (no per-component theming). Hero renders on BOTH the collect and result
+   pages, light.
+
+### 4.2 Styling fold (Step B)
+
+- `strategy-skin.ts` picks one of the six Homer skins (`default | two | three
+  | four | five | six`) and the choice is **stable** — same skin on every
+  render. The shell adds `data-bs-theme="light"`. Skins resolve to distinct
+  palettes via Homer's `--ins-*` CSS variables (verified in
+  `public/homer/css/app.min.css`).
+
+### 4.3 Routes (both TEMP — retire at cutover)
+
+- `routes/factory-v2-proof.ts` (`/api/factory-v2-proof`) — step-3 proof:
+  hardcoded sample answers → result HTML for capture into
+  `textos-web/public/dev/`. Secret-gated.
+- `routes/factory-v2-app.ts` (`/dev/factory-strategy-app`) — step-4 running
+  app: `GET` serves the themed wizard page (Homer assets loaded absolute from
+  the textos-web origin, since the Worker has no `/homer/*`), `POST` runs the
+  chain on the visitor's real answers and returns the composed result inner
+  HTML. Browser-callable, **not** secret-gated (must accept an anonymous
+  visitor POST) — keep it a `/dev/` route, not a permanent public endpoint.
+  Verified live on test 2026-06-01: skin stamped + stable, all 7 questions
+  collected, result reflects the answers, hero on both pages light,
+  throw-on-unknown active.
+
+### 4.4 Open follow-ups (backlog)
+
+- **Skin persistence.** The stable skin is currently DERIVED from the business
+  name (`pickStableSkin(SAMPLE_BUSINESS.name)`); production must make a real
+  random pick ONCE at app-build time and persist it on the business app
+  metadata (`business_assets` / `app_configs`; no dedicated `skin` column
+  yet). File a backlog item.
+- **CTA / share / download URLs.** `card-cta` `cta_url`, `share-bar` url, and
+  `download-button` url are `#` placeholders. Wire a real PDF for download and
+  clipboard.js (or share intents) for share; substitute the operator URL for
+  the CTA at render time.
+- This clean path supersedes the §2 pipeline at cutover (see §2 retirement
+  notice).
