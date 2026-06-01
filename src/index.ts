@@ -33,6 +33,7 @@ import appsInstancesRoutes from "./routes/apps-instances";
 import xaiFyiRoutes from "./routes/xai-fyi";
 import generatedAppsRoutes from "./routes/generated-apps";
 import internalRoutes from "./routes/internal";
+import factoryV2ProofRoutes from "./routes/factory-v2-proof"; // TEMP: factory-v2 step-3 proof (delete after)
 import appLogsRoutes from "./routes/app-logs";
 import { runHeartbeatWatchdog } from "./cron/heartbeatWatchdog";
 import { runGenAppStaleSweep } from "./cron/genAppStaleSweep";
@@ -99,6 +100,7 @@ app.route("/api/business-apps", appsInstancesRoutes);
 app.route("/xai-fyi", xaiFyiRoutes);
 app.route("/api/generated-apps", generatedAppsRoutes);
 app.route("/api/internal", internalRoutes);
+app.route("/api/factory-v2-proof", factoryV2ProofRoutes); // TEMP: factory-v2 step-3 proof (delete after)
 // Dedicated /api/app-logs prefix — see src/routes/app-logs.ts for the
 // reason it lives outside /api/businesses (multi-sub-app mount fall-
 // through wasn't reliably matching the new handler).
