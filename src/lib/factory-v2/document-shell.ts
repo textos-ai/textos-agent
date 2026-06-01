@@ -22,6 +22,12 @@
 //   - assetBase set (e.g. the live Worker route) → absolute URLs. A page served
 //     LIVE from the Worker origin has no /homer/* of its own, so it must point
 //     at the textos-web origin that does.
+//
+// STYLE LAYER (Phase 3b): when `fontPairing` is set, the shell injects a
+// bounded TextOS font-pairing layer (fonts + type tokens only) — see
+// textos-style-layer.ts for the closed set and the strict boundary.
+
+import { buildStyleLayerHead } from './textos-style-layer';
 
 const HOMER_CSS = [
   '/homer/css/vendors.min.css',
@@ -44,6 +50,12 @@ export interface WrapProofOptions {
   extraScripts?: string[];
   /** Raw inline JS appended in a final <script> after all src scripts. */
   inlineScript?: string;
+  /** TextOS STYLE LAYER — a bounded font-pairing id from the closed set in
+   *  `textos-style-layer.ts`. When set, the shell (the ONE allowed seam)
+   *  injects that pairing's Google Fonts + a type-only <style>. Throws on an
+   *  unknown id. The layer sets ONLY fonts + light type tokens — never
+   *  structure, color, or per-component CSS (see textos-style-layer.ts). */
+  fontPairing?: string;
 }
 
 export function wrapProofDocument(innerHtml: string, opts: WrapProofOptions = {}): string {
@@ -51,6 +63,9 @@ export function wrapProofDocument(innerHtml: string, opts: WrapProofOptions = {}
   const base = opts.assetBase ?? '';
   const css = HOMER_CSS.map((href) => `<link rel="stylesheet" href="${base}${href}">`);
   const js = [...HOMER_JS, ...(opts.extraScripts ?? [])].map((src) => `<script src="${base}${src}"></script>`);
+  // STYLE LAYER injected AFTER Homer CSS so the bounded type rules win the
+  // cascade. Throws on an unknown pairing id (closed set).
+  const styleLayer = opts.fontPairing ? buildStyleLayerHead(opts.fontPairing) : '';
 
   return [
     '<!DOCTYPE html>',
@@ -60,6 +75,7 @@ export function wrapProofDocument(innerHtml: string, opts: WrapProofOptions = {}
     '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
     '<title>factory-v2 — Strategy compose proof</title>',
     ...css,
+    ...(styleLayer ? [styleLayer] : []),
     '</head>',
     '<body class="bg-body-tertiary">',
     // PRD §A.7 container frame — the only hand-written structural HTML.

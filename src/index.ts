@@ -36,6 +36,7 @@ import internalRoutes from "./routes/internal";
 import factoryV2ProofRoutes from "./routes/factory-v2-proof"; // TEMP: factory-v2 step-3 proof (delete after)
 import factoryV2AppRoutes from "./routes/factory-v2-app"; // TEMP DEV: factory-v2 step-4 wizard app (retire at cutover)
 import factoryV2ApiRoutes from "./routes/factory-v2-api"; // STABLE: factory-v2 published-app result endpoint + publish action
+import factoryAssessmentAppRoutes from "./routes/factory-assessment-app"; // TEMP DEV: factory-v2 Assessment app (Phase 3 /dev/ proof)
 import appLogsRoutes from "./routes/app-logs";
 import { runHeartbeatWatchdog } from "./cron/heartbeatWatchdog";
 import { runGenAppStaleSweep } from "./cron/genAppStaleSweep";
@@ -105,6 +106,7 @@ app.route("/api/internal", internalRoutes);
 app.route("/api/factory-v2-proof", factoryV2ProofRoutes); // TEMP: factory-v2 step-3 proof (delete after)
 app.route("/dev/factory-strategy-app", factoryV2AppRoutes); // TEMP DEV: factory-v2 step-4 wizard app (retire at cutover)
 app.route("/api/factory-v2", factoryV2ApiRoutes); // STABLE: factory-v2 published-app result endpoint + publish action
+app.route("/dev/factory-assessment-app", factoryAssessmentAppRoutes); // TEMP DEV: factory-v2 Assessment app (Phase 3 /dev/ proof)
 // Dedicated /api/app-logs prefix — see src/routes/app-logs.ts for the
 // reason it lives outside /api/businesses (multi-sub-app mount fall-
 // through wasn't reliably matching the new handler).

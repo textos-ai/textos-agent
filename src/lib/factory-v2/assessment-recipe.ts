@@ -1,0 +1,215 @@
+// factory-v2 — Assessment LOCKED recipe + page builder.
+//
+// Composes the Assessment app 100% from the Homer catalog (throw-on-unknown
+// active via assembleComposition) and bakes a ~deterministic CLIENT-SIDE
+// scorer. There is NO server call on submit and NO /api/ result endpoint —
+// scoring is pure math over the baked spec.
+//
+// COLLECT (locked): section-hero[light] → wizard(steps) → radio_cards per
+//   question → submit (wizard's own submit button).
+// RESULT (locked):  section-hero[light] → score-badge → chart-radar →
+//   card-basic ×N (matched band) → list-group → card-cta → share-bar →
+//   download-button.
+//
+// Score-dependent blocks (score-badge color/label, the band's card-basic ×N)
+// are pre-composed PER BAND from the catalog and hidden; the client reveals the
+// matched band, fills the score number, and inits the radar with the computed
+// per-dimension values. Band-independent blocks (chart, recommendations, CTA,
+// share, download) are composed once.
+
+import { assembleComposition, type CompositionBlock } from './assemble';
+import type { AssessmentBuildSpec } from './assessment-spec-schema';
+
+export const LOCKED_ASSESSMENT_RESULT_ORDER = [
+  'section-hero', // [light]
+  'score-badge', // matched band
+  'chart-radar', // per-dimension radar (client-computed values)
+  'card-basic', // ×N — matched band interpretation_cards
+  'list-group', // recommendations
+  'card-cta',
+  'share-bar',
+  'download-button',
+] as const;
+
+/** Render the radio_cards input HTML for one question. */
+function questionInputHtml(q: AssessmentBuildSpec['questions'][number]): string {
+  const block: CompositionBlock = {
+    component_id: 'radio-cards',
+    slot_values: {
+      label: q.label,
+      name: q.id,
+      id: q.id,
+      options: q.options.map((o) => ({ label: o.label, value: o.value })), // points NOT in the input — scorer reads the baked spec
+    },
+  };
+  return assembleComposition([block]).html;
+}
+
+export function buildAssessmentPage(spec: AssessmentBuildSpec): { innerHtml: string; inlineScript: string } {
+  // ── COLLECT: hero[light] + wizard(steps grouped by question.step) ────────
+  const stepNums = Array.from(new Set(spec.questions.map((q) => q.step))).sort((a, b) => a - b);
+  const STEP_ICONS = ['list-check', 'adjustments', 'chart-dots', 'flag'];
+  const steps = stepNums.map((stepNo, i) => {
+    const qs = spec.questions.filter((q) => q.step === stepNo);
+    return {
+      id: `asmt-step-${i}`,
+      title: `Step ${i + 1}`,
+      subtitle: `${qs.length} question${qs.length === 1 ? '' : 's'}`,
+      icon: STEP_ICONS[i] ?? 'list-check',
+      content: qs.map(questionInputHtml).join('\n'),
+      first: i === 0,
+      hasPrev: i > 0,
+      hasNext: i < stepNums.length - 1,
+      last: i === stepNums.length - 1,
+    };
+  });
+
+  const { html: collectHtml } = assembleComposition([
+    { component_id: 'section-hero', slot_values: { headline: spec.hero.title, tagline: spec.hero.subtitle, light: true } },
+    { component_id: 'wizard', slot_values: { steps } },
+  ]);
+
+  // ── RESULT: score-dependent blocks pre-composed PER BAND (sorted by min) ─
+  const bands = [...spec.scoring.score_bands].sort((a, b) => a.min - b.min);
+
+  // score-badge per band (number left blank → client fills the matched one)
+  const bandBadges = bands
+    .map((b, i) => {
+      const { html } = assembleComposition([
+        {
+          component_id: 'score-badge',
+          slot_values: { score: '', label: b.label, sublabel: spec.result.score_subtitle, variant: b.color },
+        },
+      ]);
+      // Hidden via inline display:none (always wins over Bootstrap display
+      // utilities); revealed by CLEARING the inline style. Fully out of flow.
+      return `<div class="asmt-badge" data-band="${i}" style="display:none">${html}</div>`;
+    })
+    .join('\n');
+
+  // card-basic ×N per band (matched band's interpretation_cards)
+  const bandCards = bands
+    .map((b, i) => {
+      const cards = b.interpretation_cards
+        .map((card) => assembleComposition([{ component_id: 'card-basic', slot_values: { title: card.title, content: card.body } }]).html)
+        .join('\n');
+      // Toggled outer carries NO display-* utility (else .d-flex{!important}
+      // would override the inline display:none). Flex layout lives on the inner.
+      return `<div class="asmt-cards" data-band="${i}" style="display:none"><div class="d-flex flex-column gap-3">${cards}</div></div>`;
+    })
+    .join('\n');
+
+  // Band-independent blocks (composed once).
+  const { html: resultHeroHtml } = assembleComposition([
+    { component_id: 'section-hero', slot_values: { headline: spec.result.score_label, tagline: spec.result.score_subtitle, light: true } },
+  ]);
+  const { html: chartHtml } = assembleComposition([
+    { component_id: 'chart-radar', slot_values: { id: 'asmt-radar', height: '340px' } },
+  ]);
+  const { html: listHtml } = assembleComposition([
+    {
+      component_id: 'list-group',
+      slot_values: {
+        items: spec.result.recommendations.map((r) => ({ label: `[${r.priority.toUpperCase()}] ${r.title} — ${r.body}` })),
+      },
+    },
+  ]);
+  const { html: ctaHtml } = assembleComposition([
+    {
+      component_id: 'card-cta',
+      slot_values: {
+        headline: spec.result.cta.headline,
+        supporting_text: spec.result.cta.body,
+        cta_url: '#',
+        cta_label: spec.result.cta.cta_label,
+      },
+    },
+  ]);
+  const { html: shareHtml } = assembleComposition([
+    {
+      component_id: 'share-bar',
+      slot_values: { url: '#', text: spec.hero.title, subject: spec.hero.title, body: spec.result.score_subtitle },
+    },
+  ]);
+  const { html: downloadHtml } = assembleComposition([
+    {
+      component_id: 'download-button',
+      slot_values: { url: '#', label: 'Download your scorecard (PDF)', variant: 'outline-primary', download: 'scorecard' },
+    },
+  ]);
+
+  const innerHtml = [
+    `<div id="asmt-collect">${collectHtml}</div>`,
+    // Toggled outer carries NO display-* utility; the always-flex layout is on
+    // the inner wrapper, so the inline display:none on the outer truly hides it.
+    `<div id="asmt-result" style="display:none">`,
+    `<div class="d-flex flex-column gap-3">`,
+    resultHeroHtml,
+    bandBadges, // locked order: score-badge (matched band revealed) …
+    chartHtml, //                … → chart-radar …
+    bandCards, //                … → card-basic ×N (matched band) …
+    listHtml,
+    ctaHtml,
+    shareHtml,
+    downloadHtml,
+    `</div>`,
+    `</div>`,
+  ].join('\n');
+
+  // ── Baked client scorer (trimmed spec: only what scoring needs) ──────────
+  const SPEC = {
+    questions: spec.questions.map((q) => ({
+      id: q.id,
+      dimension: q.dimension,
+      options: q.options.map((o) => ({ value: o.value, points: o.points })),
+    })),
+    dimensions: spec.dimensions.map((d) => ({ id: d.id, label: d.label })),
+    bands: bands.map((b) => ({ min: b.min, max: b.max })), // same order as the rendered .asmt-band[data-band] wrappers
+  };
+
+  const inlineScript = `
+(function(){
+  var SPEC = ${JSON.stringify(SPEC)};
+  var collect = document.getElementById('asmt-collect');
+  var result  = document.getElementById('asmt-result');
+  var form = collect && collect.querySelector('form');
+  if(!form){ return; }
+  form.addEventListener('submit', function(e){
+    e.preventDefault();
+    var total = 0, byDim = {}, dimMax = {};
+    SPEC.questions.forEach(function(q){
+      var maxp = 0; q.options.forEach(function(o){ if(o.points > maxp) maxp = o.points; });
+      dimMax[q.dimension] = (dimMax[q.dimension] || 0) + maxp;
+      var sel = form.querySelector('input[name="' + q.id + '"]:checked');
+      var pts = 0;
+      if(sel){ var opt = null; q.options.forEach(function(o){ if(o.value === sel.value) opt = o; }); pts = opt ? opt.points : 0; }
+      total += pts;
+      byDim[q.dimension] = (byDim[q.dimension] || 0) + pts;
+    });
+    // band match (SPEC.bands pre-sorted, tiling [0, max_score])
+    var idx = -1;
+    for(var i = 0; i < SPEC.bands.length; i++){ if(total >= SPEC.bands[i].min && total <= SPEC.bands[i].max){ idx = i; break; } }
+    if(idx < 0){ idx = SPEC.bands.length - 1; }
+    collect.style.display = 'none';
+    result.style.display = '';
+    var badge = result.querySelector('.asmt-badge[data-band="' + idx + '"]');
+    if(badge){ badge.style.display = ''; var num = badge.querySelector('.avatar-title'); if(num){ num.textContent = total; } }
+    var cards = result.querySelector('.asmt-cards[data-band="' + idx + '"]');
+    if(cards){ cards.style.display = ''; }
+    var labels = SPEC.dimensions.map(function(d){ return d.label; });
+    var values = SPEC.dimensions.map(function(d){ var mx = dimMax[d.id] || 1; return Math.round((byDim[d.id] || 0) / mx * 100); });
+    try {
+      new CustomChartJs({ selector: '#asmt-radar', options: function(){ return {
+        type: 'radar',
+        data: { labels: labels, datasets: [{ label: 'Your scores', data: values,
+          borderColor: ins('chart-primary'), backgroundColor: ins('chart-primary-rgb', 0.2), pointBackgroundColor: ins('chart-primary') }] },
+        options: { scales: { r: { suggestedMin: 0, suggestedMax: 100 } } }
+      }; } });
+    } catch(err){ /* radar is non-fatal */ }
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+})();
+`.trim();
+
+  return { innerHtml, inlineScript };
+}
