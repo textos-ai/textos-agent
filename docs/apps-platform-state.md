@@ -1,9 +1,10 @@
 # Apps Platform — Current State vs PRDs
 
-Last updated: 2026-06-01 (added §4 — the clean factory-v2 pipeline now runs
-end-to-end as a wizard→LLM→locked-recipe→catalog-compose→themed-result app on
-/dev/; the §2 raw-HTML pipeline is now slated for retirement at cutover. Prior:
-2026-05-30, items #2/#3 RESOLVED)
+Last updated: 2026-06-01 (Phase 1 COMPLETE — the clean factory-v2 Strategy app
+now serves on the REAL /sites/{slug}/apps/{slug}/ route on real business context
+with a persisted skin, through the unchanged delivery path; see §4. Earlier the
+same day: added §4 for the /dev/ pipeline; the §2 raw-HTML pipeline is slated
+for retirement at cutover. Prior: 2026-05-30, items #2/#3 RESOLVED)
 
 This document is the reconciliation between the apps-platform PRD intent
 (`textos-component-factory-prd.md` — generated apps, primary spec;
@@ -234,39 +235,83 @@ read-only `src/lib/component-catalog/*` catalog.
    (no per-component theming). Hero renders on BOTH the collect and result
    pages, light.
 
-### 4.2 Styling fold (Step B)
+### 4.2 Styling fold (Step B) + persisted skin (Phase 1)
 
-- `strategy-skin.ts` picks one of the six Homer skins (`default | two | three
-  | four | five | six`) and the choice is **stable** — same skin on every
-  render. The shell adds `data-bs-theme="light"`. Skins resolve to distinct
-  palettes via Homer's `--ins-*` CSS variables (verified in
-  `public/homer/css/app.min.css`).
+- `strategy-skin.ts` defines the six Homer skins (`default | two | three |
+  four | five | six`); the shell stamps the chosen skin + `data-bs-theme=
+  "light"` on the root, and every component inherits via Homer's `--ins-*`
+  CSS variables (verified in `public/homer/css/app.min.css`).
+- **Persistence (Phase 1, RESOLVED):** the skin is no longer derived from the
+  business name. `strategy-skin-store.ts` (`getOrCreateSkin`) picks a random
+  skin ONCE on first render and persists it to `factory_v2_app_skin(business_id
+  PK, skin)` (migration 043), reading it back on every render — same business
+  → same skin. `factory_v2_app_skin` is the **Option-A interim store**; migrate
+  to per-app `app_configs.skin` at cutover when the app persists as a real
+  `business_assets` row.
 
-### 4.3 Routes (both TEMP — retire at cutover)
+### 4.3 Routes
 
-- `routes/factory-v2-proof.ts` (`/api/factory-v2-proof`) — step-3 proof:
-  hardcoded sample answers → result HTML for capture into
-  `textos-web/public/dev/`. Secret-gated.
-- `routes/factory-v2-app.ts` (`/dev/factory-strategy-app`) — step-4 running
-  app: `GET` serves the themed wizard page (Homer assets loaded absolute from
-  the textos-web origin, since the Worker has no `/homer/*`), `POST` runs the
-  chain on the visitor's real answers and returns the composed result inner
-  HTML. Browser-callable, **not** secret-gated (must accept an anonymous
-  visitor POST) — keep it a `/dev/` route, not a permanent public endpoint.
-  Verified live on test 2026-06-01: skin stamped + stable, all 7 questions
-  collected, result reflects the answers, hero on both pages light,
-  throw-on-unknown active.
+**STABLE (live path — `routes/factory-v2-api.ts`, `/api/factory-v2`):**
+- `POST /:businessId/by-slug/:appSlug/result` — public, rate-limited (per-IP +
+  per-app KV). The published app's iframe wizard POSTs visitor answers here;
+  runs the proven chain on the business's REAL context (no-fallbacks) and
+  returns the composed result inner HTML. **The live app depends only on this**
+  — not on any `/dev/` route.
+- `POST /:businessId/publish` — **test-only** (`ENVIRONMENT==='test'`); builds
+  the self-contained wizard HTML (skin baked, absolute result URL, absolute
+  Homer assets) and upserts the `business_assets` app row the existing
+  `/api/generated-apps` by-slug endpoint serves. Pending owner auth (Phase 4).
+
+**TEMP `/dev/` (retire at cutover):**
+- `routes/factory-v2-proof.ts` (`/api/factory-v2-proof`) — step-3 proof,
+  secret-gated, sample answers → captured static HTML.
+- `routes/factory-v2-app.ts` (`/dev/factory-strategy-app[/:slug]`) — step-4 /
+  Phase-1 dev app: `GET` serves the themed wizard, `POST` runs the chain;
+  `/:slug` loads real context + persisted skin + a `?debug=context`
+  introspection mode. Browser-callable, not secret-gated.
 
 ### 4.4 Open follow-ups (backlog)
 
-- **Skin persistence.** The stable skin is currently DERIVED from the business
-  name (`pickStableSkin(SAMPLE_BUSINESS.name)`); production must make a real
-  random pick ONCE at app-build time and persist it on the business app
-  metadata (`business_assets` / `app_configs`; no dedicated `skin` column
-  yet). File a backlog item.
+- **Skin store migration.** `factory_v2_app_skin` is the interim home; move to
+  per-app `app_configs.skin` at cutover when the factory-v2 app persists as a
+  real `business_assets` 'app' row.
+- **Publish owner auth (Phase 4).** `POST /publish` is test-only gated; a prod
+  path needs proper `requireAuth` + ownership re-verify (mirror
+  `/api/generated-apps` PATCH/DELETE).
 - **CTA / share / download URLs.** `card-cta` `cta_url`, `share-bar` url, and
   `download-button` url are `#` placeholders. Wire a real PDF for download and
   clipboard.js (or share intents) for share; substitute the operator URL for
   the CTA at render time.
 - This clean path supersedes the §2 pipeline at cutover (see §2 retirement
   notice).
+
+### 4.5 Phase 1 COMPLETE — real business + live /sites/ route (2026-06-01)
+
+The clean pipeline now runs on a REAL business through the REAL site route, not
+just `/dev/` with sample data.
+
+- **Real context, no-fallbacks.** `strategy-context.ts` loads `businesses` +
+  `business_context` (by slug or id) and HALTS (`MissingContextError` → 422
+  naming the fields) if any required field is missing — `businesses.name` +
+  `business_context.{industry, business_summary, value_proposition,
+  brand_voice}` (a generic industry counts as missing). No fallback to
+  `SAMPLE_BUSINESS`. Verified: `gaudet-charcuterie-o8km` has all required
+  fields; the result reflects gaudet's real brand.
+- **Live on the real route.** Published to
+  `/sites/gaudet-charcuterie-o8km/apps/charcuterie-strategy/` via a
+  `business_assets` upsert (asset_type='app', app_slug, is_current=true,
+  `asset_data={html, app_title, app_tagline, app_type:'strategy'}`),
+  superseding the prior row at that slug (update-in-place under the unique
+  `(business_id, app_slug)` index). Served through the **UNCHANGED** delivery
+  path: `_redirects` → `apps-shell.astro` → `/api/sites` → `/api/generated-apps`
+  by-slug → iframe `srcdoc`. **Zero edits** to `_redirects`, `_routes.json`,
+  `apps-shell.astro`, `sites.ts`, or the by-slug endpoint. No schema change.
+- **about:srcdoc fix.** Inside the apps-shell iframe the document is `srcdoc`,
+  so `window.location` can't be the POST target; `strategy-collect-recipe.ts`
+  gained a `postUrl` param that bakes the absolute `/api/factory-v2/.../result`
+  URL. CORS already allows the iframe's inherited origin (`*.textos-web-test
+  .pages.dev`).
+- **Pipeline B untouched** — this is a parallel publish + serve path that reuses
+  the shared serving infra read-only.
+- Commits: `20b69a6` (Phase 1: real context + no-fallbacks + persisted skin),
+  `a08cc7a` (Phase 1 step 2: live on /sites/ + stable /api/ result endpoint).
