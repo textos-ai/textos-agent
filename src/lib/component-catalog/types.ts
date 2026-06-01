@@ -21,6 +21,34 @@ export type InferenceConfidence = 'high' | 'medium' | 'low';
 
 export type JsInit = 'noop' | 'auto' | 'manual';
 
+import type {
+  ElevationToken, RadiusToken, BorderToken, SurfaceToken, EmphasisToken,
+} from './design-tokens';
+
+/** Per-aspect capability: which dictionary tokens a component supports + its
+ *  current default. `default` MUST be in `supported`; both reference the closed
+ *  design-token sets (design-tokens.ts) — never free-text. */
+export interface AspectCapability<T extends string> {
+  supported: T[];
+  default: T;
+  /** one-line: how this aspect applies to THIS component (e.g. which slot drives it). */
+  notes?: string;
+}
+
+/** Structured design-token capability for a component. Each aspect is optional —
+ *  present only when the component meaningfully supports it. Harmonizes the
+ *  existing free-text `homer_classes` / ad-hoc variant/size slots ONTO the
+ *  dictionary; coins no new words. */
+export interface ComponentCapabilities {
+  /** one-line, component-level: when to reach for this component. */
+  when_to_use: string;
+  elevation?: AspectCapability<ElevationToken>;
+  radius?: AspectCapability<RadiusToken>;
+  border?: AspectCapability<BorderToken>;
+  surface?: AspectCapability<SurfaceToken>;
+  emphasis?: AspectCapability<EmphasisToken>;
+}
+
 export interface ComponentCatalogEntry {
   id: string;
   name: string;
@@ -50,6 +78,10 @@ export interface ComponentCatalogEntry {
 
   archetype_fits: ArchetypeId[];
   example_usage?: string;
+
+  /** Structured design-token capability (Phase B). Optional — entries without
+   *  it are still valid; populated catalog entries reference design-tokens.ts. */
+  capabilities?: ComponentCapabilities;
 }
 
 export interface ComponentCatalog {

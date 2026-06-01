@@ -315,3 +315,39 @@ just `/dev/` with sample data.
   the shared serving infra read-only.
 - Commits: `20b69a6` (Phase 1: real context + no-fallbacks + persisted skin),
   `a08cc7a` (Phase 1 step 2: live on /sites/ + stable /api/ result endpoint).
+
+---
+
+## 5. Design-token dictionary + per-component capability (Phase A/B)
+
+A controlled style vocabulary for the generated-app / Homer layer, built ON TOP
+of values that already exist — it adds NAMES, never new values. Separate from
+`textos-web/src/styles/tokens.css` (the platform studio/daylight system).
+
+- **Dictionary** (`src/lib/component-catalog/design-tokens.ts`): 5 CLOSED
+  aspects, each a canonical-name set mapped onto an existing Homer `--ins-*`
+  variable / Bootstrap utility / `textos-style-layer.ts` `--tx-*` value:
+  - `elevation` {flat, sm, raised, lg} → `.shadow*` / `--ins-box-shadow*`
+  - `radius` {square, sm, rounded, lg, xl, circle, pill} → `.rounded*` /
+    `--ins-border-radius*` (fixed rem — never skin/theme-varied)
+  - `border` {none, hairline, accent, dashed} → `.border*` / `--ins-border*`
+  - `surface` {plain, card, raised-card, tinted} → `.card` / `.bg-{color}-subtle`
+  - `emphasis` {muted, default, strong, feature} → `--tx-*` pairing + `.fs-*`/`.fw-*`
+  `TOKEN_REFERENCE` carries each token's `{utility, source, varies_by, when}`.
+  Closed-set discipline mirrors `isFontPairing`: `isDesignToken(aspect, name)` +
+  `UnknownDesignTokenError` (throw, no fallback). **No resolver yet** — emitting
+  the utility/CSS is Phase C.
+- **Capability metadata** (`types.ts` → `ComponentCapabilities` /
+  `AspectCapability<T>`; `capabilities?` on every `ComponentCatalogEntry`):
+  all **65** catalog entries now declare, per relevant aspect, the dictionary
+  tokens they `supported[]` + the `default` (today's actual render) + a one-line
+  `notes`, plus a component-level `when_to_use`. Tokens are union-typed against
+  `design-tokens.ts`, so `tsc` rejects any non-dictionary word (zero free-text —
+  machine-verified). Color stays the skin/`variant` mechanism (no color aspect).
+- **Inert until Phase C.** `capabilities` is pure metadata; nothing reads it
+  yet. Composition wiring (LLM picks tokens per component) is Phase C.
+- **Proposal of record:** `docs/factory-v2-design-token-dictionary-proposal.md`.
+- **Conditional front-door (backlog):** a `spacing`/gap/padding aspect is the
+  one deferred candidate — add ONLY if Phase C output looks cramped after
+  composing with the 5 aspects. Width/fluid, native-control internals, and the
+  tooltip dark-bubble surface were considered and **dropped** as edge cases.

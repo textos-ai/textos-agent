@@ -26,6 +26,11 @@ export const c_clipboard_copy: ComponentCatalogEntry = {
   reliability_notes: 'Not in vendors.min.js — must add clipboard.min.js script tag.',
   archetype_fits: ['strategy', 'assessment', 'calculator'],
   example_usage: 'Share-link copy.',
+  capabilities: {
+    when_to_use: 'A small solid button that copies a target value to the clipboard.',
+    border: { supported: ['hairline', 'accent'], default: 'hairline', notes: 'btn btn-primary; color from variant / skin palette, not a token.' },
+    radius: { supported: ['rounded', 'pill', 'square'], default: 'rounded', notes: 'Bootstrap .btn default corner rounding.' },
+  },
 };
 
 export const c_share_bar: ComponentCatalogEntry = {
@@ -55,6 +60,11 @@ export const c_share_bar: ComponentCatalogEntry = {
   reliability_tier: 'core',
   reliability_notes: 'Built from Bootstrap buttons + Tabler brand icons + (optionally) clipboard.js. Not a single demo file, but each piece is verbatim.',
   archetype_fits: ['strategy', 'assessment', 'calculator'],
+  capabilities: {
+    when_to_use: 'A row of small outline icon-buttons for sharing a URL to social/email/clipboard.',
+    border: { supported: ['hairline', 'accent'], default: 'hairline', notes: 'btn-outline-secondary on each icon button; 1px outline.' },
+    radius: { supported: ['rounded', 'pill', 'square'], default: 'rounded', notes: 'Bootstrap .btn default corner rounding on each share button.' },
+  },
 };
 
 export const c_download_button: ComponentCatalogEntry = {
@@ -75,6 +85,11 @@ export const c_download_button: ComponentCatalogEntry = {
   text_mode_notes: 'Bot sends a file or URL.',
   reliability_tier: 'core',
   archetype_fits: ['strategy', 'assessment', 'calculator'],
+  capabilities: {
+    when_to_use: 'An anchor styled as a solid button that downloads a file or opens a URL.',
+    border: { supported: ['hairline', 'accent'], default: 'hairline', notes: 'btn btn-{variant}; color from the variant slot / skin palette, not a token.' },
+    radius: { supported: ['rounded', 'pill', 'square'], default: 'rounded', notes: 'Bootstrap .btn default corner rounding.' },
+  },
 };
 
 export const c_collapse: ComponentCatalogEntry = {
@@ -95,6 +110,11 @@ export const c_collapse: ComponentCatalogEntry = {
   text_mode: 'adapted',
   reliability_tier: 'core',
   archetype_fits: ['strategy', 'calculator'],
+  capabilities: {
+    when_to_use: 'A show-more toggle: an outline button that reveals/hides a collapsing content region.',
+    border: { supported: ['hairline', 'accent'], default: 'hairline', notes: 'btn-outline-primary trigger; 1px outline.' },
+    radius: { supported: ['rounded', 'pill', 'square'], default: 'rounded', notes: 'Bootstrap .btn default corner rounding on the trigger.' },
+  },
 };
 
 export const c_offcanvas: ComponentCatalogEntry = {
@@ -118,6 +138,11 @@ export const c_offcanvas: ComponentCatalogEntry = {
   text_mode: 'visual-only',
   reliability_tier: 'core',
   archetype_fits: [],
+  capabilities: {
+    when_to_use: 'A side drawer panel that slides in from an edge, opened by a solid trigger button.',
+    surface: { supported: ['plain', 'card'], default: 'plain', notes: 'offcanvas panel is a plain surface; trigger is btn btn-primary.' },
+    radius: { supported: ['rounded', 'pill', 'square'], default: 'rounded', notes: 'Bootstrap .btn default corner rounding on the trigger button.' },
+  },
 };
 
 export const c_dropdown: ComponentCatalogEntry = {
@@ -142,6 +167,11 @@ export const c_dropdown: ComponentCatalogEntry = {
   text_mode: 'adapted',
   reliability_tier: 'core',
   archetype_fits: ['strategy', 'calculator'],
+  capabilities: {
+    when_to_use: 'A solid toggle button that opens a menu of link items.',
+    border: { supported: ['hairline', 'accent'], default: 'hairline', notes: 'btn btn-{variant} dropdown-toggle; color from the variant slot / skin palette, not a token.' },
+    radius: { supported: ['rounded', 'pill', 'square'], default: 'rounded', notes: 'Bootstrap .btn default corner rounding on the toggle.' },
+  },
 };
 
 export const c_password_strength: ComponentCatalogEntry = {
@@ -164,6 +194,9 @@ export const c_password_strength: ComponentCatalogEntry = {
   reliability_tier: 'extended',
   reliability_notes: 'TODO: js/pages/misc-pass-meter.js auto-runs on DOMContentLoaded if included. Mini-apps won\'t need user signup so this is probably unused.',
   archetype_fits: [],
+  capabilities: {
+    when_to_use: 'A password input with a 4-segment strength meter below it; no themable design surface.',
+  },
 };
 
 // c_quill_editor moved to form.ts (category='form'); c_lightbox moved to
@@ -190,6 +223,9 @@ export const c_tour: ComponentCatalogEntry = {
   reliability_tier: 'experimental',
   reliability_notes: 'Probably overkill for mini-apps; could be useful for first-run hints on calculator inputs.',
   archetype_fits: [],
+  capabilities: {
+    when_to_use: 'A JS-driven onboarding overlay walkthrough; emits no markup, so no design tokens apply.',
+  },
 };
 
 // ── Custom TextOS components (not in Homer recon) ────────────────────────
@@ -214,6 +250,9 @@ export const c_tx_bind: ComponentCatalogEntry = {
   source_verification: 'custom',
   archetype_fits: ['calculator'],
   example_usage: 'Calculator with live-updating projection as inputs change.',
+  capabilities: {
+    when_to_use: 'A reactive input→output binding that live-updates a result; a behavioral helper with no design surface of its own.',
+  },
 };
 
 export const UTILITY_COMPONENTS: ComponentCatalogEntry[] = [

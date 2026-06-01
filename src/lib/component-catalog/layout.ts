@@ -21,6 +21,9 @@ export const c_container: ComponentCatalogEntry = {
   text_mode: 'visual-only',
   reliability_tier: 'core',
   archetype_fits: ['strategy', 'assessment', 'calculator'],
+  capabilities: {
+    when_to_use: 'A responsive max-width centering wrapper for page/section content; use container-fluid for full-bleed. Pure structural wrapper — carries no surface, border, radius, elevation, or emphasis of its own.',
+  },
 };
 
 export const c_row_col: ComponentCatalogEntry = {
@@ -42,6 +45,9 @@ export const c_row_col: ComponentCatalogEntry = {
   text_mode: 'visual-only',
   reliability_tier: 'core',
   archetype_fits: ['strategy', 'assessment', 'calculator'],
+  capabilities: {
+    when_to_use: 'A 12-column responsive grid for laying multiple items side by side (columns + gutter). Pure structural layout — the grid itself carries no surface, border, radius, elevation, or emphasis; those live on the components placed inside the columns.',
+  },
 };
 
 export const c_section_hero: ComponentCatalogEntry = {
@@ -72,6 +78,13 @@ export const c_section_hero: ComponentCatalogEntry = {
   reliability_tier: 'core',
   archetype_fits: ['strategy', 'assessment', 'calculator'],
   example_usage: 'Result page banner.',
+  capabilities: {
+    when_to_use: 'A full-width banner (headline + tagline + optional CTA) that opens the collect and result pages; light by default.',
+    surface: { supported: ['plain', 'tinted', 'raised-card'], default: 'plain', notes: 'light hero = transparent (plain); the dark slab is the legacy default — light is standard.' },
+    emphasis: { supported: ['feature'], default: 'feature', notes: 'headline (h3 fw-bold) — feature type carries the personality.' },
+    radius: { supported: ['square', 'rounded', 'lg'], default: 'square', notes: 'full-bleed by default; round when used as a contained panel.' },
+    elevation: { supported: ['flat', 'sm', 'raised'], default: 'flat' },
+  },
 };
 
 export const LAYOUT_COMPONENTS: ComponentCatalogEntry[] = [

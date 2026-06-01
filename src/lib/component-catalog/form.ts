@@ -25,6 +25,12 @@ export const c_text_input: ComponentCatalogEntry = {
   text_mode_notes: 'Telegram: send plain text reply. SMS: same.',
   reliability_tier: 'core',
   archetype_fits: ['strategy', 'calculator'],
+  capabilities: {
+    when_to_use: 'A single-line free-text question (name, headline, short answer).',
+    border: { supported: ['hairline'], default: 'hairline', notes: 'standard form-control 1px outline.' },
+    radius: { supported: ['rounded'], default: 'rounded', notes: 'default form-control corner.' },
+    elevation: { supported: ['flat'], default: 'flat' },
+  },
 };
 
 export const c_textarea: ComponentCatalogEntry = {
@@ -47,6 +53,12 @@ export const c_textarea: ComponentCatalogEntry = {
   text_mode: 'native',
   reliability_tier: 'core',
   archetype_fits: ['strategy'],
+  capabilities: {
+    when_to_use: 'A multi-line free-text question (open feedback, longer prose answer).',
+    border: { supported: ['hairline'], default: 'hairline', notes: 'standard form-control 1px outline.' },
+    radius: { supported: ['rounded'], default: 'rounded', notes: 'default form-control corner.' },
+    elevation: { supported: ['flat'], default: 'flat' },
+  },
 };
 
 export const c_email_input: ComponentCatalogEntry = {
@@ -70,6 +82,12 @@ export const c_email_input: ComponentCatalogEntry = {
   reliability_tier: 'core',
   archetype_fits: ['strategy', 'assessment', 'calculator'],
   example_usage: 'Email-capture field at the end of every archetype.',
+  capabilities: {
+    when_to_use: 'Email capture with browser-native validation — typically the lead-gen field.',
+    border: { supported: ['hairline'], default: 'hairline', notes: 'standard form-control 1px outline.' },
+    radius: { supported: ['rounded'], default: 'rounded', notes: 'default form-control corner.' },
+    elevation: { supported: ['flat'], default: 'flat' },
+  },
 };
 
 export const c_number_input: ComponentCatalogEntry = {
@@ -93,6 +111,12 @@ export const c_number_input: ComponentCatalogEntry = {
   text_mode_notes: 'Telegram: numeric reply. SMS: same.',
   reliability_tier: 'core',
   archetype_fits: ['calculator'],
+  capabilities: {
+    when_to_use: 'A bare numeric question (quantity, age, count) with optional min/max/step.',
+    border: { supported: ['hairline'], default: 'hairline', notes: 'standard form-control 1px outline.' },
+    radius: { supported: ['rounded'], default: 'rounded', notes: 'default form-control corner.' },
+    elevation: { supported: ['flat'], default: 'flat' },
+  },
 };
 
 export const c_input_with_unit: ComponentCatalogEntry = {
@@ -120,6 +144,12 @@ export const c_input_with_unit: ComponentCatalogEntry = {
   text_mode_notes: 'In text mode, prefix/suffix becomes part of the prompt e.g. "Reply with amount in USD".',
   reliability_tier: 'core',
   archetype_fits: ['calculator'],
+  capabilities: {
+    when_to_use: 'A numeric/text question that needs a currency, percent, or unit affix ($ , % , /month).',
+    border: { supported: ['hairline'], default: 'hairline', notes: 'input-group + affix share the form-control 1px outline as one unit.' },
+    radius: { supported: ['rounded'], default: 'rounded', notes: 'group rounds the outer corners; affixes flush internally.' },
+    elevation: { supported: ['flat'], default: 'flat' },
+  },
 };
 
 export const c_select_native: ComponentCatalogEntry = {
@@ -146,6 +176,12 @@ export const c_select_native: ComponentCatalogEntry = {
   text_mode_notes: 'Maps cleanly to Telegram inline keyboard with numbered options.',
   reliability_tier: 'core',
   archetype_fits: ['strategy', 'assessment', 'calculator'],
+  capabilities: {
+    when_to_use: 'A single-choice dropdown for a longer option list where buttons/cards would crowd.',
+    border: { supported: ['hairline'], default: 'hairline', notes: 'standard form-select 1px outline.' },
+    radius: { supported: ['rounded'], default: 'rounded', notes: 'default form-select corner.' },
+    elevation: { supported: ['flat'], default: 'flat' },
+  },
 };
 
 export const c_select_choices: ComponentCatalogEntry = {
@@ -173,6 +209,12 @@ export const c_select_choices: ComponentCatalogEntry = {
   reliability_tier: 'extended',
   reliability_notes: 'Requires loading choices.min.js + Homer\'s form-choice.js init.',
   archetype_fits: ['strategy', 'assessment'],
+  capabilities: {
+    when_to_use: 'A searchable single/multi-select for long option lists or tag-style multi-pick.',
+    border: { supported: ['hairline'], default: 'hairline', notes: 'Choices.js wraps the form-control 1px outline.' },
+    radius: { supported: ['rounded'], default: 'rounded', notes: 'default form-control corner.' },
+    elevation: { supported: ['flat'], default: 'flat' },
+  },
 };
 
 export const c_radio_group: ComponentCatalogEntry = {
@@ -200,6 +242,11 @@ export const c_radio_group: ComponentCatalogEntry = {
   text_mode: 'native',
   reliability_tier: 'core',
   archetype_fits: ['strategy', 'assessment'],
+  capabilities: {
+    when_to_use: 'A single-choice question with a few text options shown as native radio rows.',
+    border: { supported: ['hairline', 'accent'], default: 'hairline', notes: 'form-check-input glyph outline; checked state fills with accent (skin color).' },
+    radius: { supported: ['circle'], default: 'circle', notes: 'native radio glyph is circular.' },
+  },
 };
 
 export const c_checkbox_group: ComponentCatalogEntry = {
@@ -227,6 +274,11 @@ export const c_checkbox_group: ComponentCatalogEntry = {
   text_mode: 'native',
   reliability_tier: 'core',
   archetype_fits: ['assessment'],
+  capabilities: {
+    when_to_use: 'A multi-choice question with a few text options shown as native checkbox rows.',
+    border: { supported: ['hairline', 'accent'], default: 'hairline', notes: 'form-check-input glyph outline; checked state fills with accent (skin color).' },
+    radius: { supported: ['sm'], default: 'sm', notes: 'native checkbox glyph has a tight rounded corner.' },
+  },
 };
 
 export const c_btn_check_radio: ComponentCatalogEntry = {
@@ -255,6 +307,13 @@ export const c_btn_check_radio: ComponentCatalogEntry = {
   text_mode_notes: 'Best 1:1 fit for Telegram inline-keyboard rows of buttons.',
   reliability_tier: 'core',
   archetype_fits: ['strategy', 'assessment'],
+  capabilities: {
+    when_to_use: 'A single-choice question with short option labels shown as a segmented button group.',
+    border: { supported: ['hairline', 'accent'], default: 'hairline', notes: 'btn-outline border; selected state → accent (skin color fill).' },
+    radius: { supported: ['rounded'], default: 'rounded', notes: 'default btn corners; group flattens internal joins.' },
+    surface: { supported: ['plain', 'tinted'], default: 'plain', notes: 'unselected transparent; selected fills tinted skin color. Color from variant slot / skin palette.' },
+    emphasis: { supported: ['default', 'strong'], default: 'default' },
+  },
 };
 
 export const c_btn_check_checkbox: ComponentCatalogEntry = {
@@ -282,6 +341,13 @@ export const c_btn_check_checkbox: ComponentCatalogEntry = {
   text_mode: 'native',
   reliability_tier: 'core',
   archetype_fits: ['assessment'],
+  capabilities: {
+    when_to_use: 'A multi-choice question with short option labels shown as a segmented button group.',
+    border: { supported: ['hairline', 'accent'], default: 'hairline', notes: 'btn-outline border; selected state → accent (skin color fill).' },
+    radius: { supported: ['rounded'], default: 'rounded', notes: 'default btn corners; group flattens internal joins.' },
+    surface: { supported: ['plain', 'tinted'], default: 'plain', notes: 'unselected transparent; selected fills tinted skin color. Color from variant slot / skin palette.' },
+    emphasis: { supported: ['default', 'strong'], default: 'default' },
+  },
 };
 
 export const c_radio_cards: ComponentCatalogEntry = {
@@ -317,6 +383,13 @@ export const c_radio_cards: ComponentCatalogEntry = {
   reliability_tier: 'core',
   reliability_notes: 'Pure Bootstrap composition of btn-check + card-styled label. Verified primitives exist; composition is not a single Homer demo but is canonical.',
   archetype_fits: ['strategy', 'assessment'],
+  capabilities: {
+    when_to_use: 'A grid of selectable visual cards (icon + title + description) for a single-choice question — the richest wizard input.',
+    border: { supported: ['hairline', 'accent'], default: 'hairline', notes: 'btn-outline border; selected state → accent (skin color).' },
+    radius: { supported: ['rounded', 'lg'], default: 'rounded' },
+    surface: { supported: ['plain', 'card'], default: 'plain', notes: 'outline cards on the page; selection fills with the tinted skin color.' },
+    emphasis: { supported: ['default', 'strong'], default: 'strong', notes: 'option title fw-semibold; description muted.' },
+  },
 };
 
 export const c_range_slider: ComponentCatalogEntry = {
@@ -348,6 +421,11 @@ document.querySelectorAll('input[type=range]').forEach(r => {
   text_mode_notes: 'Text fallback: "Reply with a number between {min} and {max}".',
   reliability_tier: 'core',
   archetype_fits: ['calculator', 'assessment'],
+  capabilities: {
+    when_to_use: 'A bounded numeric question best answered by dragging a value (rating, budget, %).',
+    surface: { supported: ['tinted'], default: 'tinted', notes: 'live-value badge uses text-bg-light tinted chip; track color from skin.' },
+    radius: { supported: ['pill'], default: 'pill', notes: 'value badge is a rounded chip; native range track has no token-mapped corner.' },
+  },
 };
 
 export const c_touchspin_stepper: ComponentCatalogEntry = {
@@ -376,6 +454,12 @@ export const c_touchspin_stepper: ComponentCatalogEntry = {
   reliability_tier: 'core',
   reliability_notes: 'Init is part of Homer\'s default app.js — runs everywhere.',
   archetype_fits: ['calculator'],
+  capabilities: {
+    when_to_use: 'A small-integer quantity question where +/- tapping beats typing (cart qty, count).',
+    border: { supported: ['hairline'], default: 'hairline', notes: 'input-group outer outline; center input is border-0, framed by the +/- btn-light buttons.' },
+    radius: { supported: ['rounded'], default: 'rounded', notes: 'group rounds outer corners.' },
+    elevation: { supported: ['flat'], default: 'flat' },
+  },
 };
 
 export const c_switch: ComponentCatalogEntry = {
@@ -399,6 +483,11 @@ export const c_switch: ComponentCatalogEntry = {
   text_mode_notes: 'Maps to yes/no button pair.',
   reliability_tier: 'core',
   archetype_fits: ['strategy', 'calculator'],
+  capabilities: {
+    when_to_use: 'A single boolean on/off question (opt-in, enable feature).',
+    border: { supported: ['hairline', 'accent'], default: 'hairline', notes: 'switch track outline; on-state fills with accent (skin color).' },
+    radius: { supported: ['pill'], default: 'pill', notes: 'form-switch track is pill-shaped.' },
+  },
 };
 
 export const c_flatpickr_date: ComponentCatalogEntry = {
@@ -424,6 +513,12 @@ export const c_flatpickr_date: ComponentCatalogEntry = {
   reliability_tier: 'extended',
   reliability_notes: 'TODO: app.js sets disableMobile:true forcing the JS calendar even on mobile — may cramp 375px screens.',
   archetype_fits: ['strategy', 'calculator'],
+  capabilities: {
+    when_to_use: 'A date (or date-range) question answered via a calendar picker.',
+    border: { supported: ['hairline'], default: 'hairline', notes: 'underlying form-control 1px outline; popover calendar styled by flatpickr.' },
+    radius: { supported: ['rounded'], default: 'rounded', notes: 'default form-control corner.' },
+    elevation: { supported: ['flat'], default: 'flat' },
+  },
 };
 
 export const c_file_input: ComponentCatalogEntry = {
@@ -448,6 +543,12 @@ export const c_file_input: ComponentCatalogEntry = {
   reliability_tier: 'core',
   archetype_fits: [],
   example_usage: 'Could collect a logo or photo for strategy generator, but not MVP.',
+  capabilities: {
+    when_to_use: 'A file/image upload question (logo, photo, document).',
+    border: { supported: ['hairline'], default: 'hairline', notes: 'native form-control file picker 1px outline (not a dashed dropzone).' },
+    radius: { supported: ['rounded'], default: 'rounded', notes: 'default form-control corner.' },
+    elevation: { supported: ['flat'], default: 'flat' },
+  },
 };
 
 export const c_form_validation_state: ComponentCatalogEntry = {
@@ -473,6 +574,11 @@ export const c_form_validation_state: ComponentCatalogEntry = {
   text_mode: 'adapted',
   reliability_tier: 'core',
   archetype_fits: ['strategy', 'assessment', 'calculator'],
+  capabilities: {
+    when_to_use: 'Wraps a form to show Bootstrap valid/invalid state + feedback messages on submit.',
+    border: { supported: ['hairline', 'accent'], default: 'hairline', notes: 'fields use the form-control 1px outline; is-valid/is-invalid recolor to an accent state border.' },
+    radius: { supported: ['rounded'], default: 'rounded', notes: 'default form-control corner.' },
+  },
 };
 
 export const c_submit_button: ComponentCatalogEntry = {
@@ -492,6 +598,13 @@ export const c_submit_button: ComponentCatalogEntry = {
   text_mode: 'native',
   reliability_tier: 'core',
   archetype_fits: ['strategy', 'assessment', 'calculator'],
+  capabilities: {
+    when_to_use: 'The primary submit/CTA action that advances or completes a form.',
+    border: { supported: ['none', 'hairline'], default: 'none', notes: 'btn-primary is a solid fill (no outline); btn-outline-* variant adds a hairline.' },
+    radius: { supported: ['rounded', 'pill'], default: 'rounded', notes: 'default btn corner; rounded-pill via variant for a softer CTA.' },
+    surface: { supported: ['tinted'], default: 'tinted', notes: 'solid fill in the variant color. Color from variant slot / skin palette.' },
+    emphasis: { supported: ['default', 'strong'], default: 'strong', notes: 'CTA label reads as a strong action.' },
+  },
 };
 
 // ── Moved from utility.ts (entry's .category='form') ────────────────────
@@ -516,6 +629,12 @@ export const c_quill_editor: ComponentCatalogEntry = {
   reliability_tier: 'experimental',
   reliability_notes: 'Not bundled in vendors.min.js; adds ~200KB. Mobile toolbar overflows. Probably overkill for MVP.',
   archetype_fits: [],
+  capabilities: {
+    when_to_use: 'A rich-text (formatted) long-answer question — heavier than a plain textarea.',
+    border: { supported: ['hairline'], default: 'hairline', notes: 'Quill ql-toolbar + ql-container each carry a 1px outline.' },
+    radius: { supported: ['rounded'], default: 'rounded', notes: 'editor container corners.' },
+    elevation: { supported: ['flat'], default: 'flat' },
+  },
 };
 
 // ── Custom TextOS components (not in Homer recon) ────────────────────────
@@ -547,6 +666,10 @@ export const c_star_rating: ComponentCatalogEntry = {
   source_verification: 'custom',
   archetype_fits: ['assessment'],
   example_usage: 'Self-assessment ratings on rubric questions.',
+  capabilities: {
+    when_to_use: 'A 1-5 satisfaction/quality rating answered by clicking stars.',
+    border: { supported: ['none'], default: 'none', notes: 'btn-link stars carry no border or fill; selected stars colored by accent (skin) via ti-star-filled.' },
+  },
 };
 
 export const FORM_COMPONENTS: ComponentCatalogEntry[] = [

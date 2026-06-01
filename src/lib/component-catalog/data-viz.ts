@@ -30,6 +30,9 @@ export const c_chart_bar: ComponentCatalogEntry = {
   reliability_tier: 'core',
   reliability_notes: 'CustomChartJs auto re-renders on theme change. Note: ins() helper lives in app.js — needed for theme-aware colors.',
   archetype_fits: ['assessment', 'calculator'],
+  capabilities: {
+    when_to_use: 'Bar chart for comparing discrete categories or showing per-item magnitudes (vertical/horizontal/stacked); series colors come from the skin palette (ins(\'chart-primary\')).',
+  },
 };
 
 export const c_chart_line: ComponentCatalogEntry = {
@@ -50,6 +53,9 @@ export const c_chart_line: ComponentCatalogEntry = {
   text_mode: 'visual-only',
   reliability_tier: 'core',
   archetype_fits: ['calculator'],
+  capabilities: {
+    when_to_use: 'Line chart for a trend or projection over an ordered axis (time / steps); series colors come from the skin palette.',
+  },
 };
 
 export const c_chart_area: ComponentCatalogEntry = {
@@ -70,6 +76,9 @@ export const c_chart_area: ComponentCatalogEntry = {
   text_mode: 'visual-only',
   reliability_tier: 'core',
   archetype_fits: ['calculator'],
+  capabilities: {
+    when_to_use: 'Filled line (area) chart for cumulative or volume-over-time emphasis; fill and series colors come from the skin palette.',
+  },
 };
 
 export const c_chart_doughnut: ComponentCatalogEntry = {
@@ -90,6 +99,9 @@ export const c_chart_doughnut: ComponentCatalogEntry = {
   text_mode: 'visual-only',
   reliability_tier: 'core',
   archetype_fits: ['assessment', 'calculator'],
+  capabilities: {
+    when_to_use: 'Doughnut/pie chart for part-to-whole composition (a small number of slices); slice colors come from the skin palette.',
+  },
 };
 
 export const c_chart_radar: ComponentCatalogEntry = {
@@ -111,6 +123,9 @@ export const c_chart_radar: ComponentCatalogEntry = {
   text_mode: 'visual-only',
   reliability_tier: 'core',
   archetype_fits: ['assessment'],
+  capabilities: {
+    when_to_use: 'Radar chart for a multi-dimensional score breakdown (≤6 axes) — the Assessment category-scores visual; line/fill colors come from the skin palette.',
+  },
 };
 
 export const c_chart_polar: ComponentCatalogEntry = {
@@ -130,6 +145,9 @@ export const c_chart_polar: ComponentCatalogEntry = {
   text_mode: 'visual-only',
   reliability_tier: 'core',
   archetype_fits: ['assessment'],
+  capabilities: {
+    when_to_use: 'Polar-area chart for comparing magnitudes across categories where each slice shares the same angle but varies by radius; colors come from the skin palette.',
+  },
 };
 
 export const DATA_VIZ_COMPONENTS: ComponentCatalogEntry[] = [

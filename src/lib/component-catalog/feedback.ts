@@ -25,6 +25,12 @@ export const c_alert: ComponentCatalogEntry = {
   text_mode_notes: 'Renders as plain text with emoji prefix.',
   reliability_tier: 'core',
   archetype_fits: ['strategy', 'assessment', 'calculator'],
+  capabilities: {
+    when_to_use: 'An inline colored notice (info/success/warning/danger), optionally dismissible.',
+    surface: { supported: ['tinted'], default: 'tinted', notes: 'alert-{variant} renders bg-{color}-subtle; the color comes from the variant slot / skin palette, not a token.' },
+    border: { supported: ['none', 'accent'], default: 'none', notes: 'Bootstrap alerts ship borderless; accent adds a colored left/full border (border-start border-{color}).' },
+    radius: { supported: ['rounded'], default: 'rounded' },
+  },
 };
 
 export const c_toast: ComponentCatalogEntry = {
@@ -55,6 +61,12 @@ export const c_toast: ComponentCatalogEntry = {
   reliability_tier: 'core',
   reliability_notes: 'Homer\'s app.js auto-constructs Toast instances on load — but to display, you still need to call .show().',
   archetype_fits: ['strategy', 'assessment', 'calculator'],
+  capabilities: {
+    when_to_use: 'A transient floating confirmation/notification card pinned to a screen corner.',
+    surface: { supported: ['card', 'raised-card'], default: 'raised-card', notes: 'A floating card that needs to read above page content.' },
+    radius: { supported: ['rounded'], default: 'rounded' },
+    elevation: { supported: ['raised', 'lg'], default: 'lg', notes: 'Floating overlay — needs a pronounced shadow to lift off the page.' },
+  },
 };
 
 export const c_progress_bar: ComponentCatalogEntry = {
@@ -77,6 +89,10 @@ export const c_progress_bar: ComponentCatalogEntry = {
   text_mode_notes: 'Render as "Progress: 60%" or ascii bar.',
   reliability_tier: 'core',
   archetype_fits: ['assessment', 'calculator'],
+  capabilities: {
+    when_to_use: 'A horizontal track+fill bar showing percent completion (e.g. multi-step progress).',
+    radius: { supported: ['rounded', 'pill'], default: 'pill', notes: 'Bootstrap progress tracks render with fully rounded (pill) ends by default.' },
+  },
 };
 
 export const c_spinner: ComponentCatalogEntry = {
@@ -97,6 +113,9 @@ export const c_spinner: ComponentCatalogEntry = {
   text_mode_notes: 'In text mode: "Generating..." text.',
   reliability_tier: 'core',
   archetype_fits: ['strategy', 'assessment', 'calculator'],
+  capabilities: {
+    when_to_use: 'A small spinning loading indicator shown while async work is in flight.',
+  },
 };
 
 export const c_modal: ComponentCatalogEntry = {
@@ -128,6 +147,12 @@ export const c_modal: ComponentCatalogEntry = {
   reliability_tier: 'core',
   archetype_fits: ['strategy', 'assessment', 'calculator'],
   example_usage: 'Email-capture modal at end of flow; share-link modal.',
+  capabilities: {
+    when_to_use: 'A centered overlay dialog (header + body + optional footer) over a backdrop.',
+    surface: { supported: ['card', 'raised-card'], default: 'raised-card', notes: 'modal-content is a card that floats above a dimmed backdrop.' },
+    radius: { supported: ['rounded', 'lg'], default: 'lg', notes: 'Dialogs read best with a larger corner radius.' },
+    elevation: { supported: ['lg'], default: 'lg', notes: 'Overlay above the backdrop — strongest shadow tier.' },
+  },
 };
 
 export const c_tooltip: ComponentCatalogEntry = {
@@ -150,6 +175,11 @@ export const c_tooltip: ComponentCatalogEntry = {
   reliability_tier: 'core',
   archetype_fits: ['calculator'],
   example_usage: 'Inline help on form field labels.',
+  capabilities: {
+    when_to_use: 'A tiny hover/focus bubble with a short hint anchored to an element.',
+    radius: { supported: ['sm', 'rounded'], default: 'sm', notes: 'Small bubble; modest corner rounding.' },
+    elevation: { supported: ['sm'], default: 'sm', notes: 'Floating bubble — a light shadow lifts it off the anchor.' },
+  },
 };
 
 export const c_popover: ComponentCatalogEntry = {
@@ -169,6 +199,12 @@ export const c_popover: ComponentCatalogEntry = {
   text_mode: 'visual-only',
   reliability_tier: 'core',
   archetype_fits: [],
+  capabilities: {
+    when_to_use: 'A larger titled info popup (header + body) shown on click/hover, anchored to a trigger.',
+    surface: { supported: ['card', 'raised-card'], default: 'raised-card', notes: 'A floating card-like bubble with a header and body.' },
+    radius: { supported: ['sm', 'rounded'], default: 'rounded' },
+    elevation: { supported: ['sm', 'raised'], default: 'raised', notes: 'Floating overlay above its trigger.' },
+  },
 };
 
 export const c_sweetalert: ComponentCatalogEntry = {
@@ -192,6 +228,9 @@ export const c_sweetalert: ComponentCatalogEntry = {
   reliability_notes: 'Not bundled in vendors.min.js; must load sweetalert2.min.js separately.',
   archetype_fits: ['strategy', 'assessment', 'calculator'],
   example_usage: 'Email capture before download; "Are you sure?" confirmations.',
+  capabilities: {
+    when_to_use: 'A rich JS-generated confirm/prompt/success/error dialog (Swal.fire) — markup and styling are owned by the library.',
+  },
 };
 
 export const c_placeholder_skeleton: ComponentCatalogEntry = {
@@ -213,6 +252,10 @@ export const c_placeholder_skeleton: ComponentCatalogEntry = {
   text_mode: 'visual-only',
   reliability_tier: 'core',
   archetype_fits: ['strategy', 'assessment', 'calculator'],
+  capabilities: {
+    when_to_use: 'Animated gray placeholder bars standing in for content while it loads.',
+    radius: { supported: ['square', 'rounded'], default: 'rounded', notes: 'Placeholder bars can be rendered square or with rounded ends.' },
+  },
 };
 
 export const FEEDBACK_COMPONENTS: ComponentCatalogEntry[] = [

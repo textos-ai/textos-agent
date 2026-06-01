@@ -55,6 +55,12 @@ export const c_wizard: ComponentCatalogEntry = {
   reliability_tier: 'extended',
   reliability_notes: 'Must include form-wizard.js (it is NOT in vendors.min.js, only in js/pages/). Validation requires data-wizard-validation on the parent <form>.',
   archetype_fits: ['strategy', 'assessment'],
+  capabilities: {
+    when_to_use: 'A guided multi-step flow with a progress bar, step nav tabs, and prev/next/submit buttons.',
+    border: { supported: ['hairline', 'none'], default: 'hairline', notes: 'nav-tabs underline divider on the step row; none drops it.' },
+    radius: { supported: ['rounded', 'square'], default: 'rounded', notes: 'progress bar and button corners.' },
+    elevation: { supported: ['flat', 'sm'], default: 'flat' },
+  },
 };
 
 export const c_tabs: ComponentCatalogEntry = {
@@ -80,6 +86,12 @@ export const c_tabs: ComponentCatalogEntry = {
   text_mode: 'adapted',
   reliability_tier: 'core',
   archetype_fits: ['strategy', 'assessment', 'calculator'],
+  capabilities: {
+    when_to_use: 'Switch between sibling panels of content under a horizontal nav-tabs bar.',
+    border: { supported: ['hairline', 'none'], default: 'hairline', notes: 'nav-tabs bottom-border underline; none = borderless (nav-pills-style).' },
+    radius: { supported: ['rounded', 'square'], default: 'square', notes: 'tab heads are flush/underline by default; rounded for pill-style tabs.' },
+    emphasis: { supported: ['default', 'strong'], default: 'default', notes: 'active tab label weight.' },
+  },
 };
 
 export const c_accordion: ComponentCatalogEntry = {
@@ -109,6 +121,13 @@ export const c_accordion: ComponentCatalogEntry = {
   text_mode_notes: 'Use for "Show more" patterns in result analysis. In text mode, each section becomes a follow-up message.',
   reliability_tier: 'core',
   archetype_fits: ['strategy', 'calculator'],
+  capabilities: {
+    when_to_use: 'A stack of collapsible bordered sections; "Show more" / FAQ-style disclosure.',
+    border: { supported: ['hairline', 'none'], default: 'hairline', notes: 'accordion-item dividers; none = flush variant.' },
+    radius: { supported: ['rounded', 'square'], default: 'rounded', notes: 'outer corners of the group.' },
+    surface: { supported: ['card', 'plain'], default: 'card', notes: 'item header/body background.' },
+    elevation: { supported: ['flat', 'sm'], default: 'flat' },
+  },
 };
 
 export const c_pagination: ComponentCatalogEntry = {
@@ -133,6 +152,11 @@ export const c_pagination: ComponentCatalogEntry = {
   reliability_tier: 'core',
   archetype_fits: [],
   example_usage: 'Could paginate long recommendation lists; not core MVP.',
+  capabilities: {
+    when_to_use: 'Numbered page-link navigation for long lists (prev / pages / next).',
+    border: { supported: ['hairline', 'none'], default: 'hairline', notes: 'page-item borders between links.' },
+    radius: { supported: ['rounded', 'square', 'pill'], default: 'rounded', notes: 'page-link corners; pill = fully rounded pager.' },
+  },
 };
 
 export const c_breadcrumb: ComponentCatalogEntry = {
@@ -154,6 +178,9 @@ export const c_breadcrumb: ComponentCatalogEntry = {
   text_mode: 'visual-only',
   reliability_tier: 'core',
   archetype_fits: [],
+  capabilities: {
+    when_to_use: 'Inline hierarchical path indicator (Home / Section / Current); minimal, no box.',
+  },
 };
 
 export const NAVIGATION_COMPONENTS: ComponentCatalogEntry[] = [

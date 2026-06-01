@@ -29,6 +29,14 @@ export const c_card_basic: ComponentCatalogEntry = {
   text_mode_notes: 'Renders as a message section with title + body.',
   reliability_tier: 'core',
   archetype_fits: ['strategy', 'assessment', 'calculator'],
+  capabilities: {
+    when_to_use: 'The default container for a titled chunk of content (a result section, an interpretation block).',
+    surface: { supported: ['card', 'raised-card', 'tinted'], default: 'card' },
+    elevation: { supported: ['flat', 'sm', 'raised', 'lg'], default: 'flat', notes: 'Bootstrap .card ships flat; add .shadow* to lift.' },
+    radius: { supported: ['square', 'sm', 'rounded', 'lg', 'xl'], default: 'rounded' },
+    border: { supported: ['none', 'hairline', 'accent'], default: 'hairline', notes: 'border-0 for seamless on a tinted bg.' },
+    emphasis: { supported: ['default', 'strong', 'feature'], default: 'strong', notes: 'card-title (h5) — strong; feature for a hero-card.' },
+  },
 };
 
 export const c_card_cta: ComponentCatalogEntry = {
@@ -56,6 +64,14 @@ export const c_card_cta: ComponentCatalogEntry = {
   reliability_tier: 'core',
   archetype_fits: ['strategy', 'assessment', 'calculator'],
   example_usage: 'End-of-flow upsell ("Book a call", "Get the full report").',
+  capabilities: {
+    when_to_use: 'A centered conversion block: headline + supporting line + one primary button. End-of-flow.',
+    surface: { supported: ['tinted', 'card', 'raised-card'], default: 'tinted', notes: 'bg-{color}-subtle; the color comes from the skin palette (variant), not a token.' },
+    border: { supported: ['none', 'hairline'], default: 'none' },
+    radius: { supported: ['rounded', 'lg', 'xl'], default: 'rounded', notes: 'the CTA button itself is pill.' },
+    elevation: { supported: ['flat', 'sm', 'raised'], default: 'flat' },
+    emphasis: { supported: ['strong', 'feature'], default: 'feature', notes: 'headline (h3 fw-bold).' },
+  },
 };
 
 export const c_card_pricing: ComponentCatalogEntry = {
@@ -91,6 +107,14 @@ export const c_card_pricing: ComponentCatalogEntry = {
   text_mode: 'adapted',
   reliability_tier: 'core',
   archetype_fits: ['strategy'],
+  capabilities: {
+    when_to_use: 'A tiered plan/pricing card: title + price + check/x feature list + footer CTA, optional ribbon badge.',
+    surface: { supported: ['card', 'tinted', 'raised-card'], default: 'card', notes: 'bg-light bg-opacity-50; tinted via the variant CTA color from the skin palette.' },
+    radius: { supported: ['rounded', 'lg', 'xl'], default: 'xl', notes: 'rounded-4 outer corners; footer button and badge are pill.' },
+    border: { supported: ['none', 'hairline', 'accent'], default: 'hairline', notes: 'border-light; accent to mark the featured/selected plan.' },
+    elevation: { supported: ['flat', 'sm', 'raised', 'lg'], default: 'flat', notes: 'add .shadow* to make the recommended plan pop.' },
+    emphasis: { supported: ['strong', 'feature'], default: 'feature', notes: 'price is display-6 fw-bold; title is h3 fw-bold.' },
+  },
 };
 
 export const c_list_group: ComponentCatalogEntry = {
@@ -119,6 +143,13 @@ export const c_list_group: ComponentCatalogEntry = {
   reliability_tier: 'core',
   archetype_fits: ['strategy', 'assessment', 'calculator'],
   example_usage: 'Recommendations list, breakdown items, action items.',
+  capabilities: {
+    when_to_use: 'A vertical list of items (recommendations, action items, breakdowns), optional per-item badge.',
+    border: { supported: ['hairline', 'none'], default: 'hairline', notes: 'list-group-item dividers; none = flush variant.' },
+    radius: { supported: ['rounded', 'square'], default: 'rounded', notes: 'outer corners of the group.' },
+    surface: { supported: ['card', 'plain'], default: 'card', notes: 'item background.' },
+    elevation: { supported: ['flat', 'sm'], default: 'flat' },
+  },
 };
 
 export const c_timeline: ComponentCatalogEntry = {
@@ -149,6 +180,11 @@ export const c_timeline: ComponentCatalogEntry = {
   text_mode: 'adapted',
   reliability_tier: 'core',
   archetype_fits: ['strategy'],
+  capabilities: {
+    when_to_use: 'A vertical sequence of timestamped events with a colored dot per item (roadmap, history, steps).',
+    surface: { supported: ['plain'], default: 'plain', notes: 'timeline items sit flush; the dot color comes from the variant slot (skin palette).' },
+    emphasis: { supported: ['default', 'strong'], default: 'strong', notes: 'item title is an h5; body is default body copy.' },
+  },
 };
 
 export const c_badge: ComponentCatalogEntry = {
@@ -168,6 +204,12 @@ export const c_badge: ComponentCatalogEntry = {
   text_mode: 'native',
   reliability_tier: 'core',
   archetype_fits: ['strategy', 'assessment', 'calculator'],
+  capabilities: {
+    when_to_use: 'A small inline status/count chip beside a label or heading.',
+    surface: { supported: ['tinted'], default: 'tinted', notes: 'text-bg-* / badge-soft-* — color comes from the style slot (skin palette).' },
+    radius: { supported: ['sm', 'rounded', 'pill'], default: 'sm', notes: 'Bootstrap .badge ships tight-rounded; add the pill flag for rounded-pill.' },
+    emphasis: { supported: ['strong'], default: 'strong', notes: 'badge text is a bold small label.' },
+  },
 };
 
 export const c_score_badge: ComponentCatalogEntry = {
@@ -195,6 +237,13 @@ export const c_score_badge: ComponentCatalogEntry = {
   reliability_tier: 'core',
   reliability_notes: 'Built from .avatar + .avatar-title primitives; not a one-shot Homer demo but uses verified Homer classes.',
   archetype_fits: ['assessment'],
+  capabilities: {
+    when_to_use: 'The headline metric of an Assessment result: a large circular badge with a number + band label.',
+    surface: { supported: ['tinted'], default: 'tinted', notes: 'bg-{variant}-subtle; variant = the score band color (skin palette).' },
+    radius: { supported: ['circle'], default: 'circle', notes: 'structurally a circular avatar.' },
+    emphasis: { supported: ['feature'], default: 'feature', notes: 'the number is display-4 fw-bold — the feature type.' },
+    elevation: { supported: ['flat', 'sm', 'raised'], default: 'flat' },
+  },
 };
 
 export const c_large_number: ComponentCatalogEntry = {
@@ -221,6 +270,11 @@ export const c_large_number: ComponentCatalogEntry = {
   reliability_tier: 'core',
   archetype_fits: ['calculator', 'assessment'],
   example_usage: 'Calculator result, assessment score.',
+  capabilities: {
+    when_to_use: 'A big animated count-up headline number (calculator result, assessment score) with optional label/subtitle.',
+    surface: { supported: ['plain', 'card', 'tinted'], default: 'plain', notes: 'ships flush/centered; wrap in a card or tinted callout to frame it.' },
+    emphasis: { supported: ['feature'], default: 'feature', notes: 'the number is display-3 fw-bold; labels are text-muted helper.' },
+  },
 };
 
 export const c_avatar: ComponentCatalogEntry = {
@@ -243,6 +297,11 @@ export const c_avatar: ComponentCatalogEntry = {
   text_mode: 'visual-only',
   reliability_tier: 'core',
   archetype_fits: [],
+  capabilities: {
+    when_to_use: 'A small circular image / icon / initials marker (next to a name, item, or testimonial).',
+    surface: { supported: ['tinted'], default: 'tinted', notes: 'icon/initials variant uses bg-{variant}-subtle; color from the variant slot (skin palette).' },
+    radius: { supported: ['circle'], default: 'circle', notes: 'rounded-circle.' },
+  },
 };
 
 export const c_table_static: ComponentCatalogEntry = {
@@ -268,6 +327,12 @@ export const c_table_static: ComponentCatalogEntry = {
   text_mode: 'adapted',
   reliability_tier: 'core',
   archetype_fits: ['calculator', 'assessment'],
+  capabilities: {
+    when_to_use: 'A static data table for comparison breakdowns (columns + rows).',
+    surface: { supported: ['plain', 'card'], default: 'plain', notes: 'flush table-hover rows; wrap in a card to frame.' },
+    border: { supported: ['none', 'hairline'], default: 'hairline', notes: 'row dividers; table-bordered for full grid, none for borderless.' },
+    emphasis: { supported: ['default', 'strong'], default: 'default', notes: 'header cells read as strong; body cells default.' },
+  },
 };
 
 export const c_blockquote: ComponentCatalogEntry = {
@@ -290,6 +355,12 @@ export const c_blockquote: ComponentCatalogEntry = {
   text_mode: 'native',
   reliability_tier: 'core',
   archetype_fits: ['strategy'],
+  capabilities: {
+    when_to_use: 'A styled pull-quote with optional citation (testimonial, key statement).',
+    surface: { supported: ['plain', 'tinted', 'card'], default: 'plain', notes: 'flush by default; tint or card it to set the quote apart.' },
+    border: { supported: ['none', 'accent'], default: 'none', notes: 'add a left accent rule to emphasize.' },
+    emphasis: { supported: ['default', 'strong', 'feature'], default: 'default', notes: 'quote is body copy; bump to feature for a hero testimonial.' },
+  },
 };
 
 // ── Moved from utility.ts (entry's .category='display') ────────────────
@@ -312,6 +383,10 @@ export const c_lightbox: ComponentCatalogEntry = {
   text_mode: 'visual-only',
   reliability_tier: 'extended',
   archetype_fits: [],
+  capabilities: {
+    when_to_use: 'A click-to-zoom thumbnail that opens the full image in an overlay (gallery/screenshot).',
+    radius: { supported: ['square', 'sm', 'rounded', 'lg'], default: 'square', notes: 'img-fluid ships unrounded; add a rounded utility to soften the thumb.' },
+  },
 };
 
 export const DISPLAY_COMPONENTS: ComponentCatalogEntry[] = [
