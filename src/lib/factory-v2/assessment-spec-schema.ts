@@ -66,7 +66,7 @@ const TokenChoiceSchema = z
   })
   .partial();
 
-const StyleChoicesSchema = z.object({
+export const StyleChoicesSchema = z.object({
   questions: TokenChoiceSchema.optional(), // radio-cards (collect side)
   hero: TokenChoiceSchema.optional(),
   interpretation_card: TokenChoiceSchema.optional(),

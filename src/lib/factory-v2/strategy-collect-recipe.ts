@@ -18,6 +18,20 @@
 // mount points) — the same class of structural frame as the document shell.
 
 import { assembleComposition, type CompositionBlock } from './assemble';
+import { CATALOG } from '../component-catalog/index';
+import { resolveComponentTokens, tokenClass, type ChosenTokens } from '../component-catalog/design-token-resolver';
+import { STYLE_ROLE_COMPONENT } from './assessment-recipe';
+import type { StyleChoices } from './assessment-spec-schema';
+
+// Shared frame for the wizard card (radius:lg + elevation:sm) — same as the
+// Assessment so the two live apps read as the same product.
+const FRAME_CLASSES = [tokenClass('radius', 'lg'), tokenClass('elevation', 'sm')].filter(Boolean).join(' ');
+
+function roleClasses(style: StyleChoices, role: keyof StyleChoices): string {
+  const entry = CATALOG.by_id[STYLE_ROLE_COMPONENT[role]];
+  if (!entry) return '';
+  return resolveComponentTokens(entry, (style[role] ?? {}) as ChosenTokens).classes;
+}
 
 export interface CollectOption {
   label: string;
@@ -144,14 +158,33 @@ function inputBlockFor(q: CollectQuestion): CompositionBlock {
  * window.location.pathname.
  */
 export function buildStrategyCollectPage(
-  opts: { postUrl?: string } = {},
+  opts: { postUrl?: string; style?: StyleChoices } = {},
 ): { innerHtml: string; inlineScript: string } {
   const n = STRATEGY_COLLECT_QUESTIONS.length;
+  const style = opts.style ?? {};
+
+  // Token classes (mirrors the Assessment collect side): hero box tokens,
+  // question label size/emphasis, radio-button radius.
+  const heroCls = roleClasses(style, 'hero');
+  const qResolved = resolveComponentTokens(
+    CATALOG.by_id['radio-cards'],
+    (style.questions ?? {}) as ChosenTokens,
+  ).resolved;
+  const qLabelClasses = `fs-3 ${tokenClass('emphasis', qResolved.emphasis)}`.trim();
+  const qBtnClasses = tokenClass('radius', qResolved.radius);
 
   // 1. Each question → its catalog input HTML (rendered first, injected raw
-  //    into the wizard step's content slot).
+  //    into the wizard step's content slot), then token-styled.
   const steps = STRATEGY_COLLECT_QUESTIONS.map((q, i) => {
-    const { html: inputHtml } = assembleComposition([inputBlockFor(q)]);
+    let inputHtml = assembleComposition([inputBlockFor(q)]).html;
+    if (qLabelClasses) {
+      inputHtml = inputHtml.replace('class="form-label', `class="form-label ${qLabelClasses}`);
+    }
+    if (qBtnClasses) {
+      inputHtml = inputHtml
+        .split('class="btn btn-outline-primary w-100 text-start p-3"')
+        .join(`class="btn btn-outline-primary w-100 text-start p-3 ${qBtnClasses}"`);
+    }
     return {
       id: `fv2-step-${i}`,
       title: q.step_title,
@@ -165,12 +198,17 @@ export function buildStrategyCollectPage(
     };
   });
 
-  // 2. Compose hero[light] + wizard from the catalog.
-  const collectBlocks: CompositionBlock[] = [
-    { component_id: 'section-hero', slot_values: { headline: COLLECT_HERO.headline, tagline: COLLECT_HERO.tagline, light: true } },
+  // 2. hero[light] ABOVE a Homer card-basic frame wrapping the wizard — same
+  //    finished look as the Assessment collect side.
+  const { html: heroHtml } = assembleComposition([
+    { component_id: 'section-hero', slot_values: { headline: COLLECT_HERO.headline, tagline: COLLECT_HERO.tagline, light: true }, extra_classes: heroCls },
+  ]);
+  const { html: wizardHtml } = assembleComposition([
     { component_id: 'wizard', slot_values: { steps } },
-  ];
-  const { html: collectHtml } = assembleComposition(collectBlocks);
+  ]);
+  const { html: wizardCard } = assembleComposition([
+    { component_id: 'card-basic', slot_values: { content: wizardHtml }, extra_classes: FRAME_CLASSES },
+  ]);
 
   // 3. Loading state — composed from catalog (spinner + alert).
   const { html: loadingHtml } = assembleComposition([
@@ -179,7 +217,7 @@ export function buildStrategyCollectPage(
   ]);
 
   const innerHtml = [
-    `<div id="fv2-collect">${collectHtml}</div>`,
+    `<div id="fv2-collect" class="d-flex flex-column gap-3">${heroHtml}${wizardCard}</div>`,
     `<div id="fv2-loading" class="d-none text-center py-4">${loadingHtml}</div>`,
     `<div id="fv2-result"></div>`,
   ].join('\n');

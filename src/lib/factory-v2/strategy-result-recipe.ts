@@ -13,8 +13,12 @@
 // PART 3 (map): take validated LLM CONTENT and bind it onto each locked
 // component's slot_values. No component ids or HTML come from the LLM.
 
-import type { CompositionBlock } from './assemble';
+import { assembleComposition, type CompositionBlock } from './assemble';
 import type { StrategyLiveContent } from './strategy-content-schema';
+import { CATALOG } from '../component-catalog/index';
+import { resolveComponentTokens, tokenClass, type ChosenTokens } from '../component-catalog/design-token-resolver';
+import { STYLE_ROLE_COMPONENT } from './assessment-recipe';
+import type { StyleChoices } from './assessment-spec-schema';
 
 /** The locked result component order (card-basic expands ×N at map time). */
 export const LOCKED_STRATEGY_RESULT_ORDER = [
@@ -92,4 +96,54 @@ export function buildStrategyResultComposition(content: StrategyLiveContent): Co
   });
 
   return blocks;
+}
+
+// ── Styled + framed result (backport of the Assessment finished look) ────────
+// Same shared frame as the collect side: radius:lg + elevation:sm.
+const FRAME_CLASSES = [tokenClass('radius', 'lg'), tokenClass('elevation', 'sm')].filter(Boolean).join(' ');
+
+function roleClasses(style: StyleChoices, role: keyof StyleChoices): string {
+  const entry = CATALOG.by_id[STYLE_ROLE_COMPONENT[role]];
+  if (!entry) return '';
+  return resolveComponentTokens(entry, (style[role] ?? {}) as ChosenTokens).classes;
+}
+
+/**
+ * Build the per-visitor RESULT as framed, token-styled HTML: hero (with tokens)
+ * ABOVE a Homer card-basic frame wrapping the result blocks (each token-styled).
+ * Matches the collect side + the Assessment result. Injected into #fv2-result;
+ * inherits the page's font pairing.
+ */
+export function buildStrategyResultHtml(content: StrategyLiveContent, style: StyleChoices): string {
+  const heroCls = roleClasses(style, 'hero');
+  const cardCls = roleClasses(style, 'interpretation_card');
+  const listCls = roleClasses(style, 'recommendations');
+  const ctaCls = roleClasses(style, 'cta');
+
+  const { html: heroHtml } = assembleComposition([
+    { component_id: 'section-hero', slot_values: { headline: content.headline, tagline: content.tagline, light: true }, extra_classes: heroCls },
+  ]);
+  const cardsHtml = content.sections
+    .map((s) => assembleComposition([{ component_id: 'card-basic', slot_values: { title: s.title, content: s.body }, extra_classes: cardCls }]).html)
+    .join('\n');
+  const { html: listHtml } = assembleComposition([
+    { component_id: 'list-group', slot_values: { items: content.action_items.map((label) => ({ label })) }, extra_classes: listCls },
+  ]);
+  const { html: ctaHtml } = assembleComposition([
+    { component_id: 'card-cta', slot_values: { headline: content.cta.headline, supporting_text: content.cta.body, cta_url: '#', cta_label: content.cta.cta_label }, extra_classes: ctaCls },
+  ]);
+  const { html: shareHtml } = assembleComposition([
+    { component_id: 'share-bar', slot_values: { url: '#', text: content.headline, subject: content.headline, body: content.tagline } },
+  ]);
+  const { html: downloadHtml } = assembleComposition([
+    { component_id: 'download-button', slot_values: { url: '#', label: 'Download this plan as PDF', variant: 'outline-primary', download: 'download' } },
+  ]);
+
+  const blocks = [cardsHtml, listHtml, ctaHtml, shareHtml, downloadHtml].join('\n');
+  const { html: cardFrame } = assembleComposition([
+    { component_id: 'card-basic', slot_values: { content: `<div class="d-flex flex-column gap-3">${blocks}</div>` }, extra_classes: FRAME_CLASSES },
+  ]);
+
+  // hero ABOVE the framed card (matches the collect side + Assessment).
+  return `<div class="d-flex flex-column gap-3">${heroHtml}${cardFrame}</div>`;
 }

@@ -4,11 +4,11 @@ import { createSupabaseClient } from "../services/supabase";
 import { errBody } from "../lib/errors";
 import { log } from "../lib/logger";
 import { generateStrategyContentFromAnswers } from "../lib/factory-v2/strategy-live-generator";
-import { buildStrategyResultComposition } from "../lib/factory-v2/strategy-result-recipe";
-import { assembleComposition } from "../lib/factory-v2/assemble";
+import { buildStrategyResultHtml } from "../lib/factory-v2/strategy-result-recipe";
 import { wrapProofDocument } from "../lib/factory-v2/document-shell";
 import { buildStrategyCollectPage } from "../lib/factory-v2/strategy-collect-recipe";
 import { getOrCreateSkin } from "../lib/factory-v2/strategy-skin-store";
+import { getOrGenStrategyStyle } from "../lib/factory-v2/strategy-style";
 import {
   loadRealBusinessById,
   buildRealIdentity,
@@ -82,8 +82,10 @@ app.post("/:businessId/by-slug/:appSlug/result", async (c) => {
     const { business, ctx } = await loadRealBusinessById(client, businessId);
     const identity = buildRealIdentity(business.slug, business, ctx); // no-fallbacks
     const { content } = await generateStrategyContentFromAnswers(c.env.ANTHROPIC_API_KEY, identity, answers);
-    const composition = buildStrategyResultComposition(content);
-    const { html: inner } = assembleComposition(composition); // throws on unknown id
+    // Same build-time style the collect page was published with (KV-cached) —
+    // so the per-visitor result is framed + token-styled to match.
+    const style = await getOrGenStrategyStyle(c.env, businessId, identity);
+    const inner = buildStrategyResultHtml(content, style.style); // throws on unknown id
     return c.html(inner, 200);
   } catch (err) {
     if (err instanceof BusinessNotFoundError) return c.json(errBody("not_found", err.message), 404);
@@ -116,21 +118,26 @@ app.post("/:businessId/publish", async (c) => {
   try {
     // Real context (no-fallbacks: throws if gaudet is missing required fields).
     const { business, ctx } = await loadRealBusinessById(client, businessId);
-    buildRealIdentity(business.slug, business, ctx);
+    const identity = buildRealIdentity(business.slug, business, ctx);
 
     // Stored skin (picked once, read back every time).
     const { skin } = await getOrCreateSkin(client, businessId);
+
+    // Build-time style (font pairing + per-component tokens), LLM-picked once,
+    // KV-cached, shared with the result endpoint so collect + result match.
+    const style = await getOrGenStrategyStyle(c.env, businessId, identity);
 
     // Self-contained wizard HTML: absolute result URL (the iframe is
     // about:srcdoc, so a relative POST would fail), skin baked, absolute assets.
     const origin = new URL(c.req.url).origin; // this Worker's own origin
     const postUrl = `${origin}/api/factory-v2/${businessId}/by-slug/${appSlug}/result`;
-    const { innerHtml, inlineScript } = buildStrategyCollectPage({ postUrl });
+    const { innerHtml, inlineScript } = buildStrategyCollectPage({ postUrl, style: style.style });
     const html = wrapProofDocument(innerHtml, {
       skin,
       assetBase: HOMER_ASSET_BASE,
       extraScripts: ["/homer/js/pages/form-wizard.js"],
       inlineScript,
+      fontPairing: style.font_pairing,
     });
 
     const asset_data = { html, app_title: APP_TITLE, app_tagline: APP_TAGLINE, app_type: "strategy" };
@@ -185,6 +192,8 @@ app.post("/:businessId/publish", async (c) => {
       business_slug: business.slug,
       app_slug: appSlug,
       skin,
+      font_pairing: style.font_pairing,
+      style: style.style,
       site_url: `https://${HOMER_ASSET_BASE.replace("https://", "")}/sites/${business.slug}/apps/${appSlug}/`,
       result_endpoint: postUrl,
     });
