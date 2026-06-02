@@ -21,6 +21,7 @@ import { assembleComposition, type CompositionBlock } from './assemble';
 import type { AssessmentBuildSpec, StyleChoices } from './assessment-spec-schema';
 import { CATALOG } from '../component-catalog/index';
 import { resolveComponentTokens, tokenClass, type ChosenTokens } from '../component-catalog/design-token-resolver';
+import { resolveVendorScripts, BASE_BUNDLE_FULL } from '../component-catalog/vendor-scripts';
 
 /** Component roles the LLM styles → their catalog component id. */
 export const STYLE_ROLE_COMPONENT: Record<keyof StyleChoices, string> = {
@@ -61,6 +62,16 @@ export const LOCKED_ASSESSMENT_RESULT_ORDER = [
   'download-button',
 ] as const;
 
+/** Every component this recipe composes (result + collect + loading). The
+ *  assembler derives the vendor scripts from THIS set; the LLM picks none. */
+export const ASSESSMENT_COMPONENT_IDS: string[] = [
+  ...LOCKED_ASSESSMENT_RESULT_ORDER,
+  'wizard',
+  'radio-cards',
+  'spinner',
+  'alert',
+];
+
 /** Render the radio_cards input HTML for one question, then apply the COLLECT
  *  token classes to the right elements: the question label (emphasis, larger +
  *  stronger — it's the primary text) and every answer button (radius). */
@@ -88,7 +99,12 @@ function questionInputHtml(
   return html;
 }
 
-export function buildAssessmentPage(spec: AssessmentBuildSpec): { innerHtml: string; inlineScript: string } {
+export function buildAssessmentPage(spec: AssessmentBuildSpec): {
+  innerHtml: string;
+  inlineScript: string;
+  scripts: string[];
+  componentIds: string[];
+} {
   // Phase C: resolve the LLM's per-role token picks → Homer classes (validated
   // against each component's supported[]; non-default tokens only).
   const style = (spec.style ?? {}) as StyleChoices;
@@ -285,5 +301,10 @@ export function buildAssessmentPage(spec: AssessmentBuildSpec): { innerHtml: str
 })();
 `.trim();
 
-  return { innerHtml, inlineScript };
+  // Assembler-derived vendor scripts (LLM picks none): union of the composed
+  // components' js_dependencies → validated against the base bundle → ordered
+  // add-on srcs. Throws at build if a dep is unknown or unmet by the base.
+  const scripts = resolveVendorScripts(ASSESSMENT_COMPONENT_IDS, BASE_BUNDLE_FULL);
+
+  return { innerHtml, inlineScript, scripts, componentIds: ASSESSMENT_COMPONENT_IDS };
 }

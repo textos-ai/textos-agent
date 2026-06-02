@@ -16,7 +16,8 @@ import type { AssessmentBuildSpec } from "../lib/factory-v2/assessment-spec-sche
 import { isFontPairing, DEFAULT_FONT_PAIRING } from "../lib/factory-v2/textos-style-layer";
 import { CATALOG } from "../lib/component-catalog/index";
 import { resolveComponentTokens } from "../lib/component-catalog/design-token-resolver";
-import { STYLE_ROLE_COMPONENT } from "../lib/factory-v2/assessment-recipe";
+import { STYLE_ROLE_COMPONENT, ASSESSMENT_COMPONENT_IDS } from "../lib/factory-v2/assessment-recipe";
+import { resolveVendorScripts, BASE_BUNDLE_FULL, BASE_BUNDLE_MINI } from "../lib/component-catalog/vendor-scripts";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TEMP DEV — factory-v2 Assessment app (Phase 3 /dev/ proof, retire at cutover).
@@ -99,6 +100,23 @@ app.get("/:slug", async (c) => {
       return c.json({ slug, business: business.name, font_pairing: spec.font_pairing, style: roles });
     }
 
+    // Part B debug — the assembler-derived vendor scripts (the FULL base bundle).
+    if (c.req.query("debug") === "deps") {
+      const scripts = resolveVendorScripts(ASSESSMENT_COMPONENT_IDS, BASE_BUNDLE_FULL);
+      return c.json({ base_bundle: BASE_BUNDLE_FULL.id, base_files: BASE_BUNDLE_FULL.files, components: ASSESSMENT_COMPONENT_IDS, derived_addon_scripts: scripts });
+    }
+
+    // Part B debug — PROVE the throw: resolve against the lean app.mini.js base
+    // bundle (no CustomChartJs). Should throw naming chart-radar + CustomChartJs.
+    if (c.req.query("debug") === "deps-mini") {
+      try {
+        const scripts = resolveVendorScripts(ASSESSMENT_COMPONENT_IDS, BASE_BUNDLE_MINI);
+        return c.json({ threw: false, note: "BUG: should have thrown under app.mini.js", scripts });
+      } catch (err) {
+        return c.json({ threw: true, base_bundle: BASE_BUNDLE_MINI.id, error_name: (err as Error).name, message: (err as Error).message });
+      }
+    }
+
     if (c.req.query("debug") === "spec") {
       const computedMax = spec.questions.reduce((s, q) => s + Math.max(...q.options.map((o) => o.points)), 0);
       return c.json({
@@ -127,11 +145,11 @@ app.get("/:slug", async (c) => {
     // default only if a stale cached spec lacks/has an invalid one.
     const pairing = isFontPairing(spec.font_pairing) ? spec.font_pairing : DEFAULT_FONT_PAIRING;
 
-    const { innerHtml, inlineScript } = buildAssessmentPage(spec);
+    const { innerHtml, inlineScript, scripts } = buildAssessmentPage(spec);
     const doc = wrapProofDocument(innerHtml, {
       skin: usedSkin,
       assetBase: HOMER_ASSET_BASE,
-      extraScripts: ["/homer/js/pages/form-wizard.js"], // wizard init; Chart.js + CustomChartJs are in vendors/app.mini.js
+      extraScripts: scripts, // Part B: assembler-DERIVED from the composed components (was hand-coded)
       inlineScript,
       fontPairing: pairing,
     });

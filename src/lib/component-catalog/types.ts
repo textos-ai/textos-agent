@@ -66,7 +66,13 @@ export interface ComponentCatalogEntry {
   fillable_slots: string[];
 
   js_init: JsInit;
+  /** Free-text/path descriptors — Pipeline B's document-wrapper reads the
+   *  '/homer/*' path entries from here. Left as-is for back-compat. */
   js_dependencies: string[];
+  /** factory-v2 vendor-script REGISTRY ids (vendor-scripts.ts) — the assembler
+   *  resolves these to ordered add-on scripts. Separate from js_dependencies so
+   *  Pipeline B is untouched. Undefined ⇒ no vendor deps. */
+  vendor_scripts?: string[];
   js_init_snippet?: string;
 
   mobile_responsive: boolean;

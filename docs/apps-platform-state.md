@@ -400,3 +400,44 @@ These cost real cycles in Phase C; recorded so they don't recur:
   `lucide is not defined` (chrome-less mini-apps don't load lucide); it fires
   after `CustomChartJs` is defined, so charts are unaffected. Part B's
   base-bundle model can optionally load lucide to silence it.
+
+### 5.3 Vendor-script dependency system (Part B, 2026-06-01)
+
+The assembler enforces each composed app's vendor scripts from the catalog; the
+LLM never picks scripts. Build-time throw turns silent runtime breakage (the
+Part-A radar) into a loud build error.
+
+- **Registry** (`component-catalog/vendor-scripts.ts`): closed set
+  `id → { src, in_base_bundle, provides:[symbols], requires:[ids] }`.
+  - base-bundle **capabilities** (`src:null`): `chartjs`, `custom-chartjs`,
+    `jquery`, `bootstrap`, `flatpickr`, `simplebar` — validated against the base
+    bundle's exposed globals, not loaded separately.
+  - **add-on files** (`src` set): `form-wizard`, `choices`, `form-choice`,
+    `handlebars`, `typeahead`, `form-typehead`, `datatables`(+`-bs5`/
+    `-responsive`), `jszip`, `pdfmake`, `sweetalert2`.
+  - `BASE_BUNDLE_FULL` (vendors.min.js + **app.js**) provides `Chart,
+    CustomChartJs, ins, $, jQuery, bootstrap, flatpickr, SimpleBar, debounce`;
+    `BASE_BUNDLE_MINI` (app.mini.js) lacks `CustomChartJs`/`ins`. The
+    **provides-SYMBOL** model is the Part-A lesson encoded: track exposed
+    globals, not just files.
+  - `isVendorScript` + `UnknownVendorScriptError` + `UnmetVendorDependencyError`
+    (throw, no fallback).
+- **Separate `vendor_scripts` field** on `ComponentCatalogEntry` (NOT
+  `js_dependencies`). Pipeline B's `assembler/document-wrapper.ts` reads the
+  `/homer/*` paths out of `js_dependencies`; replacing them would drop
+  `form-wizard.js` from Pipeline B wizards. So `vendor_scripts` carries the
+  registry ids and `js_dependencies` is **left exactly as-is — Pipeline B
+  untouched**. Populated so far: `wizard → ['form-wizard']`,
+  `chart-radar → ['custom-chartjs']` (the Assessment's deps).
+- **Assembler derives** (`resolveVendorScripts(componentIds, base)`): union the
+  components' `vendor_scripts` → transitive `requires` closure → validate
+  base-bundle capabilities against `base.provides` (THROW if unmet, naming the
+  component + missing symbols) → drop base-satisfied → topo-sort add-ons →
+  ordered `src` list → `document-shell` `extraScripts`. The recipe's hand-coded
+  `['form-wizard.js']` is gone; it's now derived (verified identical — no
+  regression; radar still paints). Proven: `?debug=deps-mini` (the lean base
+  bundle) throws naming `chart-radar` + `CustomChartJs` — it would have caught
+  the Part-A break at build time.
+- **Backlog (cutover):** fully migrate Pipeline B's `document-wrapper.ts` to the
+  registry ids and retire the `js_dependencies` path-parsing — then a single
+  field serves both pipelines. Until then, both fields coexist.

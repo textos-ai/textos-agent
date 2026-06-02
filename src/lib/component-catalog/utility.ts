@@ -53,6 +53,8 @@ export const c_share_bar: ComponentCatalogEntry = {
   fillable_slots: ['url', 'text', 'subject', 'body'],
   js_init: 'manual',
   js_dependencies: ['clipboard.js (for copy button)'],
+  // factory-v2: anchor links need no JS; copy button isn't init'd in our recipe → no add-on.
+  vendor_scripts: [],
   js_init_snippet: 'new ClipboardJS("[data-clipboard-text]");',
   mobile_responsive: true,
   text_mode: 'adapted',

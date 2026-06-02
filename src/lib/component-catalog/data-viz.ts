@@ -16,7 +16,7 @@ export const c_chart_bar: ComponentCatalogEntry = {
   html_template: `<div style="height:{{height|300px}};"><canvas id="{{id}}"></canvas></div>`,
   fillable_slots: ['id', 'height'],
   js_init: 'manual',
-  js_dependencies: ['Chart.js v4.4.9 (bundled in vendors.min.js)', 'CustomChartJs class in app.js'],
+  js_dependencies: ['Chart.js v4.4.9'],
   js_init_snippet: `new CustomChartJs({
   selector: '#{{id}}',
   options: () => ({
@@ -116,7 +116,8 @@ export const c_chart_radar: ComponentCatalogEntry = {
   html_template: `<div style="height:{{height|350px}};"><canvas id="{{id}}"></canvas></div>`,
   fillable_slots: ['id', 'height'],
   js_init: 'manual',
-  js_dependencies: ['Chart.js v4.4.9'],
+  js_dependencies: ['Chart.js v4.4.9'], // free-text (Pipeline B) — UNCHANGED
+  vendor_scripts: ['custom-chartjs'], // factory-v2 registry id: Chart (base) + CustomChartJs (app.js)
   js_init_snippet: `new CustomChartJs({ selector: '#{{id}}', options: () => ({ type: 'radar', data: { labels: [...], datasets: [{ data: [...], borderColor: ins('chart-primary'), backgroundColor: ins('chart-primary-rgb', 0.2) }] } }) });`,
   mobile_responsive: true,
   text_mode_notes: 'On <375px, radar labels may collide — keep ≤6 axes.',

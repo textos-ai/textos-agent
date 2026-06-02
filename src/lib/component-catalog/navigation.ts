@@ -47,7 +47,8 @@ export const c_wizard: ComponentCatalogEntry = {
 </form>`,
   fillable_slots: ['steps', 'step.id', 'step.title', 'step.subtitle', 'step.icon', 'step.content'],
   js_init: 'auto',
-  js_dependencies: ['Bootstrap (Tab)', '/homer/js/pages/form-wizard.js'],
+  js_dependencies: ['Bootstrap (Tab)', '/homer/js/pages/form-wizard.js'], // free-text (Pipeline B reads these as paths) — UNCHANGED
+  vendor_scripts: ['form-wizard'], // factory-v2 vendor-script registry id (Part B)
   js_init_snippet: '// auto-instantiates on document ready for every [data-wizard]; FormWizard class defined in form-wizard.js',
   mobile_responsive: true,
   text_mode_notes: 'In text mode, each step becomes a discrete conversational turn; progress bar maps to "Step X of N".',
