@@ -1,7 +1,11 @@
 # Apps Platform — Current State vs PRDs
 
-Last updated: 2026-06-01 (Phase 1 COMPLETE — the clean factory-v2 Strategy app
-now serves on the REAL /sites/{slug}/apps/{slug}/ route on real business context
+Last updated: 2026-06-02 (Strategy styling backport + wizard UX fixes for BOTH
+archetypes — see §5.5. Strategy now carries the same font pairing + per-component
+design tokens + both-sides card framing as the Assessment; radio-card option
+subtext stacks under the title and Enter advances/submits the wizard, in both
+live apps. Prior: 2026-06-01 Phase 1 COMPLETE — the clean factory-v2 Strategy app
+serves on the REAL /sites/{slug}/apps/{slug}/ route on real business context
 with a persisted skin, through the unchanged delivery path; see §4. Earlier the
 same day: added §4 for the /dev/ pipeline; the §2 raw-HTML pipeline is slated
 for retirement at cutover. Prior: 2026-05-30, items #2/#3 RESOLVED)
@@ -465,3 +469,58 @@ untouched.
   same `rounded-3 shadow-sm` (radius:lg + elevation:sm) tokens — composition
   only, no new CSS. (Note: neither side was carded before; the collect "frame"
   was just the wizard's nav-tabs.)
+
+### 5.5 Strategy styling backport + wizard UX fixes — both archetypes (2026-06-02)
+
+Two follow-ups that close the gap between the two live archetypes (commits
+`a7c48d3` styling backport, then the wizard-fix commit below). Verified by Rob on
+test; both `/sites/` apps republished (no delivery-file or schema edits).
+
+**(1) Styling layer backported to Strategy** (was built after Strategy, so the
+Assessment had it first). Strategy now matches the Assessment's finished look:
+- **Font pairing** — `strategy-style.ts`: `getOrGenStrategyStyle(env, businessId,
+  identity)` has the build-time LLM pick `{ font_pairing, style }` once from the
+  closed 8-set + the design-token dictionary, **KV-cached** (`fv2:strat-style:
+  ${businessId}`, 24h) and shared by the collect build AND the result endpoint so
+  both stay in lockstep. Pairing is stamped on the document shell (the injected
+  result inherits it). Reuses `StyleChoicesSchema` (now **exported** from
+  `assessment-spec-schema.ts`), `STYLE_ROLE_COMPONENT`, the resolver.
+- **Design tokens** — `strategy-collect-recipe.ts` (hero box tokens + question
+  label `fs-3`/emphasis + radio radius) and `strategy-result-recipe.ts`
+  (`buildStrategyResultHtml(content, style)` token-styles hero/cards/list/cta),
+  all through `resolveComponentTokens` (throw-on-unknown).
+- **Both-sides card framing** — collect wizard and result blocks each wrapped in
+  a Homer `card-basic` (`rounded-3 shadow-sm`), hero above — identical to the
+  Assessment. Same shared `FRAME_CLASSES`.
+- **Result endpoint unchanged** — per-visitor generation intact; verified
+  no-regression (a 60-guest vineyard-rehearsal sample produced a tailored plan
+  fused with gaudet's old-world-curing brand). Routes threaded:
+  `factory-v2-api.ts` (result + publish) and `factory-v2-app.ts` (/dev/).
+- Picked for gaudet: `artisan` (Fraunces/Inter); tinted hero, raised-card
+  interpretation cards + CTA, hairline borders.
+
+**(2) Wizard UX fixes (shared) — radio-card subtext + Enter-to-advance.** Both
+fix latent issues in the shared wizard pattern, so they apply to BOTH archetypes:
+- **Radio-card subtext collision** — the `radio-cards` catalog template
+  (`component-catalog/form.ts`, **shared**) rendered icon/title/subtext as direct
+  children of the option `<label class="btn …">`. Homer's `.btn` resolves to
+  `display:inline-flex` (later of two same-specificity rules wins), so the
+  children laid out in a **row** and `d-block` was inert → title and subtext
+  collided ("Drop-off boards**We deliver…**"). **Fix:** wrap the three in
+  `<span class="d-flex flex-column w-100">` so they stack regardless of the
+  `.btn` flex context; subtext is `d-block text-muted mt-1`. Composition only, no
+  custom CSS. The label class is unchanged, so the recipe's radius-token
+  injection still matches. Benefits both archetypes (Assessment picked up the fix
+  on republish; its options have no subtext/icon, so only the wrapper shows).
+  Another instance of gotcha §5.2(d): verify the EFFECT (the cascade), not the
+  presence of `d-block`.
+- **Enter advances / submits the wizard** — added a `keydown` handler to each
+  recipe's inline script (`strategy-collect-recipe.ts` + `assessment-recipe.ts`,
+  per-recipe, not shared JS). On Enter it **drives Homer's own wizard API** by
+  clicking the active `.tab-pane`'s `[data-wizard-next]` (bound to
+  `FormWizard.nextStep`, validation included) — or the step's `type="submit"` on
+  the last step — rather than re-implementing step logic. Enter inside a
+  `<textarea>` is left alone (newline); everywhere else `preventDefault()` stops
+  a lone text input from implicitly submitting mid-wizard. No double-fire. (We
+  did NOT touch the shared `form-wizard.js` — that would change platform-wide
+  wizard behavior incl. Pipeline B; the recipe-scoped handler is the safe fix.)

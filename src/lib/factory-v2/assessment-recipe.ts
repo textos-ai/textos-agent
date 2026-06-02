@@ -323,6 +323,23 @@ export function buildAssessmentPage(spec: AssessmentBuildSpec): {
     } catch(err){ /* radar is non-fatal */ }
     window.scrollTo({ top: 0, behavior: 'smooth' });
   });
+  // Enter advances the wizard (and submits on the last step). We drive Homer's
+  // OWN wizard API by clicking the active step's [data-wizard-next] (which is
+  // bound to FormWizard.nextStep) rather than re-implementing step logic. Enter
+  // inside a textarea is left alone (newline); everywhere else we preventDefault
+  // so a lone text input can't implicitly submit the whole form mid-wizard.
+  form.addEventListener('keydown', function(e){
+    if(e.key !== 'Enter' || e.shiftKey) return;
+    if(e.target && e.target.tagName === 'TEXTAREA') return; // Enter = newline
+    e.preventDefault();
+    var pane = form.querySelector('.tab-pane.active');
+    if(!pane) return;
+    var next = pane.querySelector('[data-wizard-next]');
+    if(next){ next.click(); return; }                 // advance via the wizard's API
+    var submitBtn = pane.querySelector('button[type="submit"]');
+    if(submitBtn){ submitBtn.click(); return; }        // last step → submit
+    if(form.requestSubmit){ form.requestSubmit(); } else { form.submit(); }
+  });
 })();
 `.trim();
 
