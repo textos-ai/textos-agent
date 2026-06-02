@@ -14,6 +14,7 @@ import {
   type AssessmentBuildSpec,
 } from './assessment-spec-schema';
 import { buildAssessmentBuildPrompt } from './assessment-build-prompt';
+import { validateAssessmentStyle } from './assessment-recipe';
 
 const ASSESSMENT_MODEL = 'claude-opus-4-8';
 const MAX_TOKENS = 6000;
@@ -78,8 +79,9 @@ export async function generateAssessmentSpec(
 
     try {
       validateAssessmentSpec(zres.data); // cross-field (no-fallbacks): throws on any rule break
+      validateAssessmentStyle(zres.data.style); // Phase C: token picks ∈ each component's supported[]
     } catch (err) {
-      lastErr = err instanceof AssessmentSpecError ? err.message : String(err);
+      lastErr = err instanceof Error ? err.message : String(err);
       continue;
     }
 

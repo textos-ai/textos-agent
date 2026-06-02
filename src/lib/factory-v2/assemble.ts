@@ -13,6 +13,7 @@
 // but does not modify it.
 
 import { CATALOG } from '../component-catalog/index';
+import { injectTokenClasses } from '../component-catalog/design-token-resolver';
 import { renderTemplate } from './template-render';
 
 export interface CompositionBlock {
@@ -20,6 +21,10 @@ export interface CompositionBlock {
   component_id: string;
   /** Values bound to the catalog entry's fillable slots. */
   slot_values: Record<string, unknown>;
+  /** Resolved design-token classes (Phase C) to inject into this block's
+   *  styled element (root, or capabilities.style_target). Already validated by
+   *  the resolver. Omitted/empty → no change (today's render). */
+  extra_classes?: string;
 }
 
 export interface AssembleResult {
@@ -59,7 +64,11 @@ export function assembleComposition(blocks: CompositionBlock[]): AssembleResult 
     if (!entry) {
       throw new UnknownComponentError(block.component_id, index);
     }
-    parts.push(renderTemplate(entry.html_template, block.slot_values));
+    let html = renderTemplate(entry.html_template, block.slot_values);
+    if (block.extra_classes) {
+      html = injectTokenClasses(html, block.extra_classes, entry.capabilities?.style_target);
+    }
+    parts.push(html);
     rendered_ids.push(entry.id);
   });
 

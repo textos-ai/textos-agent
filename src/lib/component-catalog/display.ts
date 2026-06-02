@@ -243,6 +243,7 @@ export const c_score_badge: ComponentCatalogEntry = {
     radius: { supported: ['circle'], default: 'circle', notes: 'structurally a circular avatar.' },
     emphasis: { supported: ['feature'], default: 'feature', notes: 'the number is display-4 fw-bold — the feature type.' },
     elevation: { supported: ['flat', 'sm', 'raised'], default: 'flat' },
+    style_target: 'avatar-title', // resolved classes (e.g. shadow) land on the circle, not the outer wrapper
   },
 };
 

@@ -14,6 +14,9 @@ import { generateAssessmentSpec } from "../lib/factory-v2/assessment-generator";
 import { buildAssessmentPage } from "../lib/factory-v2/assessment-recipe";
 import type { AssessmentBuildSpec } from "../lib/factory-v2/assessment-spec-schema";
 import { isFontPairing, DEFAULT_FONT_PAIRING } from "../lib/factory-v2/textos-style-layer";
+import { CATALOG } from "../lib/component-catalog/index";
+import { resolveComponentTokens } from "../lib/component-catalog/design-token-resolver";
+import { STYLE_ROLE_COMPONENT } from "../lib/factory-v2/assessment-recipe";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TEMP DEV — factory-v2 Assessment app (Phase 3 /dev/ proof, retire at cutover).
@@ -71,6 +74,30 @@ app.get("/:slug", async (c) => {
 
     const forceRegen = c.req.query("regen") === "1";
     const spec = await getOrGenSpec(c, business.id, identity, forceRegen);
+
+    // Phase C debug — prove validation THROWS on an unsupported token (does NOT
+    // touch the real spec): score-badge only supports surface 'tinted'.
+    if (c.req.query("debug") === "validate") {
+      const badge = CATALOG.by_id["score-badge"];
+      try {
+        resolveComponentTokens(badge, { surface: "card" }); // 'card' ∉ score-badge.supported (['tinted'])
+        return c.json({ threw: false, note: "BUG: should have thrown" });
+      } catch (err) {
+        return c.json({ threw: true, error_name: (err as Error).name, message: (err as Error).message });
+      }
+    }
+
+    // Phase C debug — the LLM's token picks + the Homer classes they resolve to.
+    if (c.req.query("debug") === "style") {
+      const roles: Record<string, unknown> = {};
+      for (const [role, compId] of Object.entries(STYLE_ROLE_COMPONENT)) {
+        const entry = CATALOG.by_id[compId];
+        const chosen = (spec.style?.[role as keyof typeof spec.style] ?? {}) as Record<string, string>;
+        const { classes, resolved } = resolveComponentTokens(entry, chosen);
+        roles[role] = { component: compId, picked: chosen, resolved, homer_classes: classes || "(all default — no override)" };
+      }
+      return c.json({ slug, business: business.name, font_pairing: spec.font_pairing, style: roles });
+    }
 
     if (c.req.query("debug") === "spec") {
       const computedMax = spec.questions.reduce((s, q) => s + Math.max(...q.options.map((o) => o.points)), 0);

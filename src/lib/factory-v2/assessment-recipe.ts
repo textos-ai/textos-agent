@@ -18,7 +18,37 @@
 // share, download) are composed once.
 
 import { assembleComposition, type CompositionBlock } from './assemble';
-import type { AssessmentBuildSpec } from './assessment-spec-schema';
+import type { AssessmentBuildSpec, StyleChoices } from './assessment-spec-schema';
+import { CATALOG } from '../component-catalog/index';
+import { resolveComponentTokens, tokenClass, type ChosenTokens } from '../component-catalog/design-token-resolver';
+
+/** Component roles the LLM styles → their catalog component id. */
+export const STYLE_ROLE_COMPONENT: Record<keyof StyleChoices, string> = {
+  questions: 'radio-cards', // collect side
+  hero: 'section-hero',
+  interpretation_card: 'card-basic',
+  recommendations: 'list-group',
+  cta: 'card-cta',
+  score_badge: 'score-badge',
+};
+
+/** Validate every role's token choices against its component's supported[]
+ *  (no-fallbacks: throws on unknown/unsupported). Used in the generate loop. */
+export function validateAssessmentStyle(style: StyleChoices | undefined): void {
+  const s = style ?? {};
+  for (const [role, compId] of Object.entries(STYLE_ROLE_COMPONENT)) {
+    const entry = CATALOG.by_id[compId];
+    if (!entry) continue;
+    resolveComponentTokens(entry, (s[role as keyof StyleChoices] ?? {}) as ChosenTokens);
+  }
+}
+
+/** Resolved token classes for a role (empty string if none/all-default). */
+function roleClasses(style: StyleChoices, role: keyof StyleChoices): string {
+  const entry = CATALOG.by_id[STYLE_ROLE_COMPONENT[role]];
+  if (!entry) return '';
+  return resolveComponentTokens(entry, (style[role] ?? {}) as ChosenTokens).classes;
+}
 
 export const LOCKED_ASSESSMENT_RESULT_ORDER = [
   'section-hero', // [light]
@@ -31,8 +61,14 @@ export const LOCKED_ASSESSMENT_RESULT_ORDER = [
   'download-button',
 ] as const;
 
-/** Render the radio_cards input HTML for one question. */
-function questionInputHtml(q: AssessmentBuildSpec['questions'][number]): string {
+/** Render the radio_cards input HTML for one question, then apply the COLLECT
+ *  token classes to the right elements: the question label (emphasis, larger +
+ *  stronger — it's the primary text) and every answer button (radius). */
+function questionInputHtml(
+  q: AssessmentBuildSpec['questions'][number],
+  labelClasses: string,
+  btnClasses: string,
+): string {
   const block: CompositionBlock = {
     component_id: 'radio-cards',
     slot_values: {
@@ -42,10 +78,39 @@ function questionInputHtml(q: AssessmentBuildSpec['questions'][number]): string 
       options: q.options.map((o) => ({ label: o.label, value: o.value })), // points NOT in the input — scorer reads the baked spec
     },
   };
-  return assembleComposition([block]).html;
+  let html = assembleComposition([block]).html;
+  if (labelClasses) {
+    html = html.replace('class="form-label d-block"', `class="form-label d-block ${labelClasses}"`);
+  }
+  if (btnClasses) {
+    html = html.split('class="btn btn-outline-primary w-100 text-start p-3"').join(`class="btn btn-outline-primary w-100 text-start p-3 ${btnClasses}"`);
+  }
+  return html;
 }
 
 export function buildAssessmentPage(spec: AssessmentBuildSpec): { innerHtml: string; inlineScript: string } {
+  // Phase C: resolve the LLM's per-role token picks → Homer classes (validated
+  // against each component's supported[]; non-default tokens only).
+  const style = (spec.style ?? {}) as StyleChoices;
+  const cls = {
+    hero: roleClasses(style, 'hero'),
+    card: roleClasses(style, 'interpretation_card'),
+    list: roleClasses(style, 'recommendations'),
+    cta: roleClasses(style, 'cta'),
+    badge: roleClasses(style, 'score_badge'),
+  };
+
+  // COLLECT side (radio-cards): emphasis on the question LABEL (it's the primary
+  // text — bump size + weight) and the radius token on the answer BUTTONS.
+  const qResolved = resolveComponentTokens(
+    CATALOG.by_id['radio-cards'],
+    (style.questions ?? {}) as ChosenTokens,
+  ).resolved;
+  // fs-3 (Homer ~1.26rem) is a clear bump ABOVE body — note Homer's fs-* ramp is
+  // rescaled vs Bootstrap (fs-5 = .845rem is SMALLER than body; fs-1 is largest).
+  const qLabelClasses = `fs-3 ${tokenClass('emphasis', qResolved.emphasis)}`.trim();
+  const qBtnClasses = tokenClass('radius', qResolved.radius);
+
   // ── COLLECT: hero[light] + wizard(steps grouped by question.step) ────────
   const stepNums = Array.from(new Set(spec.questions.map((q) => q.step))).sort((a, b) => a - b);
   const STEP_ICONS = ['list-check', 'adjustments', 'chart-dots', 'flag'];
@@ -56,7 +121,7 @@ export function buildAssessmentPage(spec: AssessmentBuildSpec): { innerHtml: str
       title: `Step ${i + 1}`,
       subtitle: `${qs.length} question${qs.length === 1 ? '' : 's'}`,
       icon: STEP_ICONS[i] ?? 'list-check',
-      content: qs.map(questionInputHtml).join('\n'),
+      content: qs.map((q) => questionInputHtml(q, qLabelClasses, qBtnClasses)).join('\n'),
       first: i === 0,
       hasPrev: i > 0,
       hasNext: i < stepNums.length - 1,
@@ -65,7 +130,7 @@ export function buildAssessmentPage(spec: AssessmentBuildSpec): { innerHtml: str
   });
 
   const { html: collectHtml } = assembleComposition([
-    { component_id: 'section-hero', slot_values: { headline: spec.hero.title, tagline: spec.hero.subtitle, light: true } },
+    { component_id: 'section-hero', slot_values: { headline: spec.hero.title, tagline: spec.hero.subtitle, light: true }, extra_classes: cls.hero },
     { component_id: 'wizard', slot_values: { steps } },
   ]);
 
@@ -79,6 +144,7 @@ export function buildAssessmentPage(spec: AssessmentBuildSpec): { innerHtml: str
         {
           component_id: 'score-badge',
           slot_values: { score: '', label: b.label, sublabel: spec.result.score_subtitle, variant: b.color },
+          extra_classes: cls.badge,
         },
       ]);
       // Hidden via inline display:none (always wins over Bootstrap display
@@ -91,7 +157,7 @@ export function buildAssessmentPage(spec: AssessmentBuildSpec): { innerHtml: str
   const bandCards = bands
     .map((b, i) => {
       const cards = b.interpretation_cards
-        .map((card) => assembleComposition([{ component_id: 'card-basic', slot_values: { title: card.title, content: card.body } }]).html)
+        .map((card) => assembleComposition([{ component_id: 'card-basic', slot_values: { title: card.title, content: card.body }, extra_classes: cls.card }]).html)
         .join('\n');
       // Toggled outer carries NO display-* utility (else .d-flex{!important}
       // would override the inline display:none). Flex layout lives on the inner.
@@ -101,7 +167,7 @@ export function buildAssessmentPage(spec: AssessmentBuildSpec): { innerHtml: str
 
   // Band-independent blocks (composed once).
   const { html: resultHeroHtml } = assembleComposition([
-    { component_id: 'section-hero', slot_values: { headline: spec.result.score_label, tagline: spec.result.score_subtitle, light: true } },
+    { component_id: 'section-hero', slot_values: { headline: spec.result.score_label, tagline: spec.result.score_subtitle, light: true }, extra_classes: cls.hero },
   ]);
   const { html: chartHtml } = assembleComposition([
     { component_id: 'chart-radar', slot_values: { id: 'asmt-radar', height: '340px' } },
@@ -112,6 +178,7 @@ export function buildAssessmentPage(spec: AssessmentBuildSpec): { innerHtml: str
       slot_values: {
         items: spec.result.recommendations.map((r) => ({ label: `[${r.priority.toUpperCase()}] ${r.title} — ${r.body}` })),
       },
+      extra_classes: cls.list,
     },
   ]);
   const { html: ctaHtml } = assembleComposition([
@@ -123,6 +190,7 @@ export function buildAssessmentPage(spec: AssessmentBuildSpec): { innerHtml: str
         cta_url: '#',
         cta_label: spec.result.cta.cta_label,
       },
+      extra_classes: cls.cta,
     },
   ]);
   const { html: shareHtml } = assembleComposition([
@@ -146,7 +214,9 @@ export function buildAssessmentPage(spec: AssessmentBuildSpec): { innerHtml: str
     `<div class="d-flex flex-column gap-3">`,
     resultHeroHtml,
     bandBadges, // locked order: score-badge (matched band revealed) …
-    chartHtml, //                … → chart-radar …
+    // chart-radar: hidden on load (its 340px box would otherwise occupy space
+    // and push everything down). Revealed by the scorer right before painting.
+    `<div id="asmt-chart" style="display:none">${chartHtml}</div>`,
     bandCards, //                … → card-basic ×N (matched band) …
     listHtml,
     ctaHtml,
@@ -198,6 +268,10 @@ export function buildAssessmentPage(spec: AssessmentBuildSpec): { innerHtml: str
     if(cards){ cards.style.display = ''; }
     var labels = SPEC.dimensions.map(function(d){ return d.label; });
     var values = SPEC.dimensions.map(function(d){ var mx = dimMax[d.id] || 1; return Math.round((byDim[d.id] || 0) / mx * 100); });
+    // Reveal the radar container (hidden on load to avoid a 340px dead gap)
+    // BEFORE painting, so Chart.js sizes the now-visible canvas correctly.
+    var chartBox = document.getElementById('asmt-chart');
+    if(chartBox){ chartBox.style.display = ''; }
     try {
       new CustomChartJs({ selector: '#asmt-radar', options: function(){ return {
         type: 'radar',

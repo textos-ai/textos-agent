@@ -36,7 +36,13 @@ const HOMER_CSS = [
 
 const HOMER_JS = [
   '/homer/js/vendors.min.js',
-  '/homer/js/app.mini.js',
+  // FULL app.js (not the lean app.mini.js): app.mini.js wraps everything in an
+  // IIFE so its CustomChartJs / ins are private; app.js declares them at top
+  // level → global, reachable by composed apps' inline chart code (the radar
+  // failure, Part A). They're defined at script-execute time, before any
+  // DOMContentLoaded admin-init runs, so charts work even though a chrome-less
+  // mini-app doesn't load the admin deps (lucide, etc.).
+  '/homer/js/app.js',
 ];
 
 export interface WrapProofOptions {

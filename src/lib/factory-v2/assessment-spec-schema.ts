@@ -53,8 +53,34 @@ const RecommendationSchema = z.object({
   priority: z.enum(['high', 'medium', 'low']),
 });
 
+// Phase C — per-component design-token choices. Each aspect is an optional
+// string; the resolver validates it against the component's capabilities
+// .supported[] (throws if unsupported) and fills omissions with the default.
+const TokenChoiceSchema = z
+  .object({
+    surface: z.string().optional(),
+    radius: z.string().optional(),
+    border: z.string().optional(),
+    elevation: z.string().optional(),
+    emphasis: z.string().optional(),
+  })
+  .partial();
+
+const StyleChoicesSchema = z.object({
+  questions: TokenChoiceSchema.optional(), // radio-cards (collect side)
+  hero: TokenChoiceSchema.optional(),
+  interpretation_card: TokenChoiceSchema.optional(),
+  recommendations: TokenChoiceSchema.optional(),
+  cta: TokenChoiceSchema.optional(),
+  score_badge: TokenChoiceSchema.optional(),
+});
+export type StyleChoices = z.infer<typeof StyleChoicesSchema>;
+
 export const AssessmentBuildSpecSchema = z.object({
   hero: z.object({ title: z.string().min(1), subtitle: z.string().min(1) }),
+  // Phase C: the LLM's per-result-component token picks (validated against
+  // each component's capabilities.supported[] by the resolver).
+  style: StyleChoicesSchema,
   // TextOS style layer — the LLM picks ONE pairing from the closed set
   // (textos-style-layer.ts). Anything outside it fails validation (throw).
   font_pairing: z

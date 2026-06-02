@@ -47,6 +47,10 @@ export interface ComponentCapabilities {
   border?: AspectCapability<BorderToken>;
   surface?: AspectCapability<SurfaceToken>;
   emphasis?: AspectCapability<EmphasisToken>;
+  /** Class name of the element that should receive resolved token classes when
+   *  it is NOT the root (e.g. score-badge → 'avatar-title', the circle). The
+   *  resolver/assembler injects there; default is the root (first class). */
+  style_target?: string;
 }
 
 export interface ComponentCatalogEntry {

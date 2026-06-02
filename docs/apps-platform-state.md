@@ -351,3 +351,52 @@ of values that already exist — it adds NAMES, never new values. Separate from
   one deferred candidate — add ONLY if Phase C output looks cramped after
   composing with the 5 aspects. Width/fluid, native-control internals, and the
   tooltip dark-bubble surface were considered and **dropped** as edge cases.
+
+### 5.1 Phase C COMPLETE — the LLM composes with tokens (2026-06-01)
+
+The capability metadata is no longer inert: the build-time LLM picks per-
+component design tokens, and the assembler resolves them to real Homer classes.
+
+- **Resolver** (`component-catalog/design-token-resolver.ts`):
+  `resolveComponentTokens(entry, chosen)` validates each token ∈ dictionary
+  AND ∈ `entry.capabilities[aspect].supported[]` — throws `UnknownDesignTokenError`
+  / `UnsupportedTokenError` (no fallback); fills omissions with `default`; emits
+  Homer utility classes ONLY for **non-default** box tokens (so all-defaults =
+  today's render). Skin/theme-varied tokens resolve to **class references**
+  (`.shadow`, `.bg-primary-subtle`, `.border-primary`) that flow through the
+  skin machinery — never frozen values. `emphasis` is realized by the `--tx-*`
+  font layer (shell-wide), except for scoped text targets via `tokenClass()`.
+  `injectTokenClasses()` injects into the root or `capabilities.style_target`
+  (e.g. score-badge → `avatar-title`).
+- **Assembler hook** (`assemble.ts`): `CompositionBlock.extra_classes` →
+  injected after render. The recipe resolves each result/collect role's tokens
+  and passes them; the LLM's picks live in the spec's `style` block, validated
+  in the generate loop (`validateAssessmentStyle`, retry-on-throw).
+- **Proven on the Assessment (gaudet):** LLM-picked finished look (tinted hero,
+  raised-card framed interpretation cards + CTA, lifted score badge, larger
+  question labels) — all resolved to Homer classes, zero custom CSS. Verified by
+  Rob: composes a finished look with no per-app tuning.
+
+### 5.2 Hard-won gotchas (Homer-specific — verify EFFECT, not presence)
+
+These cost real cycles in Phase C; recorded so they don't recur:
+- **(a) Homer's `fs-*` ramp is rescaled/inverted vs Bootstrap.** `.fs-5` =
+  `0.845rem` (≈ body `0.8125rem`), `.fs-1` is the *largest* (~1.33rem). A
+  Bootstrap-intuition `fs-5 = "large"` pick lands ≈ body size → "no change."
+  Use `.fs-3` (~1.26rem) for a clear bump. (Fixed: question labels `fs-5→fs-3`.)
+- **(b) `.d-flex{…!important}` beats inline `style="display:none"`.** A
+  stylesheet `!important` rule wins over a non-`!important` inline declaration —
+  so a toggled element must NOT carry a `display-*` utility. (Fixed: the
+  `#asmt-result` / `.asmt-cards` hide-on-load wrappers; flex moved to an inner
+  div.)
+- **(c) `app.mini.js` hides `CustomChartJs`/`ins` in an IIFE** (private); the
+  full `app.js` declares them at top level (global). The chart-bearing apps need
+  the full `app.js` base bundle. (Fixed: document-shell loads `app.js`.)
+- **(d) STANDING RULE: verify a class's EFFECT / a symbol's availability, not
+  just its presence in the markup.** "class is in the HTML" ≠ "class wins at the
+  right value"; "script tag is present" ≠ "symbol is global." Check the cascade
+  / the scope.
+- **Known cosmetic:** the full `app.js` admin-init logs a harmless
+  `lucide is not defined` (chrome-less mini-apps don't load lucide); it fires
+  after `CustomChartJs` is defined, so charts are unaffected. Part B's
+  base-bundle model can optionally load lucide to silence it.
