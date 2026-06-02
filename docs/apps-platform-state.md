@@ -1,8 +1,11 @@
 # Apps Platform — Current State vs PRDs
 
-Last updated: 2026-06-02 (Calculator archetype dependency wiring — tx-bind added to
-the vendor registry + chart-bar/chart-doughnut vendor_scripts; latent app.js
-auto-init-dead-in-iframe backlog item recorded — see §5.6. Earlier same day:
+Last updated: 2026-06-02 (Calculator archetype BUILT + published live — the
+universal model is complete: Generate/Score/Compute all live; client-side formula
+with a tx-bind live headline + submit snapshot, whitelist expression sanitizer —
+see §5.7. Earlier same day: Calculator dependency wiring (tx-bind registry +
+chart vendor_scripts) + the app.js auto-init-dead-in-iframe backlog item — §5.6.
+Earlier same day:
 Strategy styling backport + wizard UX fixes for BOTH archetypes — see §5.5. Strategy now carries the same font pairing + per-component
 design tokens + both-sides card framing as the Assessment; radio-card option
 subtext stacks under the title and Enter advances/submits the wizard, in both
@@ -571,3 +574,50 @@ script (mirror the Assessment radar); `range-slider` feeds `tx-bind` via `data-b
 (live compute works without the value-badge snippet). Backlog fix (not done): make
 mini-apps tolerate the missing `lucide`, or strip the lucide call from the
 mini-app init path, so the auto-init chain survives.
+
+### 5.7 Calculator archetype BUILT — the universal model is complete (2026-06-02)
+
+The **3rd and final archetype** is built on the §5.6 wiring, mirroring the
+Assessment trio. **Generate (Strategy) / Score (Assessment) / Compute (Calculator)**
+are now all live on `/dev/` (and Calculator published live). Files:
+`calculator-spec-schema.ts` · `calculator-build-prompt.ts` ·
+`calculator-generator.ts` · `calculator-recipe.ts` · route
+`/dev/factory-calculator-app/:slug` (+ `POST /:slug/publish`).
+
+- **HYBRID compute, fully CLIENT-SIDE (no result endpoint):** the LLM designs a
+  FORMULA spec once at build (inputs, arithmetic computations, a headline value,
+  ONE breakdown chart, optional interpretation bands, recommendations, CTA). At
+  runtime: a **`tx-bind` `<output data-tx-output>`** previews the headline LIVE as
+  the visitor types (Calculator's signature), and **submit** runs an inline
+  snapshot that fills the result headline, paints the chart via explicit
+  `new CustomChartJs(...)`, and reveals the matched band. First app to use
+  `tx-bind` in production.
+- **Expression sanitizer = the security gate** (`calculator-spec-schema.ts`):
+  every LLM expression is whitelist-sanitized AGENT-SIDE before storing —
+  input/computation ids + numeric literals + `+ - * / %` + parens +
+  `Math.{min,max,round,floor,ceil,abs}` ONLY; anything else (property access,
+  function calls, template literals, assignment, globals) THROWS
+  `DisallowedExpressionTokenError`. Proven via `?debug=sanitize`: a 10-attack
+  battery (fetch, window, constructor.constructor, globalThis, template literal,
+  …) is fully blocked; the legit control passes. (Compute is ALSO sandboxed in
+  the iframe, and Workers block `new Function` agent-side — defence in depth.)
+- **Ids are JS identifiers** (snake_case, NOT kebab) because they are used
+  directly as formula variables in `new Function(...)` — a hyphen would parse as
+  subtraction. (Caught by a local unit test before any deploy.)
+- **Recipe-level decisions** from §5.6 applied: number/range/select inputs (no
+  touchspin); headline driven by tx-bind (not the dead count-up auto-init);
+  selects **pre-select their `default_value`** (drop the empty placeholder) so the
+  live headline computes a real estimate on load, never $0; range sliders show a
+  **unit-formatted value badge** ("50%", "3 items") seeded server-side from
+  `unit_prefix`/`unit_suffix`.
+- **Reuses every proven layer:** persisted skin, LLM font pairing, per-component
+  design tokens (roles: hero/headline/interpretation_card/recommendations/cta),
+  shared `card-basic` framing (`rounded-3 shadow-sm`, hero above on both
+  surfaces), the §5.6 derived `vendor_scripts` (`['/homer/js/tx-bind.js']`;
+  charts ride the full base bundle).
+- **Published live** (test) at
+  `/sites/gaudet-charcuterie-o8km/apps/charcuterie-board-planner/` via the
+  **unchanged** delivery path (`_redirects` → apps-shell → `/api/sites` → by-slug
+  → iframe `srcdoc`); `app_type: "calculator"`; client-side, no result endpoint;
+  zero delivery-file/schema edits. `POST /dev/factory-calculator-app/:slug/publish`
+  upserts the `business_assets` app row (supersede), test-only gated.
