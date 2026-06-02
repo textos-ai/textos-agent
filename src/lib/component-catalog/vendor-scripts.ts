@@ -41,6 +41,10 @@ export const VENDOR_SCRIPTS: Record<string, VendorScript> = {
 
   // ── add-on files (separate scripts, cross-referenced vendor folder ↔ demos) ─
   'form-wizard': { src: '/homer/js/pages/form-wizard.js', in_base_bundle: false, provides: ['FormWizard'], requires: ['bootstrap'] },
+  // Custom TextOS helper: reactive input→output binding (the Calculator live-compute
+  // engine). Self-inits via its own IIFE/DOMContentLoaded listener (independent of
+  // app.js), exposing window.txBind. Add-on file — the assembler loads its src.
+  'tx-bind': { src: '/homer/js/tx-bind.js', in_base_bundle: false, provides: ['txBind'], requires: [] },
   choices: { src: '/homer/plugins/choices/choices.min.js', in_base_bundle: false, provides: ['Choices'], requires: [] },
   'form-choice': { src: '/homer/js/pages/form-choice.js', in_base_bundle: false, provides: [], requires: ['choices'] },
   handlebars: { src: '/homer/plugins/handlebars/handlebars.min.js', in_base_bundle: false, provides: ['Handlebars'], requires: [] },

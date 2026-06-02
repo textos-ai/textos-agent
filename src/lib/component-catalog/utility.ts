@@ -243,6 +243,7 @@ export const c_tx_bind: ComponentCatalogEntry = {
   fillable_slots: ['input_id', 'output_id', 'value', 'expression', 'format'],
   js_init: 'auto',
   js_dependencies: ['/homer/js/tx-bind.js'],
+  vendor_scripts: ['tx-bind'], // factory-v2 vendor-script registry id (Calculator live-compute)
   js_init_snippet: '// Auto-initialized on DOMContentLoaded by tx-bind.js',
   mobile_responsive: true,
   text_mode: 'visual-only',

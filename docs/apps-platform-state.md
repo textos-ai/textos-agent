@@ -1,7 +1,9 @@
 # Apps Platform — Current State vs PRDs
 
-Last updated: 2026-06-02 (Strategy styling backport + wizard UX fixes for BOTH
-archetypes — see §5.5. Strategy now carries the same font pairing + per-component
+Last updated: 2026-06-02 (Calculator archetype dependency wiring — tx-bind added to
+the vendor registry + chart-bar/chart-doughnut vendor_scripts; latent app.js
+auto-init-dead-in-iframe backlog item recorded — see §5.6. Earlier same day:
+Strategy styling backport + wizard UX fixes for BOTH archetypes — see §5.5. Strategy now carries the same font pairing + per-component
 design tokens + both-sides card framing as the Assessment; radio-card option
 subtext stacks under the title and Enter advances/submits the wizard, in both
 live apps. Prior: 2026-06-01 Phase 1 COMPLETE — the clean factory-v2 Strategy app
@@ -524,3 +526,48 @@ fix latent issues in the shared wizard pattern, so they apply to BOTH archetypes
   a lone text input from implicitly submitting mid-wizard. No double-fire. (We
   did NOT touch the shared `form-wizard.js` — that would change platform-wide
   wizard behavior incl. Pipeline B; the recipe-scoped handler is the safe fix.)
+
+### 5.6 Calculator archetype — dependency wiring (2026-06-02)
+
+Groundwork for the **3rd factory-v2 archetype, Calculator** (Compute brain:
+client-side formula, numeric inputs → live computed result, leads with
+large-number + charts; client-side like Assessment, **no paywall** — distinct from
+the legacy Pipeline B `src/lib/archetypes/calculator.ts`, untouched). Wiring ONLY;
+the recipe is NOT built yet.
+
+- **Vendor registry** (`component-catalog/vendor-scripts.ts`): added
+  `'tx-bind' → { src:'/homer/js/tx-bind.js', in_base_bundle:false,
+  provides:['txBind'], requires:[] }` — the custom reactive input→output engine
+  that powers Calculator's live recompute (self-inits via its own IIFE listener,
+  exposes `window.txBind`).
+- **`vendor_scripts` set** on `tx-bind` → `['tx-bind']` and `chart-bar` /
+  `chart-doughnut` → `['custom-chartjs']` (parity with `chart-radar`).
+- **Verified derivation:** `resolveVendorScripts(calcSet, BASE_BUNDLE_FULL)` →
+  exactly `['/homer/js/tx-bind.js']` (custom-chartjs is `in_base_bundle` →
+  validated, not separately loaded). Under `BASE_BUNDLE_MINI` it **throws**
+  `UnmetVendorDependencyError` (missing `CustomChartJs`/`ins`, needed by
+  chart-bar/chart-doughnut) — the build-time guard that would have caught the
+  Part-A radar break.
+
+**BACKLOG / latent platform bug (found reading `app.js`, recorded so it's not
+re-discovered the hard way):** Homer's `app.js` runs all auto-init inside ONE
+`DOMContentLoaded` handler — `(new App).init(), (new LayoutCustomizer).init(),
+(new Plugins).init(), …` — and `App.init()`'s first call `initComponents()` begins
+with `lucide.createIcons()`. In a chrome-less factory-v2 iframe `lucide` is
+undefined → **ReferenceError aborts the entire chain**. Consequence: every
+component that relies on this auto-init **silently no-ops in iframe apps** — notably
+`large-number`'s count-up (`initCounter`) and `touchspin-stepper`'s +/- buttons
+(`initTouchSpin`). This is the SAME class as the Part-A radar (§5.2c). Components
+using Bootstrap's `data-bs-toggle` data-api (accordion, modal, collapse) are
+unaffected (they register at load, not via this handler); `tx-bind` is unaffected
+(its own independent listener); explicitly-instantiated `CustomChartJs` is
+unaffected.
+
+**Route-around for the Calculator build (recorded in project memory too):** drive
+the headline number via `tx-bind`, not `initCounter`; prefer
+`number-input`/`range-slider`/`select-native` over `touchspin-stepper` (or init it
+explicitly); init charts with explicit `new CustomChartJs(...)` in the recipe inline
+script (mirror the Assessment radar); `range-slider` feeds `tx-bind` via `data-bind`
+(live compute works without the value-badge snippet). Backlog fix (not done): make
+mini-apps tolerate the missing `lucide`, or strip the lucide call from the
+mini-app init path, so the auto-init chain survives.

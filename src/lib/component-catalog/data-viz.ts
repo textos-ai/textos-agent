@@ -17,6 +17,7 @@ export const c_chart_bar: ComponentCatalogEntry = {
   fillable_slots: ['id', 'height'],
   js_init: 'manual',
   js_dependencies: ['Chart.js v4.4.9'],
+  vendor_scripts: ['custom-chartjs'], // factory-v2 registry id: Chart (base) + CustomChartJs (app.js)
   js_init_snippet: `new CustomChartJs({
   selector: '#{{id}}',
   options: () => ({
@@ -94,6 +95,7 @@ export const c_chart_doughnut: ComponentCatalogEntry = {
   fillable_slots: ['id', 'height'],
   js_init: 'manual',
   js_dependencies: ['Chart.js v4.4.9'],
+  vendor_scripts: ['custom-chartjs'], // factory-v2 registry id: Chart (base) + CustomChartJs (app.js)
   js_init_snippet: `new CustomChartJs({ selector: '#{{id}}', options: () => ({ type: 'doughnut', data: {...}, options: { cutout: '65%' } }) });`,
   mobile_responsive: true,
   text_mode: 'visual-only',
