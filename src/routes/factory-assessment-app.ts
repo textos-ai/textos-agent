@@ -163,4 +163,101 @@ app.get("/:slug", async (c) => {
   }
 });
 
+// ── POST /:slug/publish — build the self-contained Assessment app + upsert the
+// business_assets row the existing /api/generated-apps by-slug endpoint serves.
+// Test-only (prod needs owner auth, Phase 4). Mirrors the Strategy publish but
+// SIMPLER: Assessment is fully client-side — no result endpoint, no postUrl.
+app.post("/:slug/publish", async (c) => {
+  if (c.env.ENVIRONMENT !== "test") {
+    return c.json({ error: "forbidden", message: "publish is test-only in this build" }, 403);
+  }
+  const slug = c.req.param("slug");
+  let body: { app_slug?: string } = {};
+  try {
+    body = await c.req.json();
+  } catch {
+    body = {};
+  }
+  const appSlug = body.app_slug && /^[a-z0-9-]+$/.test(body.app_slug) ? body.app_slug : "charcuterie-iq";
+
+  const client = createSupabaseClient(c.env);
+  try {
+    // Real context (no-fallbacks: throws if gaudet is missing required fields).
+    const { business, ctx } = await loadRealBusiness(client, slug);
+    const identity = buildRealIdentity(slug, business, ctx);
+
+    // Stored skin + LLM spec (cached) + font pairing — the verified /dev/ inputs.
+    const { skin } = await getOrCreateSkin(client, business.id);
+    const spec = await getOrGenSpec(c, business.id, identity, false);
+    const pairing = isFontPairing(spec.font_pairing) ? spec.font_pairing : DEFAULT_FONT_PAIRING;
+
+    // Self-contained HTML — identical to the /dev/ output: full app.js base +
+    // the assembler-derived add-on scripts (form-wizard). The scorer + radar run
+    // entirely client-side in the iframe; NO result endpoint, NO postUrl.
+    const { innerHtml, inlineScript, scripts } = buildAssessmentPage(spec);
+    const html = wrapProofDocument(innerHtml, {
+      skin,
+      assetBase: HOMER_ASSET_BASE,
+      extraScripts: scripts,
+      inlineScript,
+      fontPairing: pairing,
+    });
+
+    const asset_data = { html, app_title: spec.hero.title, app_tagline: spec.hero.subtitle, app_type: "assessment" };
+
+    // Supersede the slug: update-in-place if a row exists (unique (business_id,
+    // app_slug) index), else insert.
+    const existing = await client
+      .from("business_assets")
+      .select("id")
+      .eq("business_id", business.id)
+      .eq("asset_type", "app")
+      .eq("app_slug", appSlug)
+      .maybeSingle();
+    if (existing.error) throw existing.error;
+
+    let assetId: string;
+    let mode: "updated" | "inserted";
+    if (existing.data?.id) {
+      const upd = await client
+        .from("business_assets")
+        .update({ asset_data, is_current: true, updated_at: new Date().toISOString() })
+        .eq("id", existing.data.id)
+        .select("id")
+        .single();
+      if (upd.error) throw upd.error;
+      assetId = upd.data.id as string;
+      mode = "updated";
+    } else {
+      const ins = await client
+        .from("business_assets")
+        .insert({ business_id: business.id, asset_type: "app", app_slug: appSlug, is_current: true, asset_data })
+        .select("id")
+        .single();
+      if (ins.error) throw ins.error;
+      assetId = ins.data.id as string;
+      mode = "inserted";
+    }
+
+    return c.json({
+      published: true,
+      mode,
+      asset_id: assetId,
+      business_slug: business.slug,
+      app_slug: appSlug,
+      app_type: "assessment",
+      skin,
+      font_pairing: pairing,
+      derived_scripts: scripts,
+      site_url: `${HOMER_ASSET_BASE}/sites/${business.slug}/apps/${appSlug}/`,
+    });
+  } catch (err) {
+    if (err instanceof BusinessNotFoundError) return c.json({ error: "business_not_found", slug, message: err.message }, 404);
+    if (err instanceof MissingContextError) {
+      return c.json({ error: "missing_required_context", slug, missing: err.missing, message: err.message }, 422);
+    }
+    return c.json({ error: "publish_failed", slug, message: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
 export default app;

@@ -127,6 +127,11 @@ export function buildAssessmentPage(spec: AssessmentBuildSpec): {
   const qLabelClasses = `fs-3 ${tokenClass('emphasis', qResolved.emphasis)}`.trim();
   const qBtnClasses = tokenClass('radius', qResolved.radius);
 
+  // Shared frame for BOTH the collect (wizard) and result content cards —
+  // radius:lg + elevation:sm (rounded-3 + shadow-sm), token-derived, matching
+  // the interpretation cards so the two pages read as the same app.
+  const FRAME_CLASSES = [tokenClass('radius', 'lg'), tokenClass('elevation', 'sm')].filter(Boolean).join(' ');
+
   // ── COLLECT: hero[light] + wizard(steps grouped by question.step) ────────
   const stepNums = Array.from(new Set(spec.questions.map((q) => q.step))).sort((a, b) => a - b);
   const STEP_ICONS = ['list-check', 'adjustments', 'chart-dots', 'flag'];
@@ -145,9 +150,15 @@ export function buildAssessmentPage(spec: AssessmentBuildSpec): {
     };
   });
 
-  const { html: collectHtml } = assembleComposition([
+  // Hero stays ABOVE the frame; the wizard goes INSIDE a Homer card (card-basic).
+  const { html: collectHeroHtml } = assembleComposition([
     { component_id: 'section-hero', slot_values: { headline: spec.hero.title, tagline: spec.hero.subtitle, light: true }, extra_classes: cls.hero },
+  ]);
+  const { html: collectWizardHtml } = assembleComposition([
     { component_id: 'wizard', slot_values: { steps } },
+  ]);
+  const { html: collectCardHtml } = assembleComposition([
+    { component_id: 'card-basic', slot_values: { content: collectWizardHtml }, extra_classes: FRAME_CLASSES },
   ]);
 
   // ── RESULT: score-dependent blocks pre-composed PER BAND (sorted by min) ─
@@ -222,13 +233,9 @@ export function buildAssessmentPage(spec: AssessmentBuildSpec): {
     },
   ]);
 
-  const innerHtml = [
-    `<div id="asmt-collect">${collectHtml}</div>`,
-    // Toggled outer carries NO display-* utility; the always-flex layout is on
-    // the inner wrapper, so the inline display:none on the outer truly hides it.
-    `<div id="asmt-result" style="display:none">`,
-    `<div class="d-flex flex-column gap-3">`,
-    resultHeroHtml,
+  // Frame the RESULT content in a Homer card (hero stays ABOVE it), mirroring
+  // the collect side. The flex layout lives inside the card-body.
+  const resultInnerBlocks = [
     bandBadges, // locked order: score-badge (matched band revealed) …
     // chart-radar: hidden on load (its 340px box would otherwise occupy space
     // and push everything down). Revealed by the scorer right before painting.
@@ -238,7 +245,25 @@ export function buildAssessmentPage(spec: AssessmentBuildSpec): {
     ctaHtml,
     shareHtml,
     downloadHtml,
+  ].join('\n');
+  const { html: resultCardHtml } = assembleComposition([
+    {
+      component_id: 'card-basic',
+      slot_values: { content: `<div class="d-flex flex-column gap-3">${resultInnerBlocks}</div>` },
+      extra_classes: FRAME_CLASSES,
+    },
+  ]);
+
+  const innerHtml = [
+    // COLLECT: hero above, wizard inside a framed card.
+    `<div id="asmt-collect">`,
+    collectHeroHtml,
+    collectCardHtml,
     `</div>`,
+    // RESULT: hidden on load; hero above, content inside a matching framed card.
+    `<div id="asmt-result" style="display:none">`,
+    resultHeroHtml,
+    resultCardHtml,
     `</div>`,
   ].join('\n');
 

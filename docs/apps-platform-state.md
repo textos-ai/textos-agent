@@ -441,3 +441,27 @@ Part-A radar) into a loud build error.
 - **Backlog (cutover):** fully migrate Pipeline B's `document-wrapper.ts` to the
   registry ids and retire the `js_dependencies` path-parsing — then a single
   field serves both pipelines. Until then, both fields coexist.
+
+### 5.4 Both archetypes LIVE on real /sites/ URLs (2026-06-01)
+
+The clean factory-v2 pipeline now serves **two archetypes** on real site routes,
+through the **unchanged** delivery path (`_redirects` → `apps-shell` →
+`/api/sites` → by-slug → iframe `srcdoc`); zero delivery-file edits, no schema
+change. Both are test-only published (owner auth = Phase 4); Pipeline B
+untouched.
+
+- **Strategy** — `/sites/gaudet-charcuterie-o8km/apps/charcuterie-strategy/`.
+  Per-visitor LLM result via the stable `/api/factory-v2/.../result` endpoint
+  (the iframe POSTs answers; about:srcdoc absolute-URL fix; CORS).
+- **Assessment** — `/sites/gaudet-charcuterie-o8km/apps/charcuterie-iq/`.
+  **Fully client-side** — the baked scorer + radar run entirely in the sandboxed
+  `srcdoc` iframe (full `app.js` base exposes `CustomChartJs`; **no result
+  endpoint, no CORS round-trip**). First Chart.js-in-sandbox app — verified
+  painting. Publish handler: `POST /dev/factory-assessment-app/:slug/publish`
+  (real context no-fallbacks + stored skin + cached spec + tokens + derived
+  vendor scripts → `business_assets` upsert).
+- **Both pages framed** (the Assessment recipe): hero in its own amber band
+  ABOVE a Homer `card-basic` (`card-body`) frame on BOTH collect and result,
+  same `rounded-3 shadow-sm` (radius:lg + elevation:sm) tokens — composition
+  only, no new CSS. (Note: neither side was carded before; the collect "frame"
+  was just the wizard's nav-tabs.)
