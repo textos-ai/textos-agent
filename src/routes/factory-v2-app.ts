@@ -5,7 +5,8 @@ import { generateStrategyContentFromAnswers } from "../lib/factory-v2/strategy-l
 import { SAMPLE_BUSINESS } from "../lib/factory-v2/strategy-live-prompt";
 import { buildStrategyResultHtml } from "../lib/factory-v2/strategy-result-recipe";
 import { wrapProofDocument } from "../lib/factory-v2/document-shell";
-import { buildStrategyCollectPage } from "../lib/factory-v2/strategy-collect-recipe";
+import { buildStrategyCollectPage, STRATEGY_COMPONENT_IDS } from "../lib/factory-v2/strategy-collect-recipe";
+import { resolveVendorScripts, BASE_BUNDLE_FULL } from "../lib/component-catalog/vendor-scripts";
 import { getOrGenStrategyStyle, type StrategyStyleSpec } from "../lib/factory-v2/strategy-style";
 import { pickStableSkin, isFactoryV2Skin } from "../lib/factory-v2/strategy-skin";
 import { getOrCreateSkin, readStoredSkin } from "../lib/factory-v2/strategy-skin-store";
@@ -41,10 +42,13 @@ const app = new Hono<{ Bindings: Env }>();
 
 function renderWizard(skin: string, spec: StrategyStyleSpec): Response {
   const { innerHtml, inlineScript } = buildStrategyCollectPage({ style: spec.style });
+  // Assembler-DERIVED vendor scripts (was hand-coded form-wizard.js): wizard→
+  // form-wizard, download-button→tx-pdf→jspdf. Throws at build if a dep is unmet.
+  const scripts = resolveVendorScripts(STRATEGY_COMPONENT_IDS, BASE_BUNDLE_FULL);
   const doc = wrapProofDocument(innerHtml, {
     skin,
     assetBase: HOMER_ASSET_BASE,
-    extraScripts: ["/homer/js/pages/form-wizard.js"],
+    extraScripts: scripts,
     inlineScript,
     fontPairing: spec.font_pairing,
   });

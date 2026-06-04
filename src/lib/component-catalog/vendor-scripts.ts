@@ -45,6 +45,13 @@ export const VENDOR_SCRIPTS: Record<string, VendorScript> = {
   // engine). Self-inits via its own IIFE/DOMContentLoaded listener (independent of
   // app.js), exposing window.txBind. Add-on file — the assembler loads its src.
   'tx-bind': { src: '/homer/js/tx-bind.js', in_base_bundle: false, provides: ['txBind'], requires: [] },
+  // jsPDF (UMD) — exposes window.jspdf (with .jsPDF). The PDF engine for the
+  // shared result-download mechanism. ~366KB add-on (not in any base bundle).
+  jspdf: { src: '/homer/plugins/jspdf/jspdf.umd.min.js', in_base_bundle: false, provides: ['jspdf'], requires: [] },
+  // Custom TextOS helper: shared result→PDF download. Delegated click on
+  // [data-tx-pdf] walks the result container (text + chart canvas) → jsPDF doc →
+  // download. Exposes window.txPdf; requires jsPDF (load order via the closure).
+  'tx-pdf': { src: '/homer/js/tx-pdf.js', in_base_bundle: false, provides: ['txPdf'], requires: ['jspdf'] },
   choices: { src: '/homer/plugins/choices/choices.min.js', in_base_bundle: false, provides: ['Choices'], requires: [] },
   'form-choice': { src: '/homer/js/pages/form-choice.js', in_base_bundle: false, provides: [], requires: ['choices'] },
   handlebars: { src: '/homer/plugins/handlebars/handlebars.min.js', in_base_bundle: false, provides: ['Handlebars'], requires: [] },

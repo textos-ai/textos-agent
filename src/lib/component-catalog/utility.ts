@@ -82,6 +82,11 @@ export const c_download_button: ComponentCatalogEntry = {
   fillable_slots: ['url', 'label', 'variant', 'download'],
   js_init: 'noop',
   js_dependencies: [],
+  // factory-v2: when a recipe stamps the rendered anchor with data-tx-pdf, the
+  // shared tx-pdf helper builds a real PDF of the result on click. The assembler
+  // derives jspdf→tx-pdf from this (throws at build if unmet). Pipeline B never
+  // stamps data-tx-pdf, so the loaded helper is inert there.
+  vendor_scripts: ['tx-pdf'],
   mobile_responsive: true,
   text_mode: 'adapted',
   text_mode_notes: 'Bot sends a file or URL.',

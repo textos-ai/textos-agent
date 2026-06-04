@@ -224,12 +224,16 @@ export function buildCalculatorPage(spec: CalculatorBuildSpec): {
       extra_classes: cls.cta,
     },
   ]);
-  const { html: shareHtml } = assembleComposition([
+  const { html: shareRaw } = assembleComposition([
     { component_id: 'share-bar', slot_values: { url: '#', text: spec.hero.title, subject: spec.hero.title, body: spec.result.intro } },
   ]);
-  const { html: downloadHtml } = assembleComposition([
-    { component_id: 'download-button', slot_values: { url: '#', label: 'Download this breakdown (PDF)', variant: 'outline-primary', download: 'calculation' } },
-  ]);
+  // data-tx-pdf-skip: tx-pdf excludes the share row from the PDF.
+  const shareHtml = `<div data-tx-pdf-skip>${shareRaw}</div>`;
+  // Stamp the download anchor → tx-pdf builds a real PDF of #calc-result on click.
+  let downloadHtml = assembleComposition([
+    { component_id: 'download-button', slot_values: { url: '#', label: 'Download this breakdown (PDF)', variant: 'outline-primary', download: 'download' } },
+  ]).html;
+  downloadHtml = downloadHtml.replace('<a href="#"', '<a href="#" data-tx-pdf="#calc-result" data-tx-pdf-name="charcuterie-board-plan.pdf"');
 
   const resultInner = [
     resultLargeNumber,

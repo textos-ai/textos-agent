@@ -22,6 +22,15 @@ import { CATALOG } from '../component-catalog/index';
 import { resolveComponentTokens, tokenClass, type ChosenTokens } from '../component-catalog/design-token-resolver';
 import { STYLE_ROLE_COMPONENT } from './assessment-recipe';
 import type { StyleChoices } from './assessment-spec-schema';
+import { LOCKED_STRATEGY_RESULT_ORDER } from './strategy-result-recipe';
+
+/** Every component the Strategy app composes (collect + per-visitor result). The
+ *  route derives its vendor scripts from THIS set via resolveVendorScripts —
+ *  wizard→form-wizard, download-button→tx-pdf→jspdf — so nothing is hand-added. */
+export const STRATEGY_COMPONENT_IDS: string[] = [
+  'section-hero', 'wizard', 'text-input', 'textarea', 'radio-cards', 'card-basic', 'spinner', 'alert',
+  ...LOCKED_STRATEGY_RESULT_ORDER,
+];
 
 // Shared frame for the wizard card (radius:lg + elevation:sm) — same as the
 // Assessment so the two live apps read as the same product.

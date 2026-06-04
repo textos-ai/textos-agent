@@ -1,9 +1,12 @@
 # Apps Platform — Current State vs PRDs
 
-Last updated: 2026-06-02 (Calculator archetype BUILT + published live — the
+Last updated: 2026-06-03 (Client-side PDF download wired for ALL THREE archetypes
+via the vendor-dependency system — jsPDF + a shared tx-pdf helper, structured doc
++ chart-canvas toDataURL, one sanctioned sandbox `allow-downloads` edit — see §5.8.
+Prior 2026-06-02: Calculator archetype BUILT + published live — the
 universal model is complete: Generate/Score/Compute all live; client-side formula
 with a tx-bind live headline + submit snapshot, whitelist expression sanitizer —
-see §5.7. Earlier same day: Calculator dependency wiring (tx-bind registry +
+see §5.7. Earlier: Calculator dependency wiring (tx-bind registry +
 chart vendor_scripts) + the app.js auto-init-dead-in-iframe backlog item — §5.6.
 Earlier same day:
 Strategy styling backport + wizard UX fixes for BOTH archetypes — see §5.5. Strategy now carries the same font pairing + per-component
@@ -621,3 +624,48 @@ are now all live on `/dev/` (and Calculator published live). Files:
   → iframe `srcdoc`); `app_type: "calculator"`; client-side, no result endpoint;
   zero delivery-file/schema edits. `POST /dev/factory-calculator-app/:slug/publish`
   upserts the `business_assets` app row (supersede), test-only gated.
+
+### 5.8 Client-side PDF download — all three archetypes (2026-06-03)
+
+The result-page `download-button` (always a `#` placeholder) now produces a REAL
+PDF — selectable text (headline/sections/recommendations) **plus the result chart
+embedded as an image** — wired entirely through the **vendor-dependency system**
+(no hand-added `<script>`). Verified downloading on all three by Rob.
+
+- **Library: jsPDF** (`/homer/plugins/jspdf/jspdf.umd.min.js`, 2.5.2, ~366 KB,
+  exposes `window.jspdf`) — chosen over pdfmake (which IS present but ~2.2 MB w/
+  vfs_fonts — too heavy for a public landing page). Registered in
+  `vendor-scripts.ts` as `jspdf` (provides `jspdf`).
+- **Shared helper `tx-pdf.js`** (new `/homer/js/` asset, like `tx-bind.js`):
+  registered as `tx-pdf` (provides `txPdf`, **requires `jspdf`**). Binds via event
+  **delegation** on `[data-tx-pdf]` (so it also catches the Strategy per-visitor
+  result injected AFTER load), DOM-walks the result container (headings→titles,
+  `<p>`/text→body, `<li>`→bullets; **skips** `<a>`/`<button>` labels,
+  `[data-tx-pdf-skip]` subtrees, and hidden/unmatched bands), grabs the Chart.js
+  `<canvas>` via **`toDataURL('image/png')`** → embedded image, builds the jsPDF
+  doc, `doc.save()`.
+- **Capture = structured doc + chart-`toDataURL`, NOT html2canvas** — the chart
+  canvas draws only data (no cross-origin images) so it's untainted and
+  `toDataURL` works in the sandbox; this sidesteps the html2canvas cross-origin
+  taint footgun (a hero `bg_url` would taint a full-container rasterize) and saves
+  ~200 KB. PDF text stays selectable.
+- **Wiring (dependency system):** `download-button` → `vendor_scripts: ['tx-pdf']`;
+  the assembler derives `jspdf → tx-pdf` whenever a result composes the button and
+  **throws at build** (`UnknownVendorScriptError`) if a dep is unmet (the radar
+  lesson — unit-verified). Each recipe stamps the rendered download anchor with
+  `data-tx-pdf="#<result-container>"` + `data-tx-pdf-name` (composition string
+  inject, like `data-bind`): `#asmt-result` / `#calc-result` / `#fv2-result`; and
+  wraps the share-bar in `data-tx-pdf-skip`. One generic walker serves all three.
+- **Strategy routes converted to DERIVE** (`STRATEGY_COMPONENT_IDS` →
+  `resolveVendorScripts`) — they previously hand-coded `form-wizard.js`; now the
+  same path yields `form-wizard.js` + `jspdf` + `tx-pdf`. (Assessment/Calculator
+  already derived.)
+- **Sandbox:** a programmatic download is blocked in a sandboxed iframe without
+  `allow-downloads`. Added that ONE token to the apps-shell iframe sandbox
+  (`textos-web/src/pages/business/apps-shell.astro`) — the single sanctioned
+  delivery-config touch (additive; correct — an iframe hosting apps that offer
+  downloads should permit them; benefits all apps). `/dev/` pages are top-level
+  documents (no iframe), so downloads work there without it.
+- **Pipeline B untouched:** `tx-pdf` rides the separate `vendor_scripts` field and
+  binds only where a recipe stamps `data-tx-pdf` (factory-v2 only); the loaded
+  helper is inert elsewhere.

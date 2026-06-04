@@ -132,12 +132,17 @@ export function buildStrategyResultHtml(content: StrategyLiveContent, style: Sty
   const { html: ctaHtml } = assembleComposition([
     { component_id: 'card-cta', slot_values: { headline: content.cta.headline, supporting_text: content.cta.body, cta_url: '#', cta_label: content.cta.cta_label }, extra_classes: ctaCls },
   ]);
-  const { html: shareHtml } = assembleComposition([
+  const { html: shareRaw } = assembleComposition([
     { component_id: 'share-bar', slot_values: { url: '#', text: content.headline, subject: content.headline, body: content.tagline } },
   ]);
-  const { html: downloadHtml } = assembleComposition([
+  // data-tx-pdf-skip: tx-pdf excludes the share row from the PDF.
+  const shareHtml = `<div data-tx-pdf-skip>${shareRaw}</div>`;
+  // Stamp the download anchor → tx-pdf builds a real PDF of #fv2-result (the
+  // per-visitor result is injected there) on click. Delegated binding catches it.
+  let downloadHtml = assembleComposition([
     { component_id: 'download-button', slot_values: { url: '#', label: 'Download this plan as PDF', variant: 'outline-primary', download: 'download' } },
-  ]);
+  ]).html;
+  downloadHtml = downloadHtml.replace('<a href="#"', '<a href="#" data-tx-pdf="#fv2-result" data-tx-pdf-name="charcuterie-event-plan.pdf"');
 
   const blocks = [cardsHtml, listHtml, ctaHtml, shareHtml, downloadHtml].join('\n');
   const { html: cardFrame } = assembleComposition([

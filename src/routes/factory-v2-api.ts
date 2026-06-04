@@ -6,7 +6,8 @@ import { log } from "../lib/logger";
 import { generateStrategyContentFromAnswers } from "../lib/factory-v2/strategy-live-generator";
 import { buildStrategyResultHtml } from "../lib/factory-v2/strategy-result-recipe";
 import { wrapProofDocument } from "../lib/factory-v2/document-shell";
-import { buildStrategyCollectPage } from "../lib/factory-v2/strategy-collect-recipe";
+import { buildStrategyCollectPage, STRATEGY_COMPONENT_IDS } from "../lib/factory-v2/strategy-collect-recipe";
+import { resolveVendorScripts, BASE_BUNDLE_FULL } from "../lib/component-catalog/vendor-scripts";
 import { getOrCreateSkin } from "../lib/factory-v2/strategy-skin-store";
 import { getOrGenStrategyStyle } from "../lib/factory-v2/strategy-style";
 import {
@@ -132,10 +133,13 @@ app.post("/:businessId/publish", async (c) => {
     const origin = new URL(c.req.url).origin; // this Worker's own origin
     const postUrl = `${origin}/api/factory-v2/${businessId}/by-slug/${appSlug}/result`;
     const { innerHtml, inlineScript } = buildStrategyCollectPage({ postUrl, style: style.style });
+    // Assembler-DERIVED vendor scripts (was hand-coded form-wizard.js): wizard→
+    // form-wizard, download-button→tx-pdf→jspdf. Throws at build if a dep is unmet.
+    const scripts = resolveVendorScripts(STRATEGY_COMPONENT_IDS, BASE_BUNDLE_FULL);
     const html = wrapProofDocument(innerHtml, {
       skin,
       assetBase: HOMER_ASSET_BASE,
-      extraScripts: ["/homer/js/pages/form-wizard.js"],
+      extraScripts: scripts,
       inlineScript,
       fontPairing: style.font_pairing,
     });

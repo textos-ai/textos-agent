@@ -220,18 +220,22 @@ export function buildAssessmentPage(spec: AssessmentBuildSpec): {
       extra_classes: cls.cta,
     },
   ]);
-  const { html: shareHtml } = assembleComposition([
+  const { html: shareRaw } = assembleComposition([
     {
       component_id: 'share-bar',
       slot_values: { url: '#', text: spec.hero.title, subject: spec.hero.title, body: spec.result.score_subtitle },
     },
   ]);
-  const { html: downloadHtml } = assembleComposition([
+  // data-tx-pdf-skip: tx-pdf excludes the share row from the PDF.
+  const shareHtml = `<div data-tx-pdf-skip>${shareRaw}</div>`;
+  // Stamp the download anchor → tx-pdf builds a real PDF of #asmt-result on click.
+  let downloadHtml = assembleComposition([
     {
       component_id: 'download-button',
-      slot_values: { url: '#', label: 'Download your scorecard (PDF)', variant: 'outline-primary', download: 'scorecard' },
+      slot_values: { url: '#', label: 'Download your scorecard (PDF)', variant: 'outline-primary', download: 'download' },
     },
-  ]);
+  ]).html;
+  downloadHtml = downloadHtml.replace('<a href="#"', '<a href="#" data-tx-pdf="#asmt-result" data-tx-pdf-name="scorecard.pdf"');
 
   // Frame the RESULT content in a Homer card (hero stays ABOVE it), mirroring
   // the collect side. The flex layout lives inside the card-body.
