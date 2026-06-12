@@ -101,6 +101,80 @@ app.get("/lifecycle-phases", async (c) => {
   return c.json({ phases: data ?? [] });
 });
 
+// GET /api/catalog/objectives
+// Returns the customer objectives (migration 046) + each objective's tasks.
+// Public — no auth. Uses service-role to bypass RLS on objectives /
+// task_objectives (owner-locked, like lifecycle_phases). Business-agnostic:
+// the per-business done state is computed frontend-side from task_runs.
+// Excludes is_utility objectives (not a customer mission). prompt_template is
+// REDACTED → has_prompt_template (same as /tasks; frontend uses it for the
+// runnable / Coming Soon check via isTaskRunnableNow).
+app.get("/objectives", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+
+  const [objsRes, linksRes] = await Promise.all([
+    supabase
+      .from("objectives")
+      .select("id, slug, name, tagline, display_order, is_utility")
+      .order("display_order", { ascending: true }),
+    supabase.from("task_objectives").select("task_id, objective_id"),
+  ]);
+
+  if (objsRes.error || linksRes.error) {
+    log.error("objectives_fetch_failed", {
+      err: String(objsRes.error ?? linksRes.error),
+    });
+    return c.json({ error: "objectives unavailable" }, 500);
+  }
+
+  const links = linksRes.data ?? [];
+  const taskIds = Array.from(new Set(links.map((l) => l.task_id)));
+
+  const { data: taskRows, error: tErr } = await supabase
+    .from("tasks")
+    .select(
+      "id, slug, name, output_type, token_cost, prompt_template, status, config_page_path, description_long, description_short, lifecycle_phase_id, execution_order, kind, is_featured",
+    )
+    .in("id", taskIds)
+    .neq("kind", "system")
+    .neq("status", "deprecated");
+
+  if (tErr) {
+    log.error("objectives_tasks_fetch_failed", { err: String(tErr) });
+    return c.json({ error: "objectives unavailable" }, 500);
+  }
+
+  const tasks: Record<string, any> = {};
+  for (const t of taskRows ?? []) {
+    const { prompt_template, kind, ...rest } = t as any;
+    tasks[t.id] = {
+      ...rest,
+      has_prompt_template:
+        typeof prompt_template === "string" && prompt_template.trim() !== "",
+    };
+  }
+
+  const byObjective: Record<string, string[]> = {};
+  for (const l of links) {
+    if (!tasks[l.task_id]) continue; // dropped by the system/deprecated filter
+    (byObjective[l.objective_id] ||= []).push(l.task_id);
+  }
+
+  const objectives = (objsRes.data ?? [])
+    .filter((o) => !o.is_utility)
+    .map((o) => ({
+      id: o.id,
+      slug: o.slug,
+      name: o.name,
+      tagline: o.tagline,
+      display_order: o.display_order,
+      task_ids: byObjective[o.id] ?? [],
+    }));
+
+  c.header("Cache-Control", "public, max-age=300");
+  return c.json({ objectives, tasks });
+});
+
 function deriveCategory(task: any): string {
   const s: string = task.slug || "";
 
