@@ -19,13 +19,28 @@ app.use("*", requireAuth);
 // to production URL keeps things working if the var is missing on a worker.
 const DEFAULT_FRONTEND_URL = "https://app.textos.ai";
 
-function topupSuccessUrl(env: Env, slug: string, bundle: string, tokens: number): string {
-  const base = env.FRONTEND_URL ?? DEFAULT_FRONTEND_URL;
-  return `${base}/business/${slug}/builder?topup=success&bundle=${bundle}&tokens=${tokens}`;
+// Append a query string to a (possibly query/hash-bearing) path, choosing the
+// right separator and preserving any #hash. Shared by the topup return URLs.
+function appendQuery(path: string, qs: string): string {
+  const hashIdx = path.indexOf("#");
+  const before = hashIdx >= 0 ? path.slice(0, hashIdx) : path;
+  const hash   = hashIdx >= 0 ? path.slice(hashIdx)   : "";
+  const sep    = before.includes("?") ? "&" : "?";
+  return `${before}${sep}${qs}${hash}`;
 }
-function topupCancelUrl(env: Env, slug: string): string {
+// returnPath is a pre-validated path starting with "/" (no host), or null. When
+// null we default to the business's Victora playbook — NEVER /builder. The
+// existing topup signal (?topup=success&bundle=&tokens=) is appended so the
+// frontend's balance-refresh handling still fires.
+function topupSuccessUrl(env: Env, slug: string, returnPath: string | null, bundle: string, tokens: number): string {
   const base = env.FRONTEND_URL ?? DEFAULT_FRONTEND_URL;
-  return `${base}/business/${slug}/builder?topup=canceled`;
+  const path = returnPath ?? `/business/${slug}/playbook`;
+  return `${base}${appendQuery(path, `topup=success&bundle=${bundle}&tokens=${tokens}`)}`;
+}
+function topupCancelUrl(env: Env, slug: string, returnPath: string | null): string {
+  const base = env.FRONTEND_URL ?? DEFAULT_FRONTEND_URL;
+  const path = returnPath ?? `/business/${slug}/playbook`;
+  return `${base}${appendQuery(path, `topup=canceled`)}`;
 }
 // returnPath is a pre-validated path starting with "/" (no host). If null,
 // the default per-business `/live` page is used. The Stripe flag is appended
@@ -238,6 +253,7 @@ const BUNDLE_TOKENS: Record<string, number> = {
 const TopupBody = z.object({
   business_id: z.string().uuid(),
   bundle: z.enum(["topup_10", "topup_30", "topup_75"]),
+  return_to: z.string().optional(),
 });
 
 app.post("/topup", async (c) => {
@@ -254,6 +270,9 @@ app.post("/topup", async (c) => {
     return c.json(errBody("bad_request", "invalid body", String(err)), 400);
   }
   const { business_id, bundle } = parsed;
+  // Validate/whitelist the return target (same-origin path only). Invalid or
+  // missing → null → topup URLs fall back to the business's playbook. No open redirect.
+  const returnPath = validateReturnTo(parsed.return_to);
 
   // Map bundle → price ID (env var must be set for the selected bundle)
   const priceId = {
@@ -341,8 +360,8 @@ app.post("/topup", async (c) => {
       "metadata[tokens]": String(BUNDLE_TOKENS[bundle]),
       "automatic_tax[enabled]": "true",
       "customer_update[address]": "auto",
-      success_url: topupSuccessUrl(c.env, business.slug as string, bundle, BUNDLE_TOKENS[bundle]),
-      cancel_url: topupCancelUrl(c.env, business.slug as string),
+      success_url: topupSuccessUrl(c.env, business.slug as string, returnPath, bundle, BUNDLE_TOKENS[bundle]),
+      cancel_url: topupCancelUrl(c.env, business.slug as string, returnPath),
     },
     c.env.STRIPE_SECRET_KEY,
   );
@@ -360,7 +379,13 @@ app.post("/topup", async (c) => {
   }
 
   const session = (await sessionRes.json()) as { url: string };
-  log.info("[checkout] topup_session_created", { user_id, business_id, bundle });
+  log.info("[checkout] topup_session_created", {
+    user_id,
+    business_id,
+    bundle,
+    return_to_raw: parsed.return_to ?? null,
+    return_to_used: returnPath ?? `/business/${business.slug}/playbook`,
+  });
   return c.json({ url: session.url });
 });
 
