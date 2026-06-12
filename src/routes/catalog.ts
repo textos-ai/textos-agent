@@ -133,7 +133,7 @@ app.get("/objectives", async (c) => {
   const { data: taskRows, error: tErr } = await supabase
     .from("tasks")
     .select(
-      "id, slug, name, output_type, token_cost, prompt_template, status, config_page_path, description_long, description_short, lifecycle_phase_id, execution_order, kind, is_featured",
+      "id, slug, name, output_type, token_cost, prompt_template, status, config_page_path, description_long, description_short, lifecycle_phase_id, execution_order, kind, is_featured, progress_verb",
     )
     .in("id", taskIds)
     .neq("kind", "system")
