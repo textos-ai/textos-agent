@@ -624,3 +624,84 @@ export async function getCompletedTaskRunSlugs(
 
   return new Set((tasks as { slug: string }[]).map((t) => t.slug));
 }
+
+// ── Templated 90-day plan ───────────────────────────────────────────────────
+// New businesses get NO plan row, so the Victora campfire HALTS (NO-FALLBACKS:
+// playbook.astro requires an active plan + start_date). This creates the
+// templated plan (plan + 3 plan_phase) seeded from the existing lifecycle_phases
+// (foundation/launch/scale). start_date = the business's created_at (date part).
+// A NEW business is day 1 → Foundation 'active', Launch/Scale 'pending'.
+//
+// IDEMPOTENT: skips if an active plan already exists (re-entrant orchestrator,
+// and protects Gaudet's hand-seeded plan). NO-FALLBACKS on inputs: throws if
+// lifecycle_phases are missing or created_at is null — never a partial plan.
+const PLAN_PHASE_TEMPLATE = [
+  { slug: "foundation", name: "Foundation", sort_order: 1, start_day_offset: 1,  end_day_offset: 30, status: "active" },
+  { slug: "launch",     name: "Launch",     sort_order: 2, start_day_offset: 31, end_day_offset: 60, status: "pending" },
+  { slug: "scale",      name: "Scale",      sort_order: 3, start_day_offset: 61, end_day_offset: 90, status: "pending" },
+] as const;
+
+export async function ensureTemplatedPlan(
+  client: SupabaseClient,
+  business: { id: string; created_at?: string | null },
+): Promise<{ created: boolean; planId: string }> {
+  // Idempotency — never duplicate / overwrite an existing active plan.
+  const { data: existing, error: exErr } = await client
+    .from("plan")
+    .select("id")
+    .eq("business_id", business.id)
+    .eq("status", "active")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (exErr) throw new Error(`plan lookup failed: ${exErr.message}`);
+  if (existing) return { created: false, planId: (existing as { id: string }).id };
+
+  // start_date = business.created_at (date part). NO-FALLBACKS.
+  let createdAt: string | null | undefined = business.created_at;
+  if (!createdAt) {
+    const { data: bizRow } = await client
+      .from("businesses").select("created_at").eq("id", business.id).maybeSingle();
+    createdAt = (bizRow as { created_at?: string } | null)?.created_at ?? null;
+  }
+  if (!createdAt) throw new Error(`cannot template plan: business ${business.id} has null created_at`);
+  const startDate = String(createdAt).slice(0, 10); // YYYY-MM-DD
+
+  // lifecycle_phases (foundation/launch/scale) — NO-FALLBACKS, all three required.
+  const { data: lpRows, error: lpErr } = await client
+    .from("lifecycle_phases").select("id, slug");
+  if (lpErr) throw new Error(`lifecycle_phases lookup failed: ${lpErr.message}`);
+  const lpBySlug: Record<string, string> = {};
+  (lpRows as { id: string; slug: string }[] | null ?? []).forEach((r) => { lpBySlug[r.slug] = r.id; });
+  for (const ph of PLAN_PHASE_TEMPLATE) {
+    if (!lpBySlug[ph.slug]) throw new Error(`lifecycle_phase '${ph.slug}' missing — cannot template plan for business ${business.id}`);
+  }
+
+  // Insert the plan.
+  const { data: planRow, error: planErr } = await client
+    .from("plan")
+    .insert({ business_id: business.id, name: "90-Day Operating Plan", horizon_days: 90, start_date: startDate, status: "active" })
+    .select("id")
+    .single();
+  if (planErr || !planRow) throw new Error(`plan insert failed: ${planErr?.message ?? "no row"}`);
+  const planId = (planRow as { id: string }).id;
+
+  // Insert the 3 templated phases. If this fails, roll back the orphan plan so
+  // we never leave a plan with no phases (partial = broken).
+  const phaseRows = PLAN_PHASE_TEMPLATE.map((ph) => ({
+    plan_id: planId,
+    lifecycle_phase_id: lpBySlug[ph.slug],
+    name: ph.name,
+    sort_order: ph.sort_order,
+    start_day_offset: ph.start_day_offset,
+    end_day_offset: ph.end_day_offset,
+    status: ph.status,
+  }));
+  const { error: phErr } = await client.from("plan_phase").insert(phaseRows);
+  if (phErr) {
+    await client.from("plan").delete().eq("id", planId).then(() => {}, () => {});
+    throw new Error(`plan_phase insert failed: ${phErr.message}`);
+  }
+
+  return { created: true, planId };
+}

@@ -15,6 +15,7 @@ import {
   failTaskRun,
   getCompletedTaskRunSlugs,
   upsertBusinessContext,
+  ensureTemplatedPlan,
 } from "../services/supabase";
 import type { TaskCtx, TaskFn } from "./tasks/types";
 import {
@@ -285,6 +286,25 @@ export async function runFreeBuild(
 
   await emit({ type: "narrative", text: `Initializing ${ctx.agent_name ?? "TextOS agent"} for ${business.name}…`, ts: Date.now() });
   await emit({ type: "cmd", text: "Spinning up research sandbox", ts: Date.now() });
+
+  // ── FIRST STEP: templated 90-day plan ─────────────────────────────
+  // New businesses have no plan → the Victora campfire HALTS (NO-FALLBACKS).
+  // Create the templated plan (plan + 3 phases) up front, service-role,
+  // idempotently, so the plan exists even if the user closes the tab.
+  // Loud-fail on bad inputs (missing lifecycle_phases / null created_at) but do
+  // NOT crash the whole build — tasks can still run; the plan is backfillable.
+  try {
+    const planResult = await ensureTemplatedPlan(supabase, business);
+    if (planResult.created) {
+      await emit({ type: "narrative", text: "Drafting your 90-day plan — Foundation · Launch · Scale", ts: Date.now() });
+      await emit({ type: "cmd", text: "Plan created: 3 phases mapped (Foundation active · Launch · Scale)", ts: Date.now() });
+    } else {
+      await emit({ type: "cmd", text: "Plan already in place — keeping the existing 90-day plan", ts: Date.now() });
+    }
+  } catch (planErr) {
+    log.error("[orchestrator] plan_creation_failed", { business_id: business.id, err: String(planErr) });
+    await emit({ type: "cmd", text: `[warn] 90-day plan not created: ${String(planErr)}`, ts: Date.now() }).catch(() => {});
+  }
 
   // Base count from the actual number of already-completed tasks (not the stored
   // tasks_completed, which can drift high if the orchestrator runs multiple times
