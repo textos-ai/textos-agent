@@ -54,6 +54,10 @@ function looksLikeRealName(s: string): boolean {
   const trimmed = s.trim();
   if (trimmed.length < 3 || trimmed.length > 80) return false;
   if (GENERIC_TITLES.has(trimmed.toLowerCase())) return false;
+  // Reject URLs and bare domain strings ("trustlight.ai", "www.example.com").
+  // A real brand name has no TLD suffix without spaces.
+  if (/https?:\/\//i.test(trimmed)) return false;
+  if (!trimmed.includes(" ") && /^[\w.-]+\.[a-z]{2,}$/i.test(trimmed)) return false;
   return true;
 }
 
