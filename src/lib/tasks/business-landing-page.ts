@@ -99,7 +99,7 @@ export async function runBusinessLandingPage(tc: TaskCtx): Promise<TaskResult> {
   let call1Result: Call1Result;
   try {
     const call1Promise = anthropic.messages.create({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-sonnet-4-6",
       max_tokens: 2000,
       stream: false,
       system: call1SystemPrompt,
@@ -146,7 +146,7 @@ export async function runBusinessLandingPage(tc: TaskCtx): Promise<TaskResult> {
   let call2Result: Call2Result;
   try {
     const call2Promise = anthropic.messages.create({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-sonnet-4-6",
       max_tokens: 1500,
       stream: false,
       system: call2SystemPrompt,
@@ -275,7 +275,7 @@ export async function runBusinessLandingPage(tc: TaskCtx): Promise<TaskResult> {
       asset_url: plannedUrl,
       asset_data: mergedData,
       metadata: {
-        model: "claude-sonnet-4-20250514",
+        model: "claude-sonnet-4-6",
         calls: "2_sequential",
         og_image_url: ogImageUrl,
       },
