@@ -6,7 +6,8 @@ import { createSupabaseClient, persistStreamEvent } from "../services/supabase";
 import { errBody } from "../lib/errors";
 import { log } from "../lib/logger";
 import { createAnthropicClient } from "../services/anthropic";
-import { APP_RESULT_MODEL } from "../lib/app-models";
+import { loadModelConfig } from "../lib/model-config";
+import { loadFeatureConfig, resolveFeatureModel } from "../lib/non-task-model-config";
 import { buildStrategyResultPrompt } from "../lib/prompts/app-content-prompts";
 import { StrategyResultSchema } from "../lib/assembler/validation/schemas";
 
@@ -770,6 +771,12 @@ app.post("/:businessId/by-slug/:slug/result", async (c) => {
   }
 
   const sb = createSupabaseClient(c.env);
+  const [appResultModels, appResultFeatureConfig] = await Promise.all([
+    loadModelConfig(sb),
+    loadFeatureConfig(sb),
+  ]);
+  const appResultModel = resolveFeatureModel("feature-app-result", appResultFeatureConfig, appResultModels);
+
   const { data: asset, error } = await sb
     .from("business_assets")
     .select("id, asset_data")
@@ -811,7 +818,7 @@ app.post("/:businessId/by-slug/:slug/result", async (c) => {
   let parsed: unknown;
   try {
     const stream = anthropic.messages.stream({
-      model: APP_RESULT_MODEL,
+      model: appResultModel,
       max_tokens: 6000,
       system,
       messages: [{ role: "user", content: user }],

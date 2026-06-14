@@ -20,6 +20,7 @@ import {
 } from "../services/supabase";
 import type { TaskCtx, TaskFn } from "./tasks/types";
 import { loadModelConfig } from "./model-config";
+import { loadFeatureConfig } from "./non-task-model-config";
 import {
   runTaskWithDeduction,
   InsufficientTokensError,
@@ -323,8 +324,11 @@ export async function runFreeBuild(
   // on the same partially-finished build).
   let completedCount = doneTaskSlugs.size;
 
-  // Load model config once per run — all tasks read from this, never hardcode.
-  const models = await loadModelConfig(supabase);
+  // Load model + feature configs once per run — all tasks read from these, never hardcode.
+  const [models, featureConfig] = await Promise.all([
+    loadModelConfig(supabase),
+    loadFeatureConfig(supabase),
+  ]);
 
   // ── Execute each task (outer try guarantees playbook_run is never left running) ──
   try {
@@ -437,6 +441,7 @@ export async function runFreeBuild(
       supabase,
       anthropic,
       models,
+      featureConfig,
       business,
       ctx,
       user,

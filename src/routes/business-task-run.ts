@@ -33,6 +33,7 @@ import { buildBundleSuggestions } from "../lib/withTokenDeduction";
 import { genericDocumentRunner } from "../lib/tasks/generic-document-runner";
 import type { TaskCtx } from "../lib/tasks/types";
 import { loadModelConfig } from "../lib/model-config";
+import { loadFeatureConfig } from "../lib/non-task-model-config";
 import {
   genAppLog,
   takeGenAppEvents,
@@ -660,7 +661,10 @@ export async function runTaskInBackground(
     }
 
     const anthropic = createAnthropicClient(env);
-    const models = await loadModelConfig(supabase);
+    const [models, featureConfig] = await Promise.all([
+      loadModelConfig(supabase),
+      loadFeatureConfig(supabase),
+    ]);
 
     // runId is free-build-orchestrator-specific. Generic runs reuse the
     // task_run_id here — the runner doesn't read it, but TaskCtx requires
@@ -671,6 +675,7 @@ export async function runTaskInBackground(
       supabase,
       anthropic,
       models,
+      featureConfig,
       business,
       ctx: ctx as BusinessContextRow,
       user: user as UserRow,

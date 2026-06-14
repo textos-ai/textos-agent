@@ -8,6 +8,8 @@ import {
   getUserSubscriptionPlan,
 } from "../services/supabase";
 import { generateStoryCards } from "../services/storyCardGenerator";
+import { loadModelConfig } from "../lib/model-config";
+import { loadFeatureConfig, resolveFeatureModel } from "../lib/non-task-model-config";
 
 const app = new Hono<{ Bindings: Env }>();
 app.use("*", requireAuth);
@@ -145,6 +147,11 @@ app.post("/:slug/marketing/stories", async (c) => {
     return c.json({ ok: false, error: "topic too long" }, 400);
   }
 
+  const [carouselModels, carouselFeatureConfig] = await Promise.all([
+    loadModelConfig(supabase),
+    loadFeatureConfig(supabase),
+  ]);
+  const carouselModel = resolveFeatureModel("feature-story-cards", carouselFeatureConfig, carouselModels);
   const result = await generateStoryCards(
     {
       topic,
@@ -153,6 +160,7 @@ app.post("/:slug/marketing/stories", async (c) => {
     },
     c.env,
     supabase,
+    carouselModel,
   );
 
   if (!result.ok) {

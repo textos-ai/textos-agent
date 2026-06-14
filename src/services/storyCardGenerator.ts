@@ -141,6 +141,7 @@ export async function generateStoryCards(
   input: StoryCardInput,
   env: Env,
   supabase: SupabaseClient,
+  model: string,
 ): Promise<{ ok: true; cards: StoryCard[] } | { ok: false; error: string }> {
   let systemPrompt: string;
 
@@ -172,7 +173,7 @@ export async function generateStoryCards(
   try {
     const anthropic = createAnthropicClient(env);
     const msg = await anthropic.messages.create({
-      model: "claude-sonnet-4-6",
+      model,
       max_tokens: 1500,
       system: systemPrompt,
       messages: [{ role: "user", content: userPrompt }],

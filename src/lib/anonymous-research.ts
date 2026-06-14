@@ -133,6 +133,7 @@ Return EXACTLY this JSON object — no markdown, no extra keys, no comments:
 }
 
 export async function runAnonymousResearch(
+  model: string,
   input: AnonymousInput,
   anthropic: Anthropic,
 ): Promise<AnonymousSnapshot> {
@@ -155,7 +156,7 @@ export async function runAnonymousResearch(
     let msg: Awaited<ReturnType<typeof anthropic.messages.create>>;
     try {
       msg = await anthropic.messages.create({
-        model: "claude-haiku-4-5-20251001",
+        model,
         max_tokens: 1500,
         system: SYSTEM,
         messages: [{ role: "user", content: buildPrompt(input, idea, pageContent, retryNote) }],

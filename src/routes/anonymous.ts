@@ -7,6 +7,8 @@ import { errBody } from "../lib/errors";
 import { log } from "../lib/logger";
 import { runAnonymousResearch, ContentRejectedError, type AnonymousInput } from "../lib/anonymous-research";
 import { createSupabaseClient } from "../services/supabase";
+import { loadModelConfig } from "../lib/model-config";
+import { loadFeatureConfig, resolveFeatureModel } from "../lib/non-task-model-config";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -117,11 +119,16 @@ app.post("/snapshot", async (c) => {
   }
 
   const anthropic = createAnthropicClient(c.env);
+  const [models, featureConfig] = await Promise.all([
+    loadModelConfig(supabase),
+    loadFeatureConfig(supabase),
+  ]);
+  const anonModel = resolveFeatureModel("feature-anonymous-research", featureConfig, models);
   const genStart = Date.now();
   let snapshot;
 
   try {
-    snapshot = await runAnonymousResearch(input, anthropic);
+    snapshot = await runAnonymousResearch(anonModel, input, anthropic);
   } catch (err) {
     const generationMs = Date.now() - genStart;
 

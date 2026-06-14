@@ -19,7 +19,7 @@ import {
 } from "../prompts/app-content-prompts";
 import { assembleApp, type AssemblerOutput } from "../assembler";
 import { StrategyContentSchema } from "../assembler/validation/schemas";
-import { APP_BUILDER_MODEL } from "../app-models";
+import { resolveFeatureModel } from "../non-task-model-config";
 import { appendWorkLog } from "../work-log";
 import { logFailure } from "../failure-log";
 
@@ -63,7 +63,7 @@ export async function runGenerateBusinessAppV2(taskCtx: TaskCtx): Promise<TaskRe
     }
 
     const llmTier = config.llm_tier || "sonnet"; // recorded for billing only
-    const model = APP_BUILDER_MODEL; // model is fixed for app builds (scope-guarded)
+    const model = resolveFeatureModel("feature-app-builder", taskCtx.featureConfig, taskCtx.models);
     const isDevOrTest =
       taskCtx.env.ENVIRONMENT === "test" || taskCtx.env.ENVIRONMENT === "dev";
 

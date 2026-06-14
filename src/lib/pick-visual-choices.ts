@@ -88,11 +88,12 @@ async function classifyBucketHaiku(
   industry: string,
   summary: string,
   anthropic: Anthropic,
+  model: string,
 ): Promise<string | null> {
   const VALID_BUCKETS = ["food", "nature", "health", "creative", "fashion", "finance", "tech", "trade"];
   try {
     const msg = await anthropic.messages.create({
-      model: "claude-haiku-4-5-20251001",
+      model,
       max_tokens: 10,
       system: "You are a business classifier. Reply with ONE word only — no explanation, no punctuation.",
       messages: [{
@@ -126,9 +127,10 @@ export async function pickVisualChoices(
   summary: string,
   brandVoice: string,
   anthropic: Anthropic,
+  model: string,
 ): Promise<VisualChoices> {
   const bucket =
-    (await classifyBucketHaiku(industry, summary, anthropic)) ??
+    (await classifyBucketHaiku(industry, summary, anthropic, model)) ??
     detectBucketKeyword(industry, summary);
   const base = BUCKET_MAP[bucket] ?? BUCKET_MAP["default"];
   return {

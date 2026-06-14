@@ -5,13 +5,15 @@ import { getBusinessBySlug } from "../services/supabase";
 import { createAnthropicClient } from "../services/anthropic";
 import { requireAuth } from "../lib/jwt";
 import { log } from "../lib/logger";
-import { MODEL_IDS } from "../agent/model-router";
+import { loadModelConfig } from "../lib/model-config";
+import { loadFeatureConfig, resolveFeatureModel } from "../lib/non-task-model-config";
 
 const app = new Hono<{ Bindings: Env }>();
 app.use("*", requireAuth);
 
 async function generateMorningLine(
   env: Env,
+  model: string,
   businessName: string,
   agentName: string,
   mode: string,
@@ -39,7 +41,7 @@ async function generateMorningLine(
 
   try {
     const res = await client.messages.create({
-      model: MODEL_IDS.haiku,
+      model,
       max_tokens: 80,
       messages: [{ role: "user", content: prompt }],
     });
@@ -71,9 +73,14 @@ app.get("/:slug/manage-data", async (c) => {
   const phase: string = (business as any).phase ?? "founding";
   const mode: string = (business as any).mode ?? "cruise";
 
-  // Parallel fetches — graceful on missing tables
-  const [ctxRes, goalsRes, lessonsRes, runsRes, milestonesRes, chargeRes] =
-    await Promise.allSettled([
+  // Parallel fetches — graceful on missing tables.
+  // Model config loaded alongside; failures throw (config is required).
+  const [
+    [chatModels, chatFeatureConfig],
+    [ctxRes, goalsRes, lessonsRes, runsRes, milestonesRes, chargeRes],
+  ] = await Promise.all([
+    Promise.all([loadModelConfig(supabase), loadFeatureConfig(supabase)]),
+    Promise.allSettled([
       supabase
         .from("business_context")
         .select("agent_name, business_summary, value_proposition")
@@ -110,7 +117,8 @@ app.get("/:slug/manage-data", async (c) => {
             .is("ended_at", null)
             .maybeSingle()
         : Promise.resolve({ data: null, error: null }),
-    ]);
+    ]),
+  ]);
 
   const ctx =
     ctxRes.status === "fulfilled" ? ((ctxRes.value as any).data as any) : null;
@@ -157,8 +165,10 @@ app.get("/:slug/manage-data", async (c) => {
       .filter((r) => r.status === "completed" && r.output_summary)
       .slice(0, 3)
       .map((r) => String(r.output_summary));
+    const chatModel = resolveFeatureModel("feature-chat", chatFeatureConfig, chatModels);
     morningLine = await generateMorningLine(
       c.env,
+      chatModel,
       business.name,
       agentName,
       mode,

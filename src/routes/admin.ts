@@ -9,6 +9,8 @@ import { log } from "../lib/logger";
 import Anthropic from "@anthropic-ai/sdk";
 import { createAnthropicClient } from "../services/anthropic";
 import { pickVisualChoices, fetchUnsplashPhoto } from "../lib/pick-visual-choices";
+import { loadModelConfig } from "../lib/model-config";
+import { loadFeatureConfig, resolveFeatureModel, FEATURE_REGISTRY, type FeatureKey } from "../lib/non-task-model-config";
 
 const admin = new Hono<{ Bindings: Env }>();
 
@@ -183,6 +185,12 @@ admin.post("/email-queue/:id/edit", async (c) => {
 admin.post("/backfill-public-site", async (c) => {
   const supabase = createSupabaseClient(c.env);
   const anthropic = createAnthropicClient(c.env);
+  const [backfillModels, backfillFeatureConfig] = await Promise.all([
+    loadModelConfig(supabase),
+    loadFeatureConfig(supabase),
+  ]);
+  const visualPickerModel = resolveFeatureModel("feature-visual-picker", backfillFeatureConfig, backfillModels);
+  const adminSeoModel     = resolveFeatureModel("feature-admin-seo", backfillFeatureConfig, backfillModels);
 
   const force = c.req.query("force") === "true";
 
@@ -232,7 +240,7 @@ admin.post("/backfill-public-site", async (c) => {
       const brandVoice   = ctx?.brand_voice ?? "";
       const valueProp    = ctx?.value_proposition ?? biz.name;
 
-      const picks = await pickVisualChoices(industry, summary, brandVoice, anthropic);
+      const picks = await pickVisualChoices(industry, summary, brandVoice, anthropic, visualPickerModel);
 
       let heroImageUrl: string | null = null;
       let heroImageCredit: string | null = null;
@@ -255,7 +263,7 @@ admin.post("/backfill-public-site", async (c) => {
 
       try {
         const seoMsg = await anthropic.messages.create({
-          model: "claude-haiku-4-5-20251001",
+          model: adminSeoModel,
           max_tokens: 512,
           messages: [{
             role: "user",
@@ -679,6 +687,90 @@ admin.patch("/external-apis/:id", async (c) => {
   });
 
   return c.json({ external_api: updated });
+});
+
+// ── GET /admin/features ───────────────────────────────────────────────────
+// Returns the non-task feature registry + current tier settings for /admin/models.
+admin.get("/features", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const slugs = ["feature-default", ...FEATURE_REGISTRY.map((f) => f.key)];
+  const { data, error } = await supabase
+    .from("external_apis")
+    .select("id, slug, metadata")
+    .in("slug", slugs);
+  if (error) {
+    log.error("[admin] features_lookup_failed", { err: error.message });
+    return c.json(errBody("internal", "features_lookup_failed"), 500);
+  }
+  const bySlug: Record<string, { id: string; tier: string | null }> = {};
+  for (const row of data ?? []) {
+    const tier = (row.metadata as Record<string, unknown> | null)?.tier;
+    bySlug[row.slug as string] = { id: row.id as string, tier: typeof tier === "string" ? tier : null };
+  }
+  return c.json({ bySlug, registry: FEATURE_REGISTRY });
+});
+
+// ── PATCH /admin/features/:slug ───────────────────────────────────────────
+// Set metadata.tier for a feature or the default row. Accepts null to clear override.
+const PatchFeatureBody = z.object({
+  tier: z.enum(["haiku", "sonnet", "opus"]).nullable(),
+});
+
+admin.patch("/features/:slug", async (c) => {
+  const { user_id } = c.get("auth");
+  const slug = c.req.param("slug");
+
+  let parsed: z.infer<typeof PatchFeatureBody>;
+  try {
+    parsed = PatchFeatureBody.parse(await c.req.json());
+  } catch (err) {
+    return c.json(errBody("bad_request", "invalid body", String(err)), 400);
+  }
+
+  const supabase = createSupabaseClient(c.env);
+
+  const { data: existing, error: readErr } = await supabase
+    .from("external_apis")
+    .select("id, slug, metadata")
+    .eq("slug", slug)
+    .maybeSingle();
+
+  if (readErr) {
+    log.error("[admin] feature_read_failed", { slug, err: readErr.message });
+    return c.json(errBody("internal", "feature_read_failed"), 500);
+  }
+  if (!existing) return c.json(errBody("not_found", "feature not found"), 404);
+
+  const oldTier = (existing.metadata as Record<string, unknown> | null)?.tier ?? null;
+
+  // null tier clears the override (feature falls back to default)
+  const newMeta =
+    parsed.tier === null
+      ? Object.fromEntries(
+          Object.entries(existing.metadata as Record<string, unknown> ?? {}).filter(([k]) => k !== "tier")
+        )
+      : { ...(existing.metadata as Record<string, unknown> ?? {}), tier: parsed.tier };
+
+  const { data: updated, error: updateErr } = await supabase
+    .from("external_apis")
+    .update({ metadata: newMeta })
+    .eq("slug", slug)
+    .select("id, slug, metadata")
+    .single();
+
+  if (updateErr) {
+    log.error("[admin] feature_update_failed", { slug, err: updateErr.message });
+    return c.json(errBody("internal", "feature_update_failed"), 500);
+  }
+
+  log.info("[admin] feature_tier_updated", {
+    slug,
+    edited_by: user_id,
+    old_tier:  String(oldTier ?? ""),
+    new_tier:  String(parsed.tier ?? "(cleared)"),
+  });
+
+  return c.json({ feature: updated });
 });
 
 // ── POST /admin/tasks/:id/apis ────────────────────────────────────────────

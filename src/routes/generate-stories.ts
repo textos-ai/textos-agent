@@ -3,6 +3,8 @@ import type { Env } from "../env";
 import { createSupabaseClient } from "../services/supabase";
 import { generateStoryCards } from "../services/storyCardGenerator";
 import { log } from "../lib/logger";
+import { loadModelConfig } from "../lib/model-config";
+import { loadFeatureConfig, resolveFeatureModel } from "../lib/non-task-model-config";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -35,10 +37,16 @@ app.post("/", async (c) => {
   }
 
   const supabase = createSupabaseClient(c.env);
+  const [storyModels, storyFeatureConfig] = await Promise.all([
+    loadModelConfig(supabase),
+    loadFeatureConfig(supabase),
+  ]);
+  const storyModel = resolveFeatureModel("feature-story-cards", storyFeatureConfig, storyModels);
   const result = await generateStoryCards(
     { topic, count, context: { kind: "textos" } },
     c.env,
     supabase,
+    storyModel,
   );
 
   if (!result.ok) {
