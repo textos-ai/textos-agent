@@ -6,7 +6,7 @@ function stripFences(s: string): string {
 }
 
 export async function runPersonalizedPitchEmail(tc: TaskCtx): Promise<TaskResult> {
-  const { business, ctx, user, anthropic, supabase, env, emit, taskRunId } = tc;
+  const { business, ctx, user, anthropic, models, supabase, env, emit, taskRunId } = tc;
 
   await emit({
     type: "narrative",
@@ -43,7 +43,7 @@ Return ONLY valid JSON (no markdown, no backticks):
 }`;
 
   const msg = await anthropic.messages.create({
-    model: "claude-sonnet-4-6",
+    model: models.sonnet,
     max_tokens: 800,
     messages: [{ role: "user", content: prompt }],
   });
@@ -89,7 +89,7 @@ Return ONLY valid JSON (no markdown, no backticks):
       asset_subtype: "pitch_email",
       asset_text: parsed.body,
       metadata: {
-        model: "claude-sonnet-4-6",
+        model: models.sonnet,
         subject: parsed.subject,
         target_role: parsed.target_role,
         queued_id: queuedId,

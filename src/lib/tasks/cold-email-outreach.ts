@@ -6,7 +6,7 @@ function stripFences(s: string): string {
 }
 
 export async function runColdEmailOutreach(tc: TaskCtx): Promise<TaskResult> {
-  const { business, ctx, user, anthropic, supabase, env, emit, taskRunId } = tc;
+  const { business, ctx, user, anthropic, models, supabase, env, emit, taskRunId } = tc;
 
   await emit({
     type: "narrative",
@@ -56,7 +56,7 @@ Return ONLY valid JSON:
 }`;
 
   const msg = await anthropic.messages.create({
-    model: "claude-sonnet-4-6",
+    model: models.sonnet,
     max_tokens: 1200,
     messages: [{ role: "user", content: prompt }],
   });
@@ -119,7 +119,7 @@ Return ONLY valid JSON:
       asset_subtype: "cold_email_templates",
       asset_data: parsed,
       metadata: {
-        model: "claude-sonnet-4-6",
+        model: models.sonnet,
         template_count: parsed.sections.length,
         queued_id: queuedId
       },

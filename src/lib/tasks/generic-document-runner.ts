@@ -10,45 +10,51 @@
 import type { TaskCtx, TaskResult } from "./types";
 import type { TaskRow } from "../../services/supabase";
 
-// Model registry — maps external_apis.slug → current Anthropic model ID.
-// Source of truth lives here (not in external_apis.metadata.model) so model
-// version bumps are a one-line code change instead of a per-row DB update.
-// Admin Task Manager changes WHICH api binding is primary; this map decides
-// what that binding actually invokes.
-const MODEL_BY_API_SLUG: Record<string, string> = {
-  "anthropic-claude-sonnet": "claude-sonnet-4-6",
-  "anthropic-claude-haiku":  "claude-haiku-4-5-20251001",
-  "anthropic-claude-opus":   "claude-opus-4-7",
+import type { ModelConfig } from "../model-config";
+
+// Maps external_apis.slug to a tier key so task_apis bindings control which
+// tier is used (haiku for speed, sonnet for quality, opus for heavy tasks)
+// while the actual model ID comes from tc.models (admin-configurable).
+const SLUG_TO_TIER: Record<string, keyof ModelConfig> = {
+  "anthropic-claude-haiku":  "haiku",
+  "anthropic-claude-sonnet": "sonnet",
+  "anthropic-claude-opus":   "opus",
 };
-const DEFAULT_MODEL = "claude-sonnet-4-6";
 
 /**
- * Resolves the model ID to use for a given task by reading its primary
- * task_apis binding. Falls back to DEFAULT_MODEL if:
- *   • no primary binding exists
- *   • the bound external_api slug isn't in MODEL_BY_API_SLUG
- *   • the lookup query fails
- * Never throws — model resolution failure should never block a paid run.
+ * Resolves the model ID for a task by reading its primary task_apis binding,
+ * mapping the bound slug to a tier, then reading the live model ID from
+ * tc.models (loaded from external_apis.metadata.model at run start).
+ *
+ * Throws if the bound slug is not a recognized anthropic tier slug —
+ * per NO-FALLBACKS, missing config is a loud error, not a silent sonnet default.
+ * If no primary binding exists the task falls through to sonnet (safe default
+ * since migration 032 binds every task to anthropic-claude-sonnet).
  */
 async function resolveModelForTask(
   supabase: TaskCtx["supabase"],
+  models: ModelConfig,
   taskId: string,
 ): Promise<string> {
-  try {
-    const { data, error } = await supabase
-      .from("task_apis")
-      .select("external_apis(slug)")
-      .eq("task_id", taskId)
-      .eq("role", "primary")
-      .limit(1)
-      .maybeSingle();
-    if (error || !data) return DEFAULT_MODEL;
-    const slug = (data as { external_apis?: { slug?: string } }).external_apis?.slug;
-    if (!slug) return DEFAULT_MODEL;
-    return MODEL_BY_API_SLUG[slug] ?? DEFAULT_MODEL;
-  } catch {
-    return DEFAULT_MODEL;
+  const { data, error } = await supabase
+    .from("task_apis")
+    .select("external_apis(slug)")
+    .eq("task_id", taskId)
+    .eq("role", "primary")
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw new Error(`model_resolve_failed: task_apis lookup error: ${error.message}`);
+  if (!data) return models.sonnet;
+
+  const slug = (data as { external_apis?: { slug?: string } }).external_apis?.slug;
+  if (!slug) return models.sonnet;
+
+  const tier = SLUG_TO_TIER[slug];
+  if (!tier) {
+    throw new Error(`model_resolve_failed: unrecognized api slug '${slug}' — add it to SLUG_TO_TIER`);
   }
+  return models[tier];
 }
 
 const SYSTEM = `You are a TextOS task agent generating a structured document for a business owner.
@@ -192,7 +198,7 @@ export async function genericDocumentRunner(
   taskCtx: TaskCtx,
   task: TaskRow,
 ): Promise<TaskResult> {
-  const { business, ctx, user, anthropic, supabase, taskRunId } = taskCtx;
+  const { business, ctx, user, anthropic, models, supabase, taskRunId } = taskCtx;
 
   if (!task.prompt_template || task.prompt_template.trim() === "") {
     throw new Error(`task_missing_prompt_template: ${task.slug}`);
@@ -208,7 +214,7 @@ export async function genericDocumentRunner(
   // change it from Task Manager per-task — Haiku for heavier tasks that
   // need to fit under the waitUntil window, Sonnet for tasks where output
   // quality matters more than speed.
-  const model = await resolveModelForTask(supabase, task.id);
+  const model = await resolveModelForTask(supabase, models, task.id);
 
   let parsed: GenericDoc | null = null;
   let lastErr = "";
@@ -310,7 +316,7 @@ export async function genericDocumentRunner(
     asset_url: null,
     asset_text: null,
     metadata: {
-      model: "claude-sonnet-4-6",
+      model,
       token_cost: task.token_cost,
       lifecycle_phase_id: task.lifecycle_phase_id,
     },

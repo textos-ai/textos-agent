@@ -3,6 +3,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import type { Env } from "../../env";
 import type { BusinessRow, BusinessContextRow, UserRow } from "../../services/supabase";
 import type { StreamEvent } from "../stream-events";
+import type { ModelConfig } from "../model-config";
 
 /**
  * Context passed to every task implementation.
@@ -12,6 +13,8 @@ export interface TaskCtx {
   env: Env;
   supabase: SupabaseClient;
   anthropic: Anthropic;
+  /** Active model IDs per tier, loaded from external_apis.metadata.model at run start. */
+  models: ModelConfig;
   business: BusinessRow;
   ctx: BusinessContextRow;
   user: UserRow;

@@ -5,9 +5,10 @@ import { createAnthropicClient } from "../services/anthropic";
 import type { StreamEvent } from "./stream-events";
 import type { BusinessRow, BusinessContextRow, UserRow } from "../services/supabase";
 import {
-  getFreeBuildRunByBusiness,
-  createFreeBuildRun,
-  updateFreeBuildRun,
+  getOrCreateFreeBuildPlaybook,
+  getPlaybookRunByBusiness,
+  createPlaybookRun,
+  updatePlaybookRun,
   persistStreamEvent,
   getTaskBySlug,
   createTaskRunForBuild,
@@ -18,6 +19,7 @@ import {
   ensureTemplatedPlan,
 } from "../services/supabase";
 import type { TaskCtx, TaskFn } from "./tasks/types";
+import { loadModelConfig } from "./model-config";
 import {
   runTaskWithDeduction,
   InsufficientTokensError,
@@ -135,11 +137,21 @@ export async function runFreeBuild(
     slugs: pipeline.map((p) => p.slug),
   }));
 
-  // ── Find or create the free_build_run row ─────────────────────────
-  let run = await getFreeBuildRunByBusiness(supabase, business.id);
+  // ── Find or create the playbook + playbook_run row ────────────────
+  // The free build IS the first playbook (decision: Option b): find-or-
+  // create the business's default "Free Build" playbook, then attach the
+  // run to it. One active run per business is enforced by the partial
+  // unique index on playbook_runs(business_id) WHERE status IN
+  // ('pending','running').
+  const playbookId = await getOrCreateFreeBuildPlaybook(supabase, business.id);
+  let run = await getPlaybookRunByBusiness(supabase, business.id);
 
   if (!run) {
-    run = await createFreeBuildRun(supabase, business.id, user.id, pipeline.length);
+    run = await createPlaybookRun(supabase, {
+      playbook_id: playbookId,
+      business_id: business.id,
+      user_id: user.id,
+    });
   }
 
   const runId = run.id;
@@ -152,7 +164,7 @@ export async function runFreeBuild(
   };
 
   // ── Mark run as running + start heartbeat ────────────────────────
-  await updateFreeBuildRun(supabase, runId, {
+  await updatePlaybookRun(supabase, runId, {
     status: "running",
     last_heartbeat_at: new Date().toISOString(),
   });
@@ -162,7 +174,7 @@ export async function runFreeBuild(
   const heartbeatInterval = setInterval(() => {
     const ts = new Date().toISOString();
     console.log("[heartbeat]", runId, ts);
-    updateFreeBuildRun(supabase, runId, { last_heartbeat_at: ts }).catch(() => {});
+    updatePlaybookRun(supabase, runId, { last_heartbeat_at: ts }).catch(() => {});
   }, 10_000);
 
   // ── Janitor: fix zombie task_runs from prior Worker crashes ───────
@@ -311,7 +323,10 @@ export async function runFreeBuild(
   // on the same partially-finished build).
   let completedCount = doneTaskSlugs.size;
 
-  // ── Execute each task (outer try guarantees free_build_run is never left running) ──
+  // Load model config once per run — all tasks read from this, never hardcode.
+  const models = await loadModelConfig(supabase);
+
+  // ── Execute each task (outer try guarantees playbook_run is never left running) ──
   try {
   for (const row of pipeline) {
     const handler = FREE_BUILD_TASK_HANDLERS[row.slug];
@@ -408,6 +423,7 @@ export async function runFreeBuild(
         user_id: user.id,
         business_id: business.id,
         task_id: taskDef.id,
+        run_id: runId, // real FK link to the playbook_run (replaces business_id+timing)
       });
     } catch (err) {
       await emit({ type: "task_failed", task_slug: step.slug, task_name: step.name, task_run_id: "err", error: `DB error: ${String(err)}`, ts: Date.now() });
@@ -420,6 +436,7 @@ export async function runFreeBuild(
       env,
       supabase,
       anthropic,
+      models,
       business,
       ctx,
       user,
@@ -461,8 +478,10 @@ export async function runFreeBuild(
         });
       }
 
+      // playbook_runs carries no counter — completed-count is derived from
+      // task_runs (run_id = this run). We still track completedCount locally
+      // as a fallback for the final build_complete event.
       completedCount++;
-      await updateFreeBuildRun(supabase, runId, { tasks_completed: completedCount });
 
       const summary = extractSummary(step.slug, result.output_data);
       await emit({
@@ -504,7 +523,7 @@ export async function runFreeBuild(
           ts: Date.now(),
         } as unknown as StreamEvent);
         try {
-          await updateFreeBuildRun(supabase, runId, {
+          await updatePlaybookRun(supabase, runId, {
             status: "failed",
             failure_reason: "insufficient_tokens",
             failed_at: new Date().toISOString(),
@@ -544,7 +563,7 @@ export async function runFreeBuild(
           ts: Date.now(),
         } as unknown as StreamEvent);
         try {
-          await updateFreeBuildRun(supabase, runId, {
+          await updatePlaybookRun(supabase, runId, {
             status: "failed",
             failure_reason: "subscription_required",
             failed_at: new Date().toISOString(),
@@ -581,24 +600,23 @@ export async function runFreeBuild(
     }
   }
 
-  // ── Derive final completed count from DB — source of truth ──────────
-  // completedCount may lag if tasks were already done before this run started.
+  // ── Derive final completed count from task_runs — source of truth ───
+  // playbook_runs has no counter; the completed-count is derived from the
+  // task_runs that belong to THIS run (run_id = runId).
   const { count: dbCount } = await supabase
     .from("task_runs")
     .select("id", { count: "exact", head: true })
-    .eq("business_id", business.id)
+    .eq("run_id", runId)
     .eq("status", "completed")
     .eq("is_current", true)
-    .gte("started_at", run.started_at)
     .then((r) => r, () => ({ count: completedCount }));
 
   const finalCount = dbCount ?? completedCount;
 
   // ── Mark build complete ───────────────────────────────────────────
   try {
-    await updateFreeBuildRun(supabase, runId, {
+    await updatePlaybookRun(supabase, runId, {
       status: "completed",
-      tasks_completed: finalCount,
       completed_at: new Date().toISOString(),
     });
   } catch (updateErr: unknown) {
@@ -622,16 +640,16 @@ export async function runFreeBuild(
 
   } catch (fatalErr: unknown) {
     // A crash outside the per-task catch (e.g., DB error loading context,
-    // fatal emit failure). Mark the free_build_run failed so it isn't
+    // fatal emit failure). Mark the playbook_run failed so it isn't
     // stuck in 'running' forever.
     const fe = fatalErr as Record<string, unknown> | null;
     const errMsg = (fe?.message as string)
       || (fe?.code as string)
       || (typeof fatalErr === "object" ? JSON.stringify(fatalErr) : String(fatalErr));
-    await updateFreeBuildRun(supabase, runId, {
+    await updatePlaybookRun(supabase, runId, {
       status: "failed",
-      error: errMsg.slice(0, 500),
-      completed_at: new Date().toISOString(),
+      failure_reason: errMsg.slice(0, 500),
+      failed_at: new Date().toISOString(),
     }).catch(() => {});
     await sseEmit({
       type: "error" as StreamEvent["type"],

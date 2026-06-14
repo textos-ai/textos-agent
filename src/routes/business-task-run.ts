@@ -32,6 +32,7 @@ import {
 import { buildBundleSuggestions } from "../lib/withTokenDeduction";
 import { genericDocumentRunner } from "../lib/tasks/generic-document-runner";
 import type { TaskCtx } from "../lib/tasks/types";
+import { loadModelConfig } from "../lib/model-config";
 import {
   genAppLog,
   takeGenAppEvents,
@@ -97,9 +98,10 @@ app.post("/:slug/tasks/:taskSlug/run", async (c) => {
 
   // 3. Runnability checks — fail fast with structured 400/403/409/402
 
-  if (task.kind === "configured") {
-    // Allow configured tasks that have dedicated handlers (e.g. generate-business-app-v2)
-    // and no config_page_path to run directly
+  // Configured tasks route to their dedicated page (migration 045: this keys
+  // off output_type='configured', NOT kind, since 'configured' left the kind
+  // axis). Tasks with a dedicated handler and no config_page_path run directly.
+  if (task.output_type === "configured") {
     const hasDedicatedHandler = task.slug in FREE_BUILD_TASK_HANDLERS;
     if (!hasDedicatedHandler || task.config_page_path) {
       return c.json(
@@ -141,9 +143,9 @@ app.post("/:slug/tasks/:taskSlug/run", async (c) => {
   //   - Task is is_regeneratable = true (can always re-run) OR
   //   - Task has already completed in the current context
   if (task.is_default && !task.is_regeneratable) {
-    // Check for active free build
+    // Check for active free build (now a playbook_run — migration 044)
     const { data: activeBuild, error: buildErr } = await supabase
-      .from("free_build_runs")
+      .from("playbook_runs")
       .select("id")
       .eq("business_id", business.id)
       .eq("status", "running")
@@ -194,9 +196,7 @@ app.post("/:slug/tasks/:taskSlug/run", async (c) => {
     !task.token_cost ||
     task.token_cost === 0 ||
     !task.prompt_template ||
-    task.prompt_template.trim() === "" ||
-    task.output_type === "generated_site" ||
-    task.output_type === "dashboard_view"
+    task.prompt_template.trim() === ""
   );
 
   if (isComingSoon) {
@@ -660,6 +660,7 @@ export async function runTaskInBackground(
     }
 
     const anthropic = createAnthropicClient(env);
+    const models = await loadModelConfig(supabase);
 
     // runId is free-build-orchestrator-specific. Generic runs reuse the
     // task_run_id here — the runner doesn't read it, but TaskCtx requires
@@ -669,6 +670,7 @@ export async function runTaskInBackground(
       env,
       supabase,
       anthropic,
+      models,
       business,
       ctx: ctx as BusinessContextRow,
       user: user as UserRow,

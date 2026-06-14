@@ -5,7 +5,7 @@ function stripFences(s: string): string {
 }
 
 export async function runLaunchTweet(tc: TaskCtx): Promise<TaskResult> {
-  const { business, ctx, anthropic, emit, supabase, taskRunId } = tc;
+  const { business, ctx, anthropic, models, emit, supabase, taskRunId } = tc;
 
   await emit({ type: "cmd", text: "Drafting launch tweet with brand voice", ts: Date.now() });
 
@@ -36,7 +36,7 @@ Return ONLY valid JSON (no markdown, no backticks):
 }`;
 
   const msg = await anthropic.messages.create({
-    model: "claude-haiku-4-5-20251001",
+    model: models.haiku,
     max_tokens: 400,
     messages: [{ role: "user", content: prompt }],
   });
@@ -59,7 +59,7 @@ Return ONLY valid JSON (no markdown, no backticks):
       asset_subtype: "launch_tweet",
       asset_text: parsed.tweet,
       metadata: {
-        model: "claude-haiku-4-5-20251001",
+        model: models.haiku,
         character_count: parsed.character_count,
         hook: parsed.hook,
         hashtags: parsed.hashtags,

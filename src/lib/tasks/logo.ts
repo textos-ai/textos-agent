@@ -23,6 +23,7 @@ function parseHaikuJson(text: string): Record<string, unknown> {
 
 async function generateLogoBrief(
   anthropic: Anthropic,
+  model: string,
   businessName: string,
   ctx: {
     industry?: string | null;
@@ -69,7 +70,7 @@ CRITICAL: Output ONLY raw JSON. Do not wrap in markdown code fences. Do not incl
 
   try {
     const msg = await anthropic.messages.create({
-      model: "claude-haiku-4-5-20251001",
+      model,
       max_tokens: 300,
       system: systemPrompt,
       messages: [{ role: "user", content: userPrompt }],
@@ -93,7 +94,7 @@ CRITICAL: Output ONLY raw JSON. Do not wrap in markdown code fences. Do not incl
 // ── runLogo ────────────────────────────────────────────────────────────────
 
 export async function runLogo(tc: TaskCtx): Promise<TaskResult> {
-  const { business, ctx, anthropic, emit, supabase, taskRunId, env } = tc;
+  const { business, ctx, anthropic, models, emit, supabase, taskRunId, env } = tc;
 
   await emit({
     type: "narrative",
@@ -103,7 +104,7 @@ export async function runLogo(tc: TaskCtx): Promise<TaskResult> {
 
   // ── 1. Haiku: build structured designer brief ──────────────────────────────
   await emit({ type: "cmd", text: "Composing brand design brief", ts: Date.now() });
-  const brief = await generateLogoBrief(anthropic, business.name, ctx);
+  const brief = await generateLogoBrief(anthropic, models.haiku, business.name, ctx);
   console.log("[logo] brief generated:", JSON.stringify(brief));
 
   // ── 2. Template the full Recraft prompt from brief ─────────────────────────

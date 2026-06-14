@@ -82,10 +82,11 @@ function normalizeUrl(raw: string): string {
 
 async function askClaudeForName(
   anthropic: TaskCtx["anthropic"],
+  model: string,
   promptBody: string,
 ): Promise<string> {
   const msg = await anthropic.messages.create({
-    model: "claude-sonnet-4-6",
+    model,
     max_tokens: 60,
     system: SYSTEM,
     messages: [{ role: "user", content: promptBody }],
@@ -97,7 +98,7 @@ async function askClaudeForName(
 export async function runFindAUniqueBusinessName(
   tc: TaskCtx,
 ): Promise<TaskResult> {
-  const { business, ctx, user, anthropic, emit, supabase } = tc;
+  const { business, ctx, user, anthropic, models, emit, supabase } = tc;
   const ebd = business.existing_business_data as Record<string, string> | null;
 
   let finalName = "";
@@ -177,7 +178,7 @@ Business summary: ${ctx.business_summary ?? "unknown"}
 Value proposition: ${ctx.value_proposition ?? ""}
 
 Return a single 2-4 word business brand name suitable for this site. Return ONLY the name.`;
-      finalName = await askClaudeForName(anthropic, promptBody);
+      finalName = await askClaudeForName(anthropic, models.sonnet, promptBody);
       namingMethod = "generated";
       source = "claude";
       await emit({
@@ -259,7 +260,7 @@ Value proposition: ${ctx.value_proposition ?? ""}
 Brand voice: ${ctx.brand_voice ?? ""}
 
 Return ONLY the name. No quotes, no explanation.`;
-    finalName = await askClaudeForName(anthropic, promptBody);
+    finalName = await askClaudeForName(anthropic, models.sonnet, promptBody);
     namingMethod = "generated";
     source = isPersonal ? "research_context" : "email_domain";
   }
@@ -282,7 +283,7 @@ Key differentiators: ${Array.isArray(ctx.key_differentiators) ? ctx.key_differen
 Original idea: ${idea}
 
 The name must be a real, memorable brand — NOT the user's prompt sentence, NOT a generic description. Return ONLY the name. No quotes, no explanation.`;
-    finalName = await askClaudeForName(anthropic, promptBody);
+    finalName = await askClaudeForName(anthropic, models.sonnet, promptBody);
     namingMethod = "generated";
     source = "research_context";
   }

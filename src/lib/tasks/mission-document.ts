@@ -5,7 +5,7 @@ function stripFences(s: string): string {
 }
 
 export async function runMissionDocument(tc: TaskCtx): Promise<TaskResult> {
-  const { business, ctx, anthropic, emit, supabase, taskRunId } = tc;
+  const { business, ctx, anthropic, models, emit, supabase, taskRunId } = tc;
 
   await emit({
     type: "narrative",
@@ -42,7 +42,7 @@ Return ONLY valid JSON (no markdown, no backticks):
 }`;
 
   const msg = await anthropic.messages.create({
-    model: "claude-sonnet-4-6",
+    model: models.sonnet,
     max_tokens: 1024,
     messages: [{ role: "user", content: prompt }],
   });
@@ -84,7 +84,7 @@ Return ONLY valid JSON (no markdown, no backticks):
       asset_type: "document",
       asset_subtype: "mission_document",
       asset_data: parsed,
-      metadata: { model: "claude-sonnet-4-6" },
+      metadata: { model: models.sonnet },
     });
   } catch {
     // Non-fatal

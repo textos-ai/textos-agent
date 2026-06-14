@@ -151,7 +151,7 @@ Return EXACTLY this JSON object — no markdown, no extra keys, no comments:
 }
 
 export async function runResearchStrategy(tc: TaskCtx): Promise<TaskResult> {
-  const { business, ctx, anthropic, emit, supabase, taskRunId } = tc;
+  const { business, ctx, anthropic, models, emit, supabase, taskRunId } = tc;
   const ebd = business.existing_business_data as Record<string, string> | null;
   const isFindForMe = business.kind === "find_for_me";
   const findForMeData = isFindForMe
@@ -195,7 +195,7 @@ export async function runResearchStrategy(tc: TaskCtx): Promise<TaskResult> {
         : `\n\n⚠️ Attempt ${attempt}/3. Your previous response caused a parse error: "${lastErr}". Return ONLY the JSON object — no backticks, no markdown, no prose.`;
 
     const msg = await anthropic.messages.create({
-      model: "claude-sonnet-4-6",
+      model: models.sonnet,
       max_tokens: 2048,
       system: SYSTEM,
       messages: [
@@ -268,7 +268,7 @@ export async function runResearchStrategy(tc: TaskCtx): Promise<TaskResult> {
       asset_subtype: "research_report",
       asset_data: parsed,
       metadata: {
-        model: "claude-sonnet-4-6",
+        model: models.sonnet,
         page_fetched: !!pageContent,
         confidence: parsed.confidence,
       },

@@ -5,7 +5,7 @@ function stripFences(s: string): string {
 }
 
 export async function runSocialContentPlan(tc: TaskCtx): Promise<TaskResult> {
-  const { business, ctx, anthropic, supabase, emit, taskRunId } = tc;
+  const { business, ctx, anthropic, models, supabase, emit, taskRunId } = tc;
 
   await emit({
     type: "narrative",
@@ -46,7 +46,7 @@ Return ONLY valid JSON:
 }`;
 
   const msg = await anthropic.messages.create({
-    model: "claude-sonnet-4-6",
+    model: models.sonnet,
     max_tokens: 1500,
     messages: [{ role: "user", content: prompt }],
   });
@@ -82,7 +82,7 @@ Return ONLY valid JSON:
       asset_subtype: "social_content_plan",
       asset_data: parsed,
       metadata: {
-        model: "claude-sonnet-4-6",
+        model: models.sonnet,
         content_weeks: 4,
         platforms: ["LinkedIn", "Twitter", "Instagram"]
       },

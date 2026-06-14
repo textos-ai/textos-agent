@@ -1,5 +1,5 @@
 import type { TaskCtx, TaskResult } from "./types";
-import { resolveModelForTier } from "../llm-tier-model";
+import type { ModelConfig } from "../model-config";
 import { sanitizeGeneratedHtml } from "../sanitize-generated-html";
 import { genAppLog } from "../gen-app-log";
 
@@ -129,7 +129,7 @@ async function withTimeout<T>(p: Promise<T>, label: string, ms: number): Promise
 }
 
 export async function runGenerateBusinessAppHtml(tc: TaskCtx): Promise<TaskResult> {
-  const { business, anthropic, emit, supabase, env, taskRunId } = tc;
+  const { business, anthropic, models, emit, supabase, env, taskRunId } = tc;
   const handlerStart = Date.now();
 
   const frontendUrl = env.FRONTEND_URL ?? "https://app.textos.ai";
@@ -256,9 +256,10 @@ REQUIREMENTS:
 
 Start with <!DOCTYPE html>. No markdown fences. Return only HTML.`;
 
-  // Resolve the concrete Anthropic model from the user-selected tier.
+  // Resolve the concrete Anthropic model from the admin-configured tier map.
   // Throws on unknown tier — fail-fast rather than silently fall back.
-  const htmlModel = resolveModelForTier(llmTier);
+  const htmlModel = (models as unknown as Record<string, string | undefined>)[llmTier];
+  if (!htmlModel) throw new Error(`unknown_llm_tier: ${llmTier}`);
 
   let html: string;
   const callStart = Date.now();

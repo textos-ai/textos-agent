@@ -64,7 +64,7 @@ function toPlainBody(rawBody: string, linkMap: Record<string, LinkSpec>): string
 }
 
 export async function runWelcomeEmail(tc: TaskCtx): Promise<TaskResult> {
-  const { business, ctx, user, anthropic, env, emit, supabase, taskRunId } = tc;
+  const { business, ctx, user, anthropic, models, env, emit, supabase, taskRunId } = tc;
 
   await emit({ type: "cmd", text: "Building completion summary email", ts: Date.now() });
 
@@ -165,7 +165,7 @@ Return ONLY valid JSON (no markdown, no backticks):
 }`;
 
   const msg = await anthropic.messages.create({
-    model: "claude-haiku-4-5-20251001",
+    model: models.haiku,
     max_tokens: 800,
     messages: [{ role: "user", content: prompt }],
   });
@@ -245,7 +245,7 @@ Return ONLY valid JSON (no markdown, no backticks):
       asset_subtype: "welcome_email",
       asset_text: parsed.body,
       metadata: {
-        model: "claude-haiku-4-5-20251001",
+        model: models.haiku,
         subject: parsed.subject,
         to: user.email,
         sent,

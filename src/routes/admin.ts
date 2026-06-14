@@ -389,7 +389,7 @@ const PostTaskBody = z.object({
     .max(100)
     .regex(/^[a-z0-9-]+$/, "slug must be lowercase alphanumeric with hyphens"),
   name:             z.string().min(1).max(200),
-  kind:             z.enum(["autonomous", "configured", "guide", "system"]).optional(),
+  kind:             z.enum(["manual", "system", "scheduled"]).optional(),
   config_page_path: z.string().min(1).max(500).nullable().optional(),
   is_featured:      z.boolean().optional(),
 });
@@ -526,10 +526,10 @@ const PatchTaskBody = z.object({
   text_controllable:   z.boolean().optional(),
   prompt_template:     z.string().min(1).max(10000).optional(),
   execution_order:     z.number().int().min(0).optional(),
-  kind:                z.enum(["autonomous", "configured", "guide", "system"]).optional(),
+  kind:                z.enum(["manual", "system", "scheduled"]).optional(),
   config_page_path:    z.string().min(1).max(500).nullable().optional(),
-  // Must match task_output_type enum in Supabase (pg_enum)
-  output_type:         z.enum(["document", "report", "generated_site", "dashboard_view"]).optional(),
+  // Migration 045: text + CHECK (tasks_output_type_check), not a pg_enum
+  output_type:         z.enum(["document", "configured", "image", "image_set", "structured_data", "video"]).optional(),
 });
 
 admin.patch("/tasks/:id", async (c) => {
@@ -621,6 +621,64 @@ admin.get("/external-apis", async (c) => {
     return c.json(errBody("internal", "external_apis_lookup_failed"), 500);
   }
   return c.json({ external_apis: data ?? [] });
+});
+
+// ── PATCH /admin/external-apis/:id ───────────────────────────────────────
+// Update metadata.model for an external_api row (admin-configurable LLM).
+// Validates that the new model string is non-empty and starts with "claude-".
+const PatchExternalApiBody = z.object({
+  model: z.string().min(1).regex(/^claude-/, { message: "model must start with 'claude-'" }),
+});
+
+admin.patch("/external-apis/:id", async (c) => {
+  const { user_id } = c.get("auth");
+  const apiId = c.req.param("id");
+
+  let parsed: z.infer<typeof PatchExternalApiBody>;
+  try {
+    parsed = PatchExternalApiBody.parse(await c.req.json());
+  } catch (err) {
+    return c.json(errBody("bad_request", "invalid body", String(err)), 400);
+  }
+
+  const supabase = createSupabaseClient(c.env);
+
+  // Read current row for audit log
+  const { data: existing, error: readErr } = await supabase
+    .from("external_apis")
+    .select("id, slug, metadata")
+    .eq("id", apiId)
+    .maybeSingle();
+
+  if (readErr) {
+    log.error("[admin] external_api_read_failed", { apiId, err: readErr.message });
+    return c.json(errBody("internal", "external_api_read_failed"), 500);
+  }
+  if (!existing) return c.json(errBody("not_found", "external_api not found"), 404);
+
+  const oldModel = (existing.metadata as Record<string, unknown> | null)?.model ?? null;
+
+  const { data: updated, error: updateErr } = await supabase
+    .from("external_apis")
+    .update({ metadata: { ...(existing.metadata as Record<string, unknown> ?? {}), model: parsed.model } })
+    .eq("id", apiId)
+    .select("id, slug, name, metadata")
+    .single();
+
+  if (updateErr) {
+    log.error("[admin] external_api_update_failed", { apiId, err: updateErr.message });
+    return c.json(errBody("internal", "external_api_update_failed"), 500);
+  }
+
+  log.info("[admin] external_api_model_updated", {
+    api_id:    apiId,
+    slug:      existing.slug,
+    edited_by: user_id,
+    old_model: String(oldModel ?? ""),
+    new_model: parsed.model,
+  });
+
+  return c.json({ external_api: updated });
 });
 
 // ── POST /admin/tasks/:id/apis ────────────────────────────────────────────

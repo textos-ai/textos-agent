@@ -5,7 +5,7 @@ function stripFences(s: string): string {
 }
 
 export async function runDashboardBriefing(tc: TaskCtx): Promise<TaskResult> {
-  const { business, ctx, anthropic, emit, supabase, taskRunId } = tc;
+  const { business, ctx, anthropic, models, emit, supabase, taskRunId } = tc;
 
   await emit({ type: "cmd", text: "Generating executive briefing from all context", ts: Date.now() });
 
@@ -41,7 +41,7 @@ Return ONLY valid JSON (no markdown, no backticks):
 }`;
 
   const msg = await anthropic.messages.create({
-    model: "claude-sonnet-4-6",
+    model: models.sonnet,
     max_tokens: 800,
     messages: [{ role: "user", content: prompt }],
   });
@@ -74,7 +74,7 @@ Return ONLY valid JSON (no markdown, no backticks):
       asset_type: "document",
       asset_subtype: "dashboard_briefing",
       asset_data: parsed,
-      metadata: { model: "claude-sonnet-4-6" },
+      metadata: { model: models.sonnet },
     });
   } catch {
     // Non-fatal
