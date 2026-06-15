@@ -434,6 +434,36 @@ app.get("/:slug/document-assets", async (c) => {
   return c.json({ assets: (rows ?? []).map(normalizeDocAsset) });
 });
 
+// ── GET /:slug/brand-assets ───────────────────────────────────────────────
+// Returns logo and website type assets for the Overview page.
+// Ordered newest-first so the overview picks up the latest generated version.
+app.get("/:slug/brand-assets", async (c) => {
+  const auth = c.get("auth");
+  const slug = c.req.param("slug");
+  const supabase = createSupabaseClient(c.env);
+
+  let business;
+  try {
+    business = await getBusinessBySlug(supabase, auth.user_id, slug);
+  } catch (err) {
+    return c.json(errBody("upstream_error", String(err)), 502);
+  }
+  if (!business) return c.json(errBody("not_found", `business '${slug}' not found`), 404);
+
+  const { data: rows, error } = await supabase
+    .from("business_assets")
+    .select("id, asset_type, asset_url, task_run_id, created_at")
+    .eq("business_id", business.id)
+    .in("asset_type", ["logo", "website"])
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    log.error("get_brand_assets_failed", { err: error.message, business_id: business.id });
+    return c.json(errBody("upstream_error", error.message), 502);
+  }
+  return c.json({ assets: rows ?? [] });
+});
+
 // ── POST /:slug/assets ────────────────────────────────────────────────────
 // Creates a new document business_asset (first edit or first lock).
 // Validates that the task_run belongs to this business.
