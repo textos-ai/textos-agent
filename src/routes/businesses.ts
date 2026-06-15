@@ -236,6 +236,66 @@ app.patch("/:slug/agent-name", async (c) => {
   return c.json({ agent_name: parsed.agent_name.trim() });
 });
 
+// ── PATCH /:slug/profile ──────────────────────────────────────────────
+// Whitelist-only update of safe businesses.* display/identity columns.
+// Does NOT touch business_context fields, system columns, or IDs.
+const PatchBusinessProfileBody = z.object({
+  name: z.string().min(1).max(200).optional(),
+  existing_business_url: z.string().max(2000).nullable().optional(),
+});
+
+app.patch("/:slug/profile", async (c) => {
+  const auth = c.get("auth");
+  const slug = c.req.param("slug");
+  const supabase = createSupabaseClient(c.env);
+
+  let parsed: z.infer<typeof PatchBusinessProfileBody>;
+  try {
+    parsed = PatchBusinessProfileBody.parse(await c.req.json());
+  } catch (err) {
+    return c.json(errBody("bad_request", "invalid body", err instanceof Error ? err.message : err), 400);
+  }
+
+  // Strip HTML tags and normalise whitespace on name (safety for identity anchor)
+  const cleanName = parsed.name !== undefined
+    ? parsed.name.replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim()
+    : undefined;
+  if (cleanName !== undefined && !cleanName) {
+    return c.json(errBody("bad_request", "name cannot be empty after stripping whitespace"), 400);
+  }
+
+  let business;
+  try {
+    business = await getBusinessBySlug(supabase, auth.user_id, slug);
+  } catch (err) {
+    return c.json(errBody("upstream_error", String(err)), 502);
+  }
+  if (!business) return c.json(errBody("not_found", `business '${slug}' not found`), 404);
+
+  const updates: Record<string, unknown> = {};
+  if (cleanName !== undefined) updates.name = cleanName;
+  if (parsed.existing_business_url !== undefined) {
+    updates.existing_business_url = parsed.existing_business_url?.trim() || null;
+  }
+
+  if (Object.keys(updates).length === 0) {
+    return c.json(errBody("bad_request", "no fields provided to update"), 400);
+  }
+
+  const { error } = await supabase
+    .from("businesses")
+    .update(updates)
+    .eq("id", business.id);
+
+  if (error) {
+    log.error("patch_business_profile_failed", { err: error.message, business_id: business.id });
+    return c.json(errBody("upstream_error", error.message), 502);
+  }
+
+  log.info("[businesses] profile_updated", { business_id: business.id, fields: Object.keys(updates) });
+  return c.json({ ok: true, ...updates });
+});
+
 // ── POST / ────────────────────────────────────────────────────────────
 const CreateBusinessBody = z.object({
   name: z.string().min(1).max(200),
