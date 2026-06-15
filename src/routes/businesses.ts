@@ -383,9 +383,30 @@ app.get("/:slug/tasks/:taskId", async (c) => {
   return c.json({ task: { ...run, assets: assets ?? [] } });
 });
 
+// ── Helpers — document asset normalization ────────────────────────────────
+// Lock state is stored in metadata JSONB (is_locked, locked_at) rather than
+// dedicated columns — no migration needed; metadata already exists on the table.
+function docAssetMeta(raw: { metadata?: Record<string, unknown> | null }) {
+  const m = raw.metadata ?? {};
+  return {
+    is_locked: m.is_locked === true,
+    locked_at: typeof m.locked_at === "string" ? m.locked_at : null,
+  };
+}
+
+function normalizeDocAsset(row: {
+  id: string;
+  task_run_id: string | null;
+  asset_text: string | null;
+  metadata: Record<string, unknown> | null;
+}) {
+  const { is_locked, locked_at } = docAssetMeta(row);
+  return { id: row.id, task_run_id: row.task_run_id, asset_text: row.asset_text, is_locked, locked_at };
+}
+
 // ── GET /:slug/document-assets ────────────────────────────────────────────
 // Returns all business_assets of type 'document' for the business.
-// Used by the documents page to get lock/edit state for each document.
+// Lock/edit state is stored in metadata JSONB (no extra columns needed).
 app.get("/:slug/document-assets", async (c) => {
   const auth = c.get("auth");
   const slug = c.req.param("slug");
@@ -399,9 +420,9 @@ app.get("/:slug/document-assets", async (c) => {
   }
   if (!business) return c.json(errBody("not_found", `business '${slug}' not found`), 404);
 
-  const { data: assets, error } = await supabase
+  const { data: rows, error } = await supabase
     .from("business_assets")
-    .select("id, task_run_id, asset_text, is_locked, locked_at")
+    .select("id, task_run_id, asset_text, metadata")
     .eq("business_id", business.id)
     .eq("asset_type", "document")
     .order("created_at", { ascending: true });
@@ -410,7 +431,7 @@ app.get("/:slug/document-assets", async (c) => {
     log.error("get_document_assets_failed", { err: error.message, business_id: business.id });
     return c.json(errBody("upstream_error", error.message), 502);
   }
-  return c.json({ assets: assets ?? [] });
+  return c.json({ assets: (rows ?? []).map(normalizeDocAsset) });
 });
 
 // ── POST /:slug/assets ────────────────────────────────────────────────────
@@ -452,17 +473,17 @@ app.post("/:slug/assets", async (c) => {
   if (!run) return c.json(errBody("not_found", "task_run not found for this business"), 404);
 
   const isLocked = parsed.is_locked ?? false;
-  const { data: asset, error } = await supabase
+  const nowIso = new Date().toISOString();
+  const { data: raw, error } = await supabase
     .from("business_assets")
     .insert({
       business_id: business.id,
       task_run_id: parsed.task_run_id,
       asset_type: "document",
       asset_text: parsed.asset_text ?? null,
-      is_locked: isLocked,
-      locked_at: isLocked ? new Date().toISOString() : null,
+      metadata: { is_locked: isLocked, locked_at: isLocked ? nowIso : null },
     })
-    .select("id, task_run_id, asset_text, is_locked, locked_at")
+    .select("id, task_run_id, asset_text, metadata")
     .single();
 
   if (error) {
@@ -470,7 +491,8 @@ app.post("/:slug/assets", async (c) => {
     return c.json(errBody("upstream_error", error.message), 502);
   }
 
-  log.info("[businesses] doc_asset_created", { asset_id: (asset as { id: string }).id, business_id: business.id, is_locked: isLocked });
+  const asset = normalizeDocAsset(raw as { id: string; task_run_id: string | null; asset_text: string | null; metadata: Record<string, unknown> | null });
+  log.info("[businesses] doc_asset_created", { asset_id: asset.id, business_id: business.id, is_locked: isLocked });
   return c.json({ asset }, 201);
 });
 
@@ -505,29 +527,36 @@ app.patch("/:slug/assets/:assetId", async (c) => {
 
   const { data: existing } = await supabase
     .from("business_assets")
-    .select("id, is_locked")
+    .select("id, metadata")
     .eq("id", assetId)
     .eq("business_id", business.id)
     .maybeSingle();
   if (!existing) return c.json(errBody("not_found", "asset not found"), 404);
 
-  // Block edits on locked documents (lock only → allowed; text edit on locked → 403)
-  if ((existing as { is_locked: boolean }).is_locked && parsed.asset_text !== undefined && !parsed.is_locked) {
+  const existingMeta = existing as { id: string; metadata: Record<string, unknown> | null };
+  const currentLock = docAssetMeta(existingMeta);
+
+  // Block text edits on locked documents; allow lock/unlock operations
+  if (currentLock.is_locked && parsed.asset_text !== undefined && parsed.is_locked !== false) {
     return c.json(errBody("forbidden", "document is locked and cannot be edited"), 403);
   }
 
   const updates: Record<string, unknown> = {};
   if (parsed.asset_text !== undefined) updates.asset_text = parsed.asset_text;
   if (parsed.is_locked !== undefined) {
-    updates.is_locked = parsed.is_locked;
-    if (parsed.is_locked) updates.locked_at = new Date().toISOString();
+    const nowIso = new Date().toISOString();
+    updates.metadata = {
+      ...(existingMeta.metadata ?? {}),
+      is_locked: parsed.is_locked,
+      locked_at: parsed.is_locked ? nowIso : null,
+    };
   }
 
-  const { data: asset, error } = await supabase
+  const { data: raw, error } = await supabase
     .from("business_assets")
     .update(updates)
     .eq("id", assetId)
-    .select("id, task_run_id, asset_text, is_locked, locked_at")
+    .select("id, task_run_id, asset_text, metadata")
     .single();
 
   if (error) {
@@ -535,6 +564,7 @@ app.patch("/:slug/assets/:assetId", async (c) => {
     return c.json(errBody("upstream_error", error.message), 502);
   }
 
+  const asset = normalizeDocAsset(raw as { id: string; task_run_id: string | null; asset_text: string | null; metadata: Record<string, unknown> | null });
   log.info("[businesses] doc_asset_updated", {
     asset_id: assetId,
     business_id: business.id,
