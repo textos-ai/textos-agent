@@ -383,6 +383,167 @@ app.get("/:slug/tasks/:taskId", async (c) => {
   return c.json({ task: { ...run, assets: assets ?? [] } });
 });
 
+// ── GET /:slug/document-assets ────────────────────────────────────────────
+// Returns all business_assets of type 'document' for the business.
+// Used by the documents page to get lock/edit state for each document.
+app.get("/:slug/document-assets", async (c) => {
+  const auth = c.get("auth");
+  const slug = c.req.param("slug");
+  const supabase = createSupabaseClient(c.env);
+
+  let business;
+  try {
+    business = await getBusinessBySlug(supabase, auth.user_id, slug);
+  } catch (err) {
+    return c.json(errBody("upstream_error", String(err)), 502);
+  }
+  if (!business) return c.json(errBody("not_found", `business '${slug}' not found`), 404);
+
+  const { data: assets, error } = await supabase
+    .from("business_assets")
+    .select("id, task_run_id, asset_text, is_locked, locked_at")
+    .eq("business_id", business.id)
+    .eq("asset_type", "document")
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    log.error("get_document_assets_failed", { err: error.message, business_id: business.id });
+    return c.json(errBody("upstream_error", error.message), 502);
+  }
+  return c.json({ assets: assets ?? [] });
+});
+
+// ── POST /:slug/assets ────────────────────────────────────────────────────
+// Creates a new document business_asset (first edit or first lock).
+// Validates that the task_run belongs to this business.
+const CreateDocAssetBody = z.object({
+  task_run_id: z.string().uuid(),
+  asset_text: z.string().optional(),
+  is_locked: z.boolean().optional(),
+});
+
+app.post("/:slug/assets", async (c) => {
+  const auth = c.get("auth");
+  const slug = c.req.param("slug");
+  const supabase = createSupabaseClient(c.env);
+
+  let parsed: z.infer<typeof CreateDocAssetBody>;
+  try {
+    parsed = CreateDocAssetBody.parse(await c.req.json());
+  } catch (err) {
+    return c.json(errBody("bad_request", "invalid body", err instanceof Error ? err.message : String(err)), 400);
+  }
+
+  let business;
+  try {
+    business = await getBusinessBySlug(supabase, auth.user_id, slug);
+  } catch (err) {
+    return c.json(errBody("upstream_error", String(err)), 502);
+  }
+  if (!business) return c.json(errBody("not_found", `business '${slug}' not found`), 404);
+
+  // Verify task_run belongs to this business
+  const { data: run } = await supabase
+    .from("task_runs")
+    .select("id")
+    .eq("id", parsed.task_run_id)
+    .eq("business_id", business.id)
+    .maybeSingle();
+  if (!run) return c.json(errBody("not_found", "task_run not found for this business"), 404);
+
+  const isLocked = parsed.is_locked ?? false;
+  const { data: asset, error } = await supabase
+    .from("business_assets")
+    .insert({
+      business_id: business.id,
+      task_run_id: parsed.task_run_id,
+      asset_type: "document",
+      asset_text: parsed.asset_text ?? null,
+      is_locked: isLocked,
+      locked_at: isLocked ? new Date().toISOString() : null,
+    })
+    .select("id, task_run_id, asset_text, is_locked, locked_at")
+    .single();
+
+  if (error) {
+    log.error("create_doc_asset_failed", { err: error.message, business_id: business.id });
+    return c.json(errBody("upstream_error", error.message), 502);
+  }
+
+  log.info("[businesses] doc_asset_created", { asset_id: (asset as { id: string }).id, business_id: business.id, is_locked: isLocked });
+  return c.json({ asset }, 201);
+});
+
+// ── PATCH /:slug/assets/:assetId ─────────────────────────────────────────
+// Updates asset_text (user edit) or is_locked (finalize) on a document asset.
+// Per NO-FALLBACKS: editing a locked document is rejected with 403.
+const PatchDocAssetBody = z.object({
+  asset_text: z.string().optional(),
+  is_locked: z.boolean().optional(),
+});
+
+app.patch("/:slug/assets/:assetId", async (c) => {
+  const auth = c.get("auth");
+  const slug = c.req.param("slug");
+  const assetId = c.req.param("assetId");
+  const supabase = createSupabaseClient(c.env);
+
+  let parsed: z.infer<typeof PatchDocAssetBody>;
+  try {
+    parsed = PatchDocAssetBody.parse(await c.req.json());
+  } catch (err) {
+    return c.json(errBody("bad_request", "invalid body", err instanceof Error ? err.message : String(err)), 400);
+  }
+
+  let business;
+  try {
+    business = await getBusinessBySlug(supabase, auth.user_id, slug);
+  } catch (err) {
+    return c.json(errBody("upstream_error", String(err)), 502);
+  }
+  if (!business) return c.json(errBody("not_found", `business '${slug}' not found`), 404);
+
+  const { data: existing } = await supabase
+    .from("business_assets")
+    .select("id, is_locked")
+    .eq("id", assetId)
+    .eq("business_id", business.id)
+    .maybeSingle();
+  if (!existing) return c.json(errBody("not_found", "asset not found"), 404);
+
+  // Block edits on locked documents (lock only → allowed; text edit on locked → 403)
+  if ((existing as { is_locked: boolean }).is_locked && parsed.asset_text !== undefined && !parsed.is_locked) {
+    return c.json(errBody("forbidden", "document is locked and cannot be edited"), 403);
+  }
+
+  const updates: Record<string, unknown> = {};
+  if (parsed.asset_text !== undefined) updates.asset_text = parsed.asset_text;
+  if (parsed.is_locked !== undefined) {
+    updates.is_locked = parsed.is_locked;
+    if (parsed.is_locked) updates.locked_at = new Date().toISOString();
+  }
+
+  const { data: asset, error } = await supabase
+    .from("business_assets")
+    .update(updates)
+    .eq("id", assetId)
+    .select("id, task_run_id, asset_text, is_locked, locked_at")
+    .single();
+
+  if (error) {
+    log.error("patch_doc_asset_failed", { err: error.message, asset_id: assetId });
+    return c.json(errBody("upstream_error", error.message), 502);
+  }
+
+  log.info("[businesses] doc_asset_updated", {
+    asset_id: assetId,
+    business_id: business.id,
+    is_locked: parsed.is_locked,
+    has_text_edit: parsed.asset_text !== undefined,
+  });
+  return c.json({ asset });
+});
+
 function extractOutputSummary(
   slug: string,
   data: Record<string, unknown>,
