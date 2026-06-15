@@ -464,6 +464,52 @@ app.get("/:slug/brand-assets", async (c) => {
   return c.json({ assets: rows ?? [] });
 });
 
+// ── GET /:slug/assets ─────────────────────────────────────────────────────
+// Returns ALL business_assets for the business (all types) for the Asset Editor.
+// Lock state is normalised from metadata JSONB (same convention as document-assets).
+app.get("/:slug/assets", async (c) => {
+  const auth = c.get("auth");
+  const slug = c.req.param("slug");
+  const supabase = createSupabaseClient(c.env);
+
+  let business;
+  try {
+    business = await getBusinessBySlug(supabase, auth.user_id, slug);
+  } catch (err) {
+    return c.json(errBody("upstream_error", String(err)), 502);
+  }
+  if (!business) return c.json(errBody("not_found", `business '${slug}' not found`), 404);
+
+  const { data: rows, error } = await supabase
+    .from("business_assets")
+    .select("id, asset_type, asset_subtype, asset_url, asset_text, task_run_id, is_current, metadata, created_at")
+    .eq("business_id", business.id)
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    log.error("get_all_assets_failed", { err: error.message, business_id: business.id });
+    return c.json(errBody("upstream_error", error.message), 502);
+  }
+
+  return c.json({
+    assets: (rows ?? []).map((row) => {
+      const meta = (row.metadata as Record<string, unknown>) ?? {};
+      return {
+        id: row.id,
+        asset_type: row.asset_type,
+        asset_subtype: row.asset_subtype ?? null,
+        asset_url: row.asset_url ?? null,
+        asset_text: row.asset_text ?? null,
+        task_run_id: row.task_run_id ?? null,
+        is_current: row.is_current,
+        is_locked: meta.is_locked === true,
+        locked_at: typeof meta.locked_at === "string" ? meta.locked_at : null,
+        created_at: row.created_at,
+      };
+    }),
+  });
+});
+
 // ── POST /:slug/assets ────────────────────────────────────────────────────
 // Creates a new document business_asset (first edit or first lock).
 // Validates that the task_run belongs to this business.
@@ -532,6 +578,7 @@ app.post("/:slug/assets", async (c) => {
 const PatchDocAssetBody = z.object({
   asset_text: z.string().optional(),
   is_locked: z.boolean().optional(),
+  asset_url: z.string().optional(),
 });
 
 app.patch("/:slug/assets/:assetId", async (c) => {
@@ -573,6 +620,7 @@ app.patch("/:slug/assets/:assetId", async (c) => {
 
   const updates: Record<string, unknown> = {};
   if (parsed.asset_text !== undefined) updates.asset_text = parsed.asset_text;
+  if (parsed.asset_url !== undefined) updates.asset_url = parsed.asset_url.trim() || null;
   if (parsed.is_locked !== undefined) {
     const nowIso = new Date().toISOString();
     updates.metadata = {
