@@ -36,7 +36,7 @@ import {
 // bundle loads from the textos-web TEST origin.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const HOMER_ASSET_BASE = "https://textos-web-test.pages.dev";
+const HOMER_ASSET_BASE = "https://app.victora.ai";
 
 const app = new Hono<{ Bindings: Env }>();
 

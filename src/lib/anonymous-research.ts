@@ -27,7 +27,7 @@ function looksLikeRefusal(text: string): boolean {
   return REFUSAL_PATTERNS.some(p => p.test(head));
 }
 
-const SYSTEM = `You are the TextOS research agent — a world-class business strategist and market researcher.
+const SYSTEM = `You are the Victora research agent — a world-class business strategist and market researcher.
 Your output feeds every downstream task, so be thorough and precise.
 Return ONLY a valid JSON object. No markdown fences, no prose, no explanation — just the JSON object starting with { and ending with }.`;
 
@@ -66,7 +66,7 @@ function stripFences(s: string): string {
 async function fetchPageText(url: string): Promise<string> {
   try {
     const res = await fetch(url, {
-      headers: { "User-Agent": "TextOS-Agent/1.0 (research bot)" },
+      headers: { "User-Agent": "Victora-Agent/1.0 (research bot)" },
       redirect: "follow",
     });
     if (!res.ok) return "";

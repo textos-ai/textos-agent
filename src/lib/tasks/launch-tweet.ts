@@ -46,7 +46,7 @@ Return ONLY valid JSON (no markdown, no backticks):
   try {
     parsed = JSON.parse(raw);
   } catch {
-    const tweet = `Just launched ${business.name} — built with @TextOS. Check it out.`;
+    const tweet = `Just launched ${business.name} — built with @Victora. Check it out.`;
     parsed = { tweet, character_count: tweet.length, hook: "Just launched", hashtags: [] };
   }
 

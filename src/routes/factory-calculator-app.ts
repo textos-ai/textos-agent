@@ -35,7 +35,7 @@ import { isFontPairing, DEFAULT_FONT_PAIRING } from "../lib/factory-v2/textos-st
 // Assets load absolute from the textos-web origin (the Worker has no /homer/*).
 // ─────────────────────────────────────────────────────────────────────────────
 
-const HOMER_ASSET_BASE = "https://textos-web-test.pages.dev";
+const HOMER_ASSET_BASE = "https://app.victora.ai";
 
 const app = new Hono<{ Bindings: Env }>();
 

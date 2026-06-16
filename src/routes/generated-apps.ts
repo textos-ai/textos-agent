@@ -179,7 +179,7 @@ app.post("/:businessId/purchase", async (c) => {
   if (!biz) return c.json(errBody("not_found", "business not found"), 404);
 
   const unitAmount = (cfg.paid_tier_price_cents as number) * tokensRequested;
-  const frontendUrl = c.env.FRONTEND_URL ?? "https://app.textos.ai";
+  const frontendUrl = c.env.FRONTEND_URL ?? "https://app.victora.ai";
 
   // Pre-create app_visitor_tokens row with 0 remaining — webhook fills in remaining
   // once payment is confirmed. visitor_token is set by DB DEFAULT.

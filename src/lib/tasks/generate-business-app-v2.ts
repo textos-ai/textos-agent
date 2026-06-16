@@ -159,12 +159,12 @@ export async function runGenerateBusinessAppV2(taskCtx: TaskCtx): Promise<TaskRe
     const appTitle = content.app_title;
     const appSlug = await generateUniqueAppSlug(supabase, business.id, appTitle);
 
-    const frontendUrl = taskCtx.env.FRONTEND_URL || "https://app.textos.ai";
+    const frontendUrl = taskCtx.env.FRONTEND_URL || "https://app.victora.ai";
     const agentUrl =
       taskCtx.env.AGENT_URL ||
       (taskCtx.env.ENVIRONMENT === "test"
         ? "https://textos-agent-test.rgaudet2023.workers.dev"
-        : "https://textos-agent-dev.rgaudet2023.workers.dev");
+        : "https://api.victora.ai");
 
     let assemblerResult: AssemblerOutput;
     try {

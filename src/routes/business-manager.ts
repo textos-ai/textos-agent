@@ -135,7 +135,7 @@ app.get("/:slug/manage-data", async (c) => {
   const chargeWindow =
     chargeRes.status === "fulfilled" ? ((chargeRes.value as any).data) : null;
 
-  const agentName: string = ctx?.agent_name ?? "TextOS Agent";
+  const agentName: string = ctx?.agent_name ?? "Victora Agent";
 
   // ── Goals ──────────────────────────────────────────────────────────────
   const goals = goalsRaw.map((g) => ({

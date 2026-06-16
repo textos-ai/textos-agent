@@ -23,7 +23,7 @@ subrequests = 1000
 ENVIRONMENT = "dev"
 AUTO_APPROVE_AFTER_USER_COUNT = "100"
 DAYCYCLE_PLACES_ENABLED = "false"
-FRONTEND_URL = "https://app.textos.ai"
+FRONTEND_URL = "https://app.victora.ai"
 
 # ----------------------------------------------------------------------
 # Bindings below are commented placeholders, wired in subsequent sprints.

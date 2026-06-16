@@ -33,7 +33,7 @@ export const LOCKED_STRATEGY_RESULT_ORDER = [
 // Share intent points at this proof page (sample). cta/download urls are
 // placeholders for the proof — the real operator URL is substituted at
 // render time in the production path.
-const PROOF_SHARE_URL = 'https://textos-web-test.pages.dev/dev/factory-strategy-live.html';
+const PROOF_SHARE_URL = 'https://app.victora.ai/dev/factory-strategy-live.html';
 
 export function buildStrategyResultComposition(content: StrategyLiveContent): CompositionBlock[] {
   const blocks: CompositionBlock[] = [];

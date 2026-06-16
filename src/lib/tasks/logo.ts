@@ -160,7 +160,7 @@ export async function runLogo(tc: TaskCtx): Promise<TaskResult> {
         },
       });
       console.log(`[logo] r2 upload ok key=${r2Key}`);
-      assetUrl = `https://assets.textos.ai/${r2Key}`;
+      assetUrl = `https://assets.victora.ai/${r2Key}`;
       r2Uploaded = true;
       await emit({ type: "cmd", text: "Logo saved to R2", ts: Date.now() });
     } catch (r2Err) {

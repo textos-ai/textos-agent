@@ -34,7 +34,7 @@ import { resolveVendorScripts, BASE_BUNDLE_FULL, BASE_BUNDLE_MINI } from "../lib
 // Assets load absolute from the textos-web origin (the Worker has no /homer/*).
 // ─────────────────────────────────────────────────────────────────────────────
 
-const HOMER_ASSET_BASE = "https://textos-web-test.pages.dev";
+const HOMER_ASSET_BASE = "https://app.victora.ai";
 
 const app = new Hono<{ Bindings: Env }>();
 

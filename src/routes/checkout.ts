@@ -17,7 +17,7 @@ app.use("*", requireAuth);
 // Topup return:        ?topup=success&bundle=…&tokens=… / ?topup=canceled  (Phase 7D)
 // Base URL is per-environment via env.FRONTEND_URL (wrangler [vars]). Fallback
 // to production URL keeps things working if the var is missing on a worker.
-const DEFAULT_FRONTEND_URL = "https://app.textos.ai";
+const DEFAULT_FRONTEND_URL = "https://app.victora.ai";
 
 // Append a query string to a (possibly query/hash-bearing) path, choosing the
 // right separator and preserving any #hash. Shared by the topup return URLs.

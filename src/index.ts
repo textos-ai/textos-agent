@@ -56,6 +56,8 @@ app.use(
       if (!origin) return origin;
       // Allow textos.ai apex + any subdomain, plus local Astro dev ports.
       if (/^https:\/\/([a-z0-9-]+\.)*textos\.ai$/.test(origin)) return origin;
+      // Allow victora.ai apex + any subdomain (production rebrand).
+      if (/^https:\/\/([a-z0-9-]+\.)*victora\.ai$/.test(origin)) return origin;
       // Allow textos-web-test.pages.dev (test frontend) + hash-prefixed previews.
       if (/^https:\/\/([a-z0-9-]+\.)*textos-web-test\.pages\.dev$/.test(origin)) return origin;
       // Allow textos-web.pages.dev preview deploys (production frontend's preview URLs).

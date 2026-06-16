@@ -29,7 +29,7 @@ app.use("*", requireAuth);
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 function frontendUrl(env: Env): string {
-  return env.FRONTEND_URL ?? "https://app.textos.ai";
+  return env.FRONTEND_URL ?? "https://app.victora.ai";
 }
 
 /**
@@ -252,9 +252,9 @@ app.post("/me/email-change", async (c) => {
   const verifyLink = `${frontendUrl(c.env)}/verify-email-change?token=${encodeURIComponent(
     verification_token,
   )}`;
-  const subject = "Verify your new TextOS email address";
+  const subject = "Verify your new Victora email address";
   const body = [
-    "You requested to change your TextOS email to this address.",
+    "You requested to change your Victora email address to this address.",
     "",
     "Click below to verify:",
     verifyLink,
@@ -276,7 +276,7 @@ app.post("/me/email-change", async (c) => {
         },
         body: JSON.stringify({
           personalizations: [{ to: [{ email: new_email }] }],
-          from:    { email: "hello@textos.ai", name: "TextOS" },
+          from:    { email: "hello@victora.ai", name: "Victora" },
           subject,
           content: [{ type: "text/plain", value: body }],
         }),

@@ -63,7 +63,7 @@ app.get("/tasks", async (c) => {
       ...rest,
       has_prompt_template:
         typeof prompt_template === "string" && prompt_template.trim() !== "",
-      creator: { id: null, name: "TextOS" },
+      creator: { id: null, name: "Victora" },
       category: deriveCategory(t),
     };
   });

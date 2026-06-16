@@ -230,7 +230,7 @@ app.post("/:slug/tasks/:taskSlug/run", async (c) => {
     return c.json(
       {
         error: "subscription_required",
-        message: "Subscribe to TextOS to run this task.",
+        message: "Subscribe to Victora to run this task.",
         task_slug: task.slug,
         business_id: business.id,
         plan_required: task.plan_required,

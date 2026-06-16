@@ -120,7 +120,7 @@ export async function runWelcomeEmail(tc: TaskCtx): Promise<TaskResult> {
     },
   };
 
-  const prompt = `Write a completion summary email confirming what TextOS built for this business.
+  const prompt = `Write a completion summary email confirming what Victora built for this business.
 
 CONTEXT
 Business name: ${business.name}
@@ -134,7 +134,7 @@ EMAIL REQUIREMENTS
 Subject: "Your ${business.name} is live."
 
 Body structure (EXACT format):
-Here's what TextOS built for you:
+Here's what Victora built for you:
 
 🌐 Your website: ${websiteUrl}
 📊 Your market: ${tamSummary}
@@ -148,7 +148,7 @@ See your full business:
 [View Your Business →]
 ${livePageUrl}
 
-— TextOS
+— Victora
 
 CONSTRAINTS
 - Use the EXACT text provided above
@@ -177,7 +177,7 @@ Return ONLY valid JSON (no markdown, no backticks):
   } catch {
     // Deterministic fallback — completion summary format
     const fallbackBody =
-      `Here's what TextOS built for you:\n\n` +
+      `Here's what Victora built for you:\n\n` +
       `🌐 Your website: ${websiteUrl}\n` +
       `📊 Your market: ${tamSummary}\n` +
       `🐦 Your launch tweet: ${tweetText}\n` +
@@ -187,11 +187,11 @@ Return ONLY valid JSON (no markdown, no backticks):
       `See your full business:\n` +
       `[View Your Business →]\n` +
       `${livePageUrl}\n\n` +
-      `— TextOS`;
+      `— Victora`;
     parsed = {
       subject: `Your ${business.name} is live.`,
       body: fallbackBody,
-      preview: `Here's what TextOS built for you: website, market analysis, launch tweet, outreach, social content.`,
+      preview: `Here's what Victora built for you: website, market analysis, launch tweet, outreach, social content.`,
     };
   }
 
@@ -215,7 +215,7 @@ Return ONLY valid JSON (no markdown, no backticks):
         },
         body: JSON.stringify({
           personalizations: [{ to: [{ email: user.email }] }],
-          from: { email: "hello@textos.ai", name: "TextOS" },
+          from: { email: "hello@victora.ai", name: "Victora" },
           subject: parsed.subject,
           // SendGrid spec: text/plain MUST come before text/html when both
           // are present (RFC 1341 — earlier parts are fallbacks).

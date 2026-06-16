@@ -297,7 +297,7 @@ export async function runFreeBuild(
       : [],
   }));
 
-  await emit({ type: "narrative", text: `Initializing ${ctx.agent_name ?? "TextOS agent"} for ${business.name}…`, ts: Date.now() });
+  await emit({ type: "narrative", text: `Initializing ${ctx.agent_name ?? "Victora agent"} for ${business.name}…`, ts: Date.now() });
   await emit({ type: "cmd", text: "Spinning up research sandbox", ts: Date.now() });
 
   // ── FIRST STEP: templated 90-day plan ─────────────────────────────

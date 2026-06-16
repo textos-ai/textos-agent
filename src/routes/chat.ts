@@ -70,7 +70,7 @@ function buildSystemPrompt(
   );
   lines.push("");
   lines.push(
-    `TextOS is the platform that powers you. Users interact with ` +
+    `Victora is the platform that powers you. Users interact with ` +
     `their business through you.`,
   );
 

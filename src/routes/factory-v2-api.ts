@@ -36,7 +36,7 @@ import {
 // that path already reads. Pipeline B is untouched.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const HOMER_ASSET_BASE = "https://textos-web-test.pages.dev";
+const HOMER_ASSET_BASE = "https://app.victora.ai";
 const DEFAULT_APP_SLUG = "charcuterie-strategy";
 const APP_TITLE = "Charcuterie Event Planner";
 const APP_TAGLINE = "Build your custom grazing-table game plan.";

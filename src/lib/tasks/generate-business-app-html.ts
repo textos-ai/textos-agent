@@ -116,7 +116,7 @@ function resolveAgentUrl(env: TaskCtx["env"]): string {
   if (env.AGENT_URL) return env.AGENT_URL;
   return env.ENVIRONMENT === "test"
     ? "https://textos-agent-test.rgaudet2023.workers.dev"
-    : "https://textos-agent-dev.rgaudet2023.workers.dev";
+    : "https://api.victora.ai";
 }
 
 const CALL_TIMEOUT_MS = 90_000;
