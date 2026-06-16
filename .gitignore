@@ -15,3 +15,9 @@ worker-configuration.d.ts
 .vscode/
 scripts/
 test-fetch.js
+
+# scratch / debug scripts
+fb.mjs
+
+# local demo / customer preview files
+docs/trustlight-south-louisiana-mission.html
