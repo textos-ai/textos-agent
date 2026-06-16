@@ -4,13 +4,13 @@ import { log } from "../lib/logger";
 /**
  * Watchdog cron — runs every 60 seconds via Cloudflare cron trigger.
  *
- * Any free_build_run stuck in status='running' with a last_heartbeat_at
+ * Any playbook_run stuck in status='running' with a last_heartbeat_at
  * older than 90 seconds is assumed orphaned (the Worker died mid-build,
  * e.g. hard browser refresh that killed the SSE connection).
  *
  * For each orphaned run:
- *   1. Mark free_build_runs.status = 'failed', error = 'heartbeat_timeout'
- *   2. Mark any still-running task_runs for that business as failed
+ *   1. Mark playbook_runs.status = 'failed', failure_reason = 'heartbeat_timeout'
+ *   2. Mark any still-running task_runs for that run as failed
  *      so they don't block the resume flow
  */
 export async function runHeartbeatWatchdog(supabase: SupabaseClient): Promise<void> {
@@ -18,7 +18,7 @@ export async function runHeartbeatWatchdog(supabase: SupabaseClient): Promise<vo
 
   // Find all builds whose heartbeat stopped > 90 s ago
   const { data: staleRuns, error: queryErr } = await supabase
-    .from("free_build_runs")
+    .from("playbook_runs")
     .select("id, business_id")
     .eq("status", "running")
     .lt("last_heartbeat_at", staleCutoff);
@@ -65,10 +65,10 @@ export async function runHeartbeatWatchdog(supabase: SupabaseClient): Promise<vo
 
     // 1. Mark the build failed
     const { error: runErr } = await supabase
-      .from("free_build_runs")
+      .from("playbook_runs")
       .update({
         status: "failed",
-        error: "heartbeat_timeout",
+        failure_reason: "heartbeat_timeout",
         failed_at: new Date().toISOString(),
       })
       .eq("id", run.id)
@@ -79,10 +79,11 @@ export async function runHeartbeatWatchdog(supabase: SupabaseClient): Promise<vo
       continue;
     }
 
-    // 2. Mark any task_runs still 'running' for this business as failed.
-    // task_runs link to free_build_runs through business_id (no FK column).
-    // retry_count is intentionally left alone — it is incremented by the
-    // resume endpoint when the user explicitly retries, not by the watchdog.
+    // 2. Mark any task_runs still 'running' for THIS run as failed.
+    // task_runs now link to playbook_runs through the run_id FK (migration
+    // 044), so we scope by run_id rather than the old business_id+timing
+    // heuristic. retry_count is intentionally left alone — it is incremented
+    // by the resume endpoint when the user explicitly retries, not the watchdog.
     const { error: taskErr } = await supabase
       .from("task_runs")
       .update({
@@ -91,7 +92,7 @@ export async function runHeartbeatWatchdog(supabase: SupabaseClient): Promise<vo
         error: "orchestrator died — auto-recovered",
         failed_at: new Date().toISOString(),
       })
-      .eq("business_id", run.business_id)
+      .eq("run_id", run.id)
       .eq("state", "running");
 
     if (taskErr) {

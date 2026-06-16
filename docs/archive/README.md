@@ -13,3 +13,5 @@ these as current specs.
 - **BRIEF_C1_REPORT.md** — a "COMPLETED" implementation report for the
   v2 assembler backend integration. A point-in-time work artifact, not a
   spec. Was at `textos-agent/` root.
+
+PARKED — factory-v2 / Pipeline B. Not active intent. Do not reconcile against.

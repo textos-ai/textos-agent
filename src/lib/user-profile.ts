@@ -22,10 +22,12 @@ export interface UserProfile {
     name:                     string;
     created_at:               string;
     phase:                    string;
-    subscription_status:      string | null;
-    period_tokens_remaining:  number;
-    topup_tokens_remaining:   number;
-    total_remaining:          number;
+    subscription_status:          string | null;
+    subscription_payment_source:  string | null;
+    subscription_period_end:      string | null;
+    period_tokens_remaining:      number;
+    topup_tokens_remaining:       number;
+    total_remaining:              number;
   }>;
   stats: {
     businesses_count:      number;
@@ -117,11 +119,11 @@ export async function loadUserProfile(
 
   // 3. Subscriptions for those businesses (skipped if none)
   const businessIds = (bizRes.data ?? []).map((b) => b.id as string);
-  let subRows: Array<{ business_id: string; status: string; created_at: string }> = [];
+  let subRows: Array<{ business_id: string; status: string; payment_source: string | null; current_period_end: string | null; created_at: string }> = [];
   if (businessIds.length > 0) {
     const { data: subs, error: subErr } = await supabase
       .from("business_subscriptions")
-      .select("business_id, status, created_at")
+      .select("business_id, status, payment_source, current_period_end, created_at")
       .in("business_id", businessIds)
       .order("created_at", { ascending: false });
     // Non-fatal — businesses just show null subscription_status if this fails.
@@ -129,15 +131,16 @@ export async function loadUserProfile(
   }
 
   // Pick best sub per business: prefer active/trialing, else most recent.
-  const subByBiz = new Map<string, string>();
+  const subByBiz = new Map<string, { status: string; payment_source: string | null; current_period_end: string | null }>();
   for (const sub of subRows) {
     const existing       = subByBiz.get(sub.business_id);
     const isActive       = sub.status === "active" || sub.status === "trialing";
-    const existingActive = existing === "active" || existing === "trialing";
+    const existingActive = existing && (existing.status === "active" || existing.status === "trialing");
+    const subVal = { status: sub.status, payment_source: sub.payment_source, current_period_end: sub.current_period_end };
     if (!existing) {
-      subByBiz.set(sub.business_id, sub.status);
+      subByBiz.set(sub.business_id, subVal);
     } else if (isActive && !existingActive) {
-      subByBiz.set(sub.business_id, sub.status);
+      subByBiz.set(sub.business_id, subVal);
     }
   }
 
@@ -145,16 +148,19 @@ export async function loadUserProfile(
     const bal = balanceByBiz.get(b.id as string);
     const period_tokens_remaining = bal?.period_remaining ?? 0;
     const topup_tokens_remaining  = bal?.topup_remaining ?? 0;
+    const sub = subByBiz.get(b.id as string);
     return {
-      id:                       b.id as string,
-      slug:                     b.slug as string,
-      name:                     b.name as string,
-      created_at:               b.created_at as string,
-      phase:                    b.phase as string,
-      subscription_status:      subByBiz.get(b.id as string) ?? null,
+      id:                           b.id as string,
+      slug:                         b.slug as string,
+      name:                         b.name as string,
+      created_at:                   b.created_at as string,
+      phase:                        b.phase as string,
+      subscription_status:          sub?.status ?? null,
+      subscription_payment_source:  sub?.payment_source ?? null,
+      subscription_period_end:      sub?.current_period_end ?? null,
       period_tokens_remaining,
       topup_tokens_remaining,
-      total_remaining:          period_tokens_remaining + topup_tokens_remaining,
+      total_remaining:              period_tokens_remaining + topup_tokens_remaining,
     };
   });
 

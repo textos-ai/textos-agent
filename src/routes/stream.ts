@@ -6,7 +6,7 @@ import {
   createSupabaseClient,
   getBusinessBySlug,
   getTaskRunsForBusiness,
-  getFreeBuildRunByBusiness,
+  getPlaybookRunByBusiness,
   getStreamEventsForRun,
   getUserById,
 } from "../services/supabase";
@@ -54,7 +54,7 @@ app.get("/business/:slug", async (c) => {
     }
 
     // ── Check if build is already complete or genuinely running ────────
-    const existingRun = await getFreeBuildRunByBusiness(supabase, business.id).catch(() => null);
+    const existingRun = await getPlaybookRunByBusiness(supabase, business.id).catch(() => null);
 
     if (existingRun?.status === "completed") {
       try {

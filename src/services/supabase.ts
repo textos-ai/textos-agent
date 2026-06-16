@@ -31,16 +31,14 @@ export interface TaskRow {
   prompt_template: string | null;
   output_type:
     | "document"
-    | "dashboard_view"
-    | "report"
+    | "configured"
     | "structured_data"
-    | "generated_site"
     | "image"
     | "image_set"
     | "video";
   inputs_required: Record<string, unknown> | null;
   status: "draft" | "active" | "deprecated";
-  kind: "autonomous" | "configured" | "guide" | "system";
+  kind: "manual" | "system" | "scheduled";
   config_page_path: string | null;
   lifecycle_phase_id: string | null;
   is_regeneratable: boolean;
@@ -445,61 +443,87 @@ export async function getAllActiveTasks(
   return (data as TaskRow[]) ?? [];
 }
 
-// ── free_build_runs ───────────────────────────────────────────────────
+// ── playbook + playbook_runs (generalize the retired free_build_runs) ───
+// playbook_runs is the thin execution header. It carries NO task counters —
+// completed-count is derived from task_runs (run_id = playbook_run.id).
 
-export interface FreeBuildRunRow {
+export interface PlaybookRunRow {
   id: string;
+  playbook_id: string;
   business_id: string;
   user_id: string;
   status: "pending" | "running" | "completed" | "failed";
-  tasks_total: number;
-  tasks_completed: number;
+  last_heartbeat_at: string | null;
   started_at: string;
   completed_at: string | null;
   failed_at: string | null;
-  error: string | null;
   failure_reason: string | null;
-  created_at: string;
-  last_heartbeat_at: string;
 }
 
-export async function getFreeBuildRunByBusiness(
+// Find-or-create the business's default "Free Build" playbook. The free
+// build IS the first playbook, so its run attaches here (decision: Option
+// b). Stable identity: one playbook per business named 'Free Build'.
+const FREE_BUILD_PLAYBOOK_NAME = "Free Build";
+
+export async function getOrCreateFreeBuildPlaybook(
   client: SupabaseClient,
   businessId: string,
-): Promise<FreeBuildRunRow | null> {
+): Promise<string> {
+  const existing = await client
+    .from("playbook")
+    .select("id")
+    .eq("business_id", businessId)
+    .eq("name", FREE_BUILD_PLAYBOOK_NAME)
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (existing.error) throw existing.error;
+  if (existing.data?.id) return existing.data.id as string;
+
+  const created = await client
+    .from("playbook")
+    .insert({ business_id: businessId, name: FREE_BUILD_PLAYBOOK_NAME, status: "active" })
+    .select("id")
+    .single();
+  if (created.error) throw created.error;
+  return (created.data as { id: string }).id;
+}
+
+export async function getPlaybookRunByBusiness(
+  client: SupabaseClient,
+  businessId: string,
+): Promise<PlaybookRunRow | null> {
   const { data, error } = await client
-    .from("free_build_runs")
+    .from("playbook_runs")
     .select("*")
     .eq("business_id", businessId)
-    .order("created_at", { ascending: false })
+    .order("started_at", { ascending: false })
     .limit(1)
     .maybeSingle();
   if (error) throw error;
-  return (data as FreeBuildRunRow | null) ?? null;
+  return (data as PlaybookRunRow | null) ?? null;
 }
 
-export async function createFreeBuildRun(
+export async function createPlaybookRun(
   client: SupabaseClient,
-  businessId: string,
-  userId: string,
-  tasksTotal: number,
-): Promise<FreeBuildRunRow> {
+  payload: { playbook_id: string; business_id: string; user_id: string },
+): Promise<PlaybookRunRow> {
   const { data, error } = await client
-    .from("free_build_runs")
-    .insert({ business_id: businessId, user_id: userId, tasks_total: tasksTotal, status: "pending" })
+    .from("playbook_runs")
+    .insert({ ...payload, status: "pending" })
     .select("*")
     .single();
   if (error) throw error;
-  return data as FreeBuildRunRow;
+  return data as PlaybookRunRow;
 }
 
-export async function updateFreeBuildRun(
+export async function updatePlaybookRun(
   client: SupabaseClient,
   runId: string,
-  updates: Partial<Pick<FreeBuildRunRow, "status" | "tasks_total" | "tasks_completed" | "completed_at" | "failed_at" | "error" | "failure_reason" | "last_heartbeat_at">>,
+  updates: Partial<Pick<PlaybookRunRow, "status" | "last_heartbeat_at" | "completed_at" | "failed_at" | "failure_reason">>,
 ): Promise<void> {
   const { error } = await client
-    .from("free_build_runs")
+    .from("playbook_runs")
     .update(updates)
     .eq("id", runId);
   if (error) throw error;
@@ -549,6 +573,7 @@ export async function createTaskRunForBuild(
     user_id: string;
     business_id: string;
     task_id: string;
+    run_id?: string | null;
   },
 ): Promise<string> {
   const now = new Date().toISOString();

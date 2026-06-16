@@ -71,7 +71,7 @@ export async function runTaskWithDeduction(
 ): Promise<TaskResult> {
   const { supabase, business, user, taskRunId, runId } = taskCtx;
   // taskRunId and runId are guaranteed populated by free-build-orchestrator's
-  // createTaskRunForBuild + createFreeBuildRun. This wrapper is currently only
+  // createTaskRunForBuild + createPlaybookRun. This wrapper is currently only
   // called from the orchestrator's line 313; if a V1.1 single-task-run path is
   // added later, ensure it constructs TaskCtx with both fields.
 
@@ -100,7 +100,7 @@ export async function runTaskWithDeduction(
 
   // 3. Scope retry detection to this run: fetch run's start time
   const { data: runRow, error: runErr } = await supabase
-    .from("free_build_runs")
+    .from("playbook_runs")
     .select("started_at")
     .eq("id", runId)
     .single();

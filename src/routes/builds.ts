@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { Env } from "../env";
 import { requireAuth } from "../lib/jwt";
-import { createSupabaseClient, updateFreeBuildRun } from "../services/supabase";
+import { createSupabaseClient, updatePlaybookRun } from "../services/supabase";
 import { errBody } from "../lib/errors";
 import { log } from "../lib/logger";
 
@@ -30,7 +30,7 @@ app.post("/:run_id/resume", async (c) => {
 
   // Load the run and verify ownership
   const { data: run, error: runErr } = await supabase
-    .from("free_build_runs")
+    .from("playbook_runs")
     .select("id, business_id, user_id, status")
     .eq("id", runId)
     .maybeSingle();
@@ -51,11 +51,12 @@ app.post("/:run_id/resume", async (c) => {
 
   const businessId = (run as { business_id: string }).business_id;
 
-  // Check if any failed task_runs still have retries available
+  // Check if any failed task_runs still have retries available. Scoped by
+  // the run_id FK (migration 044) — the failed tasks of THIS build only.
   const { data: failedRuns, error: trErr } = await supabase
     .from("task_runs")
     .select("id, retry_count, max_retries")
-    .eq("business_id", businessId)
+    .eq("run_id", runId)
     .eq("status", "failed");
 
   if (trErr) {
@@ -90,11 +91,11 @@ app.post("/:run_id/resume", async (c) => {
     // Non-fatal — continue with the resume
   }
 
-  // Reset free_build_run to pending so the SSE handler re-enters the orchestrator
-  await updateFreeBuildRun(supabase, runId, {
+  // Reset the playbook_run to pending so the SSE handler re-enters the orchestrator
+  await updatePlaybookRun(supabase, runId, {
     status: "pending",
     failed_at: null,
-    error: null,
+    failure_reason: null,
   });
 
   log.info("build_resumed", { run_id: runId, business_id: businessId, retry_count: newRetryCount });

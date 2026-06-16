@@ -8,11 +8,14 @@ import {
   getUserById,
   createBusiness,
   upsertBusinessContext,
+  isHandleAvailable,
+  setUserHandle,
 } from "../services/supabase";
 import type { AnonymousSnapshot, AnonymousInput } from "../lib/anonymous-research";
 import { errBody } from "../lib/errors";
 import { log } from "../lib/logger";
 import { pickAgentName } from "../lib/agentNames";
+import { createCnameRecord } from "../services/cloudflare";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -37,6 +40,94 @@ function slugifyName(name: string): string {
     .slice(0, 40);
   const suffix = Math.random().toString(36).slice(2, 6);
   return `${base || "business"}-${suffix}`;
+}
+
+// 3-30 chars, lowercase alphanumeric + hyphens, must start AND end with alphanumeric.
+const HANDLE_REGEX = /^[a-z0-9][a-z0-9-]{1,28}[a-z0-9]$/;
+
+const RESERVED = new Set([
+  "admin", "api", "app", "www", "mail", "support", "billing",
+  "help", "docs", "status", "blog", "system", "root", "public",
+]);
+
+/**
+ * Auto-generates and claims a handle for a user. Tries the base suggestion,
+ * then variations with numbers if needed.
+ */
+async function autoGenerateHandle(
+  supabase: any,
+  env: any,
+  userId: string,
+  email: string
+): Promise<{ handle: string; url: string } | null> {
+  const base = suggestHandleFromEmail(email);
+
+  // Try the base suggestion first
+  let candidates = [base];
+
+  // Add numbered variations if the base doesn't work
+  for (let i = 2; i <= 99; i++) {
+    candidates.push(`${base}${i}`);
+  }
+
+  for (const candidate of candidates) {
+    // Skip if invalid format or reserved
+    if (!HANDLE_REGEX.test(candidate) || RESERVED.has(candidate)) {
+      continue;
+    }
+
+    try {
+      // Check availability
+      const available = await isHandleAvailable(supabase, candidate);
+      if (!available) continue;
+
+      // Try to claim it
+      await setUserHandle(supabase, userId, candidate);
+
+      // Create DNS record (non-fatal if fails)
+      try {
+        await createCnameRecord(env, `${candidate}.app`, "textos-web.pages.dev");
+      } catch (dnsErr) {
+        log.warn("auto_handle_dns_failed", {
+          err: String(dnsErr),
+          handle: candidate
+        });
+      }
+
+      log.info("auto_handle_claimed", {
+        user_id: userId,
+        handle: candidate,
+        base_suggestion: base
+      });
+
+      return {
+        handle: candidate,
+        url: `https://${candidate}.app.textos.ai`
+      };
+
+    } catch (err) {
+      // Handle unique violation or other errors - try next candidate
+      const msg = err instanceof Error ? err.message : String(err);
+      const isUniqueViolation = msg.toLowerCase().includes("duplicate") || msg.includes("23505");
+      if (!isUniqueViolation) {
+        // Non-unique violation error, log and continue
+        log.warn("auto_handle_attempt_failed", {
+          err: msg,
+          handle: candidate,
+          user_id: userId
+        });
+      }
+      continue;
+    }
+  }
+
+  // Couldn't generate any handle
+  log.error("auto_handle_generation_exhausted", {
+    user_id: userId,
+    email,
+    base_suggestion: base
+  });
+  return null;
 }
 
 const CallbackBody = z.object({
@@ -102,7 +193,23 @@ app.post("/callback", async (c) => {
     return c.json(errBody("upstream_error", String(err)), 502);
   }
 
-  const user = await getUserById(supabase, auth.user_id);
+  let user = await getUserById(supabase, auth.user_id);
+
+  // ── Auto-handle generation ────────────────────────────────────────
+  // If the user doesn't have a handle yet, automatically generate and claim one
+  if (!user?.handle) {
+    const autoHandleResult = await autoGenerateHandle(
+      supabase,
+      c.env,
+      auth.user_id,
+      auth.email
+    );
+
+    if (autoHandleResult) {
+      // Refresh user data after auto-claiming handle
+      user = await getUserById(supabase, auth.user_id);
+    }
+  }
 
   // ── C-Lite snapshot claim ─────────────────────────────────────────
   let claimed_business_slug: string | null = null;

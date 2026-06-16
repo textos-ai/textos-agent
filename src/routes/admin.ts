@@ -1307,4 +1307,112 @@ admin.post("/users/:id/comp-month", async (c) => {
   });
 });
 
+const RevokeCompBody = z.object({
+  business_id: z.string().uuid(),
+  notes:       z.string().max(1000).optional(),
+}).strict();
+
+admin.post("/users/:id/revoke-comp", async (c) => {
+  const target_user_id = c.req.param("id");
+  const { user_id: admin_user_id } = c.get("auth");
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(target_user_id)) {
+    return c.json(errBody("bad_request", "invalid user id"), 400);
+  }
+
+  let body: z.infer<typeof RevokeCompBody>;
+  try {
+    body = RevokeCompBody.parse(await c.req.json());
+  } catch (err) {
+    return c.json(errBody("bad_request", "invalid body", String(err)), 400);
+  }
+
+  const supabase = createSupabaseClient(c.env);
+
+  // 1. Verify business belongs to target user
+  const { data: biz, error: bizErr } = await supabase
+    .from("businesses")
+    .select("id, slug, name, user_id")
+    .eq("id", body.business_id)
+    .eq("user_id", target_user_id)
+    .maybeSingle();
+  if (bizErr) {
+    log.error("[admin] revoke_comp_biz_lookup_failed", { target_user_id, business_id: body.business_id, err: bizErr.message });
+    return c.json(errBody("internal", "business_lookup_failed"), 500);
+  }
+  if (!biz) {
+    return c.json(errBody("not_found", "business not found for that user"), 404);
+  }
+
+  // 2. Find the most recent active subscription
+  const { data: existingSub, error: subErr } = await supabase
+    .from("business_subscriptions")
+    .select("id, status, payment_source, current_period_end")
+    .eq("business_id", biz.id)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (subErr) {
+    log.error("[admin] revoke_comp_sub_lookup_failed", { target_user_id, business_id: biz.id, err: subErr.message });
+    return c.json(errBody("internal", "sub_lookup_failed"), 500);
+  }
+
+  const subIsActive =
+    !!existingSub &&
+    (existingSub.status === "active" || existingSub.status === "trialing");
+
+  if (!subIsActive) {
+    return c.json(errBody("conflict", "no_active_sub", "No active subscription to revoke."), 409);
+  }
+  if (existingSub!.payment_source === "card") {
+    return c.json(errBody("conflict", "cannot_revoke_card_sub", "This business has a card-paid subscription. Only comp subscriptions can be revoked here."), 409);
+  }
+
+  // 3. Cancel the comp sub
+  const now = new Date();
+  const { error: cancelErr } = await supabase
+    .from("business_subscriptions")
+    .update({
+      status:               "canceled",
+      canceled_at:          now.toISOString(),
+      cancel_at_period_end: false,
+      updated_at:           now.toISOString(),
+    })
+    .eq("id", existingSub!.id as string);
+  if (cancelErr) {
+    log.error("[admin] revoke_comp_cancel_failed", { target_user_id, business_id: biz.id, err: cancelErr.message });
+    return c.json(errBody("internal", "revoke_failed"), 500);
+  }
+
+  // 4. Audit row
+  const { error: auditErr } = await supabase.from("admin_actions").insert({
+    admin_user_id,
+    target_user_id,
+    action_kind: "comp_revoked",
+    metadata: {
+      business_id:     biz.id,
+      business_slug:   biz.slug,
+      previous_status: existingSub!.status as string,
+      payment_source:  existingSub!.payment_source as string,
+      notes:           body.notes ?? null,
+    },
+  });
+  if (auditErr) {
+    log.error("[admin] revoke_comp_audit_failed", { target_user_id, business_id: biz.id, err: auditErr.message });
+  }
+
+  log.info("[admin] comp_revoked", {
+    admin_user_id,
+    target_user_id,
+    business_id:     biz.id,
+    previous_status: existingSub!.status as string,
+  });
+
+  return c.json({
+    success:         true,
+    business_id:     biz.id,
+    previous_status: existingSub!.status as string,
+    canceled_at:     now.toISOString(),
+  });
+});
+
 export default admin;
