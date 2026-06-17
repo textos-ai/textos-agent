@@ -340,6 +340,62 @@ app.post("/:slug/tasks/:taskSlug/run", async (c) => {
     );
   }
 
+  // 6a. Concurrency lock: reject if this (business, task) is already running.
+  // Prevents the test harness (or a double-click) from stacking stuck runs.
+  const { data: runningRow, error: lockErr } = await supabase
+    .from("task_runs")
+    .select("id")
+    .eq("business_id", business.id)
+    .eq("task_id", task.id)
+    .eq("status", "running")
+    .maybeSingle();
+  if (lockErr) {
+    log.error("[task-run] concurrency_lock_check_failed", {
+      business_id: business.id,
+      task_slug: task.slug,
+      err: lockErr.message,
+    });
+    return c.json(errBody("internal", "concurrency_lock_check_failed"), 500);
+  }
+  if (runningRow) {
+    return c.json(
+      {
+        error: "task_already_running",
+        message: "This task is already running for this business.",
+        task_slug: task.slug,
+      },
+      409,
+    );
+  }
+
+  // 6b. Attempt cap: block if >= 2 failures since the last admin clear.
+  // Non-fatal if the table doesn't exist yet (migration 051 pending):
+  // blockErr is logged and the check is skipped so existing flow is preserved.
+  const { data: blockRow, error: blockErr } = await supabase
+    .from("task_trigger_blocks")
+    .select("blocked_at")
+    .eq("business_id", business.id)
+    .eq("task_id", task.id)
+    .is("cleared_at", null)
+    .maybeSingle();
+  if (blockErr) {
+    log.warn("[task-run] attempt_block_check_failed", {
+      business_id: business.id,
+      task_slug: task.slug,
+      err: blockErr.message,
+    });
+  } else if (blockRow) {
+    return c.json(
+      {
+        error: "task_attempt_limit_reached",
+        message: "2 failed attempts — needs review",
+        task_slug: task.slug,
+        blocked_at: blockRow.blocked_at,
+      },
+      429,
+    );
+  }
+
   // 7. Create task_run row — status=running, no tokens debited yet.
   // config is jsonb; null when no body was sent or it had no config field.
   const { data: taskRunRow, error: insertErr } = await supabase
@@ -466,20 +522,38 @@ app.get("/:slug/task_runs/:id", async (c) => {
   // watchdog cron a safety net rather than the only line of defense.
   // Polls happen every 2s while a task is in flight, so a stuck row
   // clears within seconds instead of waiting for the next cron tick.
-  // Threshold: 5 min — accommodates the longer LLM-heavy paid tasks
-  // (generate-business-app-html in particular). The handler's own
-  // withTimeout wrappers still fail fast at their own thresholds.
-  const timeoutCutoff = new Date(Date.now() - 300_000).toISOString();
-  await supabase
-    .from("task_runs")
-    .update({
-      status: "failed",
-      error: "timeout_5min",
-      completed_at: new Date().toISOString(),
-    })
-    .eq("business_id", business.id)
-    .eq("status", "running")
-    .lt("started_at", timeoutCutoff);
+  // Two-tier: free-build tasks (expected <30s) swept at 60s; app-builder
+  // tasks (generate-business-app*) kept at 300s — they legitimately run
+  // 60-120s and must not be swept early.
+  {
+    const { data: longTaskRows } = await supabase
+      .from("tasks")
+      .select("id")
+      .like("slug", "generate-business-app%");
+    const longTaskIds = (longTaskRows ?? []).map((r: { id: string }) => r.id);
+
+    const shortCutoff = new Date(Date.now() - 60_000).toISOString();
+    const shortQ = supabase
+      .from("task_runs")
+      .update({ status: "failed", error: "timeout_60s", completed_at: new Date().toISOString() })
+      .eq("business_id", business.id)
+      .eq("status", "running")
+      .lt("started_at", shortCutoff);
+    await (longTaskIds.length > 0
+      ? shortQ.not("task_id", "in", `(${longTaskIds.join(",")})`)
+      : shortQ);
+
+    if (longTaskIds.length > 0) {
+      const longCutoff = new Date(Date.now() - 300_000).toISOString();
+      await supabase
+        .from("task_runs")
+        .update({ status: "failed", error: "timeout_5min", completed_at: new Date().toISOString() })
+        .eq("business_id", business.id)
+        .eq("status", "running")
+        .lt("started_at", longCutoff)
+        .in("task_id", longTaskIds);
+    }
+  }
 
   const { data: row, error } = await supabase
     .from("task_runs")
@@ -936,6 +1010,50 @@ export async function runTaskInBackground(
           err: e instanceof Error ? e.message : String(e),
         });
       });
+
+    // ── Attempt-cap: insert block after 2nd failure ─────────────────────
+    // Counts failures since the last admin clear (or ever if never cleared).
+    // Non-fatal: a DB error here just means the block wasn't set this time.
+    try {
+      const { data: existingBlock } = await supabase
+        .from("task_trigger_blocks")
+        .select("cleared_at")
+        .eq("business_id", business.id)
+        .eq("task_id", task.id)
+        .maybeSingle();
+      const clearAnchor = existingBlock?.cleared_at ?? "1970-01-01T00:00:00Z";
+      const { count: failedCount } = await supabase
+        .from("task_runs")
+        .select("*", { count: "exact", head: true })
+        .eq("business_id", business.id)
+        .eq("task_id", task.id)
+        .eq("status", "failed")
+        .gte("started_at", clearAnchor);
+      if ((failedCount ?? 0) >= 2) {
+        await supabase
+          .from("task_trigger_blocks")
+          .upsert(
+            {
+              business_id: business.id,
+              task_id: task.id,
+              blocked_at: new Date().toISOString(),
+              cleared_at: null,
+            },
+            { onConflict: "business_id,task_id" },
+          );
+        log.info("[task-run] attempt_block_inserted", {
+          business_id: business.id,
+          task_slug: task.slug,
+          failed_count: failedCount,
+        });
+      }
+    } catch (blockErr) {
+      log.warn("[task-run] attempt_block_insert_failed", {
+        business_id: business.id,
+        task_slug: task.slug,
+        err: blockErr instanceof Error ? blockErr.message : String(blockErr),
+      });
+    }
   }
 }
 

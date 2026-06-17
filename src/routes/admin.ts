@@ -3,7 +3,13 @@ import { z } from "zod";
 import type { Env } from "../env";
 import { requireAuth } from "../lib/jwt";
 import { requireAdmin } from "../lib/admin";
-import { createSupabaseClient } from "../services/supabase";
+import {
+  createSupabaseClient,
+  type BusinessRow,
+  type TaskRow,
+  TASK_SELECT_COLUMNS,
+} from "../services/supabase";
+import { runTaskInBackground } from "./business-task-run";
 import { errBody } from "../lib/errors";
 import { log } from "../lib/logger";
 import Anthropic from "@anthropic-ai/sdk";
@@ -54,6 +60,10 @@ admin.use("/users/*", requireAdmin);
 admin.use("/prompt-definitions", requireAdmin);
 admin.use("/prompt-definitions/*", requireAdmin);
 admin.use("/prompt-variables", requireAdmin);
+admin.use("/task-trigger-blocks", requireAdmin);
+admin.use("/task-trigger-blocks/*", requireAdmin);
+admin.use("/test-harness", requireAdmin);
+admin.use("/test-harness/*", requireAdmin);
 
 // ── GET /admin/email-queue ─────────────────────────────────────────────────
 // Returns pending and recent emails in the queue (latest 100).
@@ -1586,6 +1596,314 @@ admin.get("/prompt-variables", async (c) => {
     return c.json(errBody("internal", "prompt_variables_list_failed"), 500);
   }
   return c.json({ variables: data ?? [] });
+});
+
+// ── POST /admin/task-trigger-blocks/clear ────────────────────────────────────
+// Clears the attempt block for a (business_id, task_slug) pair so the task
+// can be triggered again after admin review. Called after a human has
+// investigated the 2-failure block and determined it's safe to re-run.
+//
+// Body: { business_id: string, task_slug: string }
+// Response: { ok: true, cleared_at: string }
+admin.post("/task-trigger-blocks/clear", async (c) => {
+  const { user_id } = c.get("auth");
+  const supabase = createSupabaseClient(c.env);
+
+  let body: { business_id?: string; task_slug?: string };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json(errBody("bad_request", "invalid JSON body"), 400);
+  }
+
+  const { business_id, task_slug } = body;
+  if (!business_id || !task_slug) {
+    return c.json(errBody("bad_request", "business_id and task_slug are required"), 400);
+  }
+
+  // Resolve task_id from slug
+  const { data: taskRow, error: taskErr } = await supabase
+    .from("tasks")
+    .select("id")
+    .eq("slug", task_slug)
+    .maybeSingle();
+  if (taskErr) {
+    log.error("[admin] task_trigger_block_clear_task_lookup_failed", { task_slug, err: taskErr.message });
+    return c.json(errBody("internal", "task_lookup_failed"), 500);
+  }
+  if (!taskRow) {
+    return c.json(errBody("not_found", `task '${task_slug}' not found`), 404);
+  }
+
+  const cleared_at = new Date().toISOString();
+  const { data: updated, error: updateErr } = await supabase
+    .from("task_trigger_blocks")
+    .update({ cleared_at })
+    .eq("business_id", business_id)
+    .eq("task_id", (taskRow as { id: string }).id)
+    .is("cleared_at", null)
+    .select("business_id, task_id, blocked_at, cleared_at")
+    .maybeSingle();
+
+  if (updateErr) {
+    log.error("[admin] task_trigger_block_clear_failed", {
+      business_id,
+      task_slug,
+      err: updateErr.message,
+    });
+    return c.json(errBody("internal", "task_trigger_block_clear_failed"), 500);
+  }
+  if (!updated) {
+    return c.json(
+      { error: "not_blocked", message: `No active block found for business '${business_id}' task '${task_slug}'.` },
+      404,
+    );
+  }
+
+  log.info("[admin] task_trigger_block_cleared", {
+    business_id,
+    task_slug,
+    cleared_by: user_id,
+    cleared_at,
+  });
+  return c.json({ ok: true, cleared_at });
+});
+
+// ── POST /admin/test-harness/run ──────────────────────────────────────────────
+// Runs every eligible task once against a given business, polls for completion,
+// returns a results table. Admin/dev tool only.
+//
+// Eligible = active + non-system + non-configured + slug NOT LIKE generate-business-app%
+//          + has an active prompt_definitions row.
+//
+// Excluded (documented in response):
+//   - generate-business-app* tasks: legitimately run 60-120s; excluded to keep harness ≤90s
+//   - output_type='configured' tasks: no LLM path
+//   - kind='system' tasks: no user-facing LLM path
+//   - tasks with no active prompt_definitions row: nothing to run
+admin.post("/test-harness/run", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+
+  let body: { business_slug?: string };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json(errBody("bad_request", "invalid JSON body"), 400);
+  }
+  const { business_slug } = body;
+  if (!business_slug) {
+    return c.json(errBody("bad_request", "business_slug required"), 400);
+  }
+
+  // 1. Fetch test business (admin path — no user_id scoping)
+  const { data: bizRow, error: bizErr } = await supabase
+    .from("businesses")
+    .select("id, user_id, slug, name, kind, existing_business_url, existing_business_data, created_at")
+    .eq("slug", business_slug)
+    .eq("is_active", true)
+    .maybeSingle();
+  if (bizErr) {
+    log.error("[harness] business_lookup_failed", { business_slug, err: bizErr.message });
+    return c.json(errBody("internal", "business_lookup_failed"), 500);
+  }
+  if (!bizRow) {
+    return c.json(errBody("not_found", `business '${business_slug}' not found`), 404);
+  }
+  const business = bizRow as BusinessRow;
+
+  // 2. Find eligible tasks
+  const { data: activePromptRows, error: promptErr } = await supabase
+    .from("prompt_definitions")
+    .select("task_slug")
+    .eq("is_active", true);
+  if (promptErr) {
+    log.error("[harness] prompt_lookup_failed", { err: promptErr.message });
+    return c.json(errBody("internal", "prompt_lookup_failed"), 500);
+  }
+  const activePromptSlugs = new Set(
+    (activePromptRows ?? []).map((p: { task_slug: string }) => p.task_slug),
+  );
+
+  const { data: taskRows, error: taskErr } = await supabase
+    .from("tasks")
+    .select(TASK_SELECT_COLUMNS)
+    .eq("status", "active")
+    .neq("kind", "system")
+    .neq("output_type", "configured")
+    .not("slug", "like", "generate-business-app%");
+  if (taskErr) {
+    log.error("[harness] task_list_failed", { err: taskErr.message });
+    return c.json(errBody("internal", "task_list_failed"), 500);
+  }
+
+  const allCandidates = (taskRows ?? []) as unknown as TaskRow[];
+  const eligibleTasks = allCandidates.filter((t) => activePromptSlugs.has(t.slug));
+  const noPromptExcluded = allCandidates
+    .filter((t) => !activePromptSlugs.has(t.slug))
+    .map((t) => ({ slug: t.slug, name: t.name, reason: "no_active_prompt" }));
+
+  const staticExclusions = [
+    { slug: "generate-business-app*", name: "App Builder tasks", reason: "long_running_excluded_≥60s" },
+    { slug: "(configured)", name: "Configured output tasks", reason: "no_llm_path" },
+    { slug: "(system)", name: "System tasks", reason: "system_kind_excluded" },
+  ];
+
+  if (eligibleTasks.length === 0) {
+    return c.json({
+      harness_run_at: new Date().toISOString(),
+      test_business: { slug: business.slug, name: business.name, id: business.id },
+      summary: { total: 0, passed: 0, failed: 0, skipped: 0 },
+      excluded: [...staticExclusions, ...noPromptExcluded],
+      results: [],
+    });
+  }
+
+  // 3. Insert task_run rows and launch via waitUntil
+  type HarnessEntry = { task: TaskRow; run_id: string };
+  const launched: HarnessEntry[] = [];
+  const launchFailed: Array<{ slug: string; name: string; error: string }> = [];
+
+  for (const task of eligibleTasks) {
+    const { data: runRow, error: insertErr } = await supabase
+      .from("task_runs")
+      .insert({
+        user_id: business.user_id,
+        business_id: business.id,
+        task_id: task.id,
+        status: "running",
+        started_at: new Date().toISOString(),
+        config: null,
+      })
+      .select("id")
+      .single();
+
+    if (insertErr || !runRow) {
+      log.error("[harness] task_run_insert_failed", { slug: task.slug, err: insertErr?.message });
+      launchFailed.push({ slug: task.slug, name: task.name, error: insertErr?.message ?? "insert_failed" });
+      continue;
+    }
+
+    const taskRunId = (runRow as { id: string }).id;
+    launched.push({ task, run_id: taskRunId });
+
+    c.executionCtx.waitUntil(
+      runTaskInBackground(c.env, business, task, business.user_id, taskRunId),
+    );
+  }
+
+  log.info("[harness] launched", {
+    business_slug,
+    count: launched.length,
+    run_ids: launched.map((e) => e.run_id),
+  });
+
+  // 4. Poll for completion (max 90s, 3s intervals)
+  // Apply inline 60s sweep at each tick since cron is disabled in test env.
+  type RunRow = { id: string; status: string; started_at: string; completed_at: string | null; error: string | null };
+  const pendingIds = new Set(launched.map((e) => e.run_id));
+  const doneRows = new Map<string, RunRow>();
+  const pollStart = Date.now();
+
+  // Fetch app-builder task IDs once (for the sweep exclusion)
+  const { data: appTaskRows } = await supabase
+    .from("tasks")
+    .select("id")
+    .like("slug", "generate-business-app%");
+  const appTaskIds = (appTaskRows ?? []).map((r: { id: string }) => r.id);
+
+  while (pendingIds.size > 0 && Date.now() - pollStart < 90_000) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 3000));
+
+    // Inline 60s sweep for stuck runs (mirrors business-task-run.ts poll path)
+    const sweepCutoff = new Date(Date.now() - 60_000).toISOString();
+    const pendingArr = Array.from(pendingIds);
+    const sweepQ = supabase
+      .from("task_runs")
+      .update({ status: "failed", error: "timeout_60s", completed_at: new Date().toISOString() })
+      .eq("status", "running")
+      .lt("started_at", sweepCutoff)
+      .in("id", pendingArr);
+    await (appTaskIds.length > 0
+      ? sweepQ.not("task_id", "in", `(${appTaskIds.join(",")})`)
+      : sweepQ);
+
+    // Check current status of all pending runs
+    const { data: statusRows } = await supabase
+      .from("task_runs")
+      .select("id, status, started_at, completed_at, error")
+      .in("id", pendingArr);
+
+    for (const row of (statusRows ?? []) as RunRow[]) {
+      if (row.status !== "running") {
+        doneRows.set(row.id, row);
+        pendingIds.delete(row.id);
+      }
+    }
+  }
+
+  // 5. Assemble results
+  type HarnessResult = {
+    task: string; name: string; status: string;
+    duration_s: number | null; error: string | null; task_run_id: string;
+  };
+  const results: HarnessResult[] = [];
+
+  for (const entry of launched) {
+    const row = doneRows.get(entry.run_id);
+    if (row) {
+      const duration_s =
+        row.completed_at && row.started_at
+          ? Math.round((new Date(row.completed_at).getTime() - new Date(row.started_at).getTime()) / 1000)
+          : null;
+      results.push({
+        task: entry.task.slug,
+        name: entry.task.name,
+        status: row.status,
+        duration_s,
+        error: row.error ?? null,
+        task_run_id: entry.run_id,
+      });
+    } else {
+      // Still running after 90s — shouldn't happen after 60s sweep, but cover it
+      results.push({
+        task: entry.task.slug,
+        name: entry.task.name,
+        status: "still_running",
+        duration_s: null,
+        error: "did_not_complete_in_90s",
+        task_run_id: entry.run_id,
+      });
+    }
+  }
+
+  for (const lf of launchFailed) {
+    results.push({
+      task: lf.slug,
+      name: lf.name,
+      status: "failed",
+      duration_s: null,
+      error: `launch_failed:${lf.error}`,
+      task_run_id: "",
+    });
+  }
+
+  const passed = results.filter((r) => r.status === "completed").length;
+  const failed = results.filter((r) => r.status !== "completed").length;
+
+  log.info("[harness] complete", {
+    business_slug,
+    total: results.length,
+    passed,
+    failed,
+  });
+
+  return c.json({
+    harness_run_at: new Date().toISOString(),
+    test_business: { slug: business.slug, name: business.name, id: business.id },
+    summary: { total: results.length, passed, failed, skipped: noPromptExcluded.length },
+    excluded: [...staticExclusions, ...noPromptExcluded],
+    results,
+  });
 });
 
 export default admin;

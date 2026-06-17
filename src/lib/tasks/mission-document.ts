@@ -1,11 +1,15 @@
 import type { TaskCtx, TaskResult } from "./types";
+import { resolvePrompt } from "./prompt-resolver";
+import { renderPrompt } from "./generic-document-runner";
+
+const TASK_SLUG = "mission-document";
 
 function stripFences(s: string): string {
   return s.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/i, "").trim();
 }
 
 export async function runMissionDocument(tc: TaskCtx): Promise<TaskResult> {
-  const { business, ctx, anthropic, models, emit, supabase, taskRunId } = tc;
+  const { business, ctx, user, anthropic, models, emit, supabase, taskRunId } = tc;
 
   await emit({
     type: "narrative",
@@ -13,39 +17,31 @@ export async function runMissionDocument(tc: TaskCtx): Promise<TaskResult> {
     ts: Date.now(),
   });
 
-  const prompt = `Write a mission, vision, and values document for this business.
+  const promptDef = await resolvePrompt(supabase, TASK_SLUG);
+  if (!promptDef.system_prompt || promptDef.system_prompt.trim() === "") {
+    throw new Error(`task_missing_system_prompt: ${TASK_SLUG}`);
+  }
+  const prompt = renderPrompt(promptDef.user_prompt_template, { business, ctx, user });
 
-Business: ${business.name}
-Industry: ${ctx.industry ?? ""}
-What it does: ${ctx.business_summary ?? ""}
-Target customer: ${JSON.stringify(ctx.target_customer)}
-Value proposition: ${ctx.value_proposition ?? ""}
-Brand voice: ${ctx.brand_voice ?? ""}
-Key differentiators: ${JSON.stringify(ctx.key_differentiators)}
-
-Guidelines:
-- Mission: what the company does TODAY (present tense, 1-2 sentences, specific to this industry)
-- Vision: what the world looks like if you succeed (future tense, inspiring but achievable)
-- Values: 3-5 core principles — real ones specific to this business, not clichés like "integrity" or "excellence"
-- Each value gets: name (2-3 words) + explanation (1 sentence)
-- Tagline: 5-10 words, memorable and specific to this business
-- Do NOT start mission or vision with the company name — write them as statements about purpose
-
-Return ONLY valid JSON (no markdown, no backticks):
-{
-  "mission": "string — purpose statement, does not start with the company name",
-  "vision": "string — future-state statement, does not start with the company name",
-  "values": [
-    { "name": "string", "description": "string" }
-  ],
-  "tagline": "string — 5-10 words, memorable"
-}`;
-
-  const msg = await anthropic.messages.create({
-    model: models.sonnet,
-    max_tokens: 1024,
-    messages: [{ role: "user", content: prompt }],
-  });
+  const llmController = new AbortController();
+  const llmTimeoutId = setTimeout(() => llmController.abort(), 45_000);
+  let msg;
+  try {
+    msg = await anthropic.messages.create(
+      {
+        model: models.sonnet,
+        max_tokens: 1024,
+        system: promptDef.system_prompt,
+        messages: [{ role: "user", content: prompt }],
+      },
+      { signal: llmController.signal },
+    );
+  } catch (err) {
+    if (llmController.signal.aborted) throw new Error(`task_timeout_45s:${TASK_SLUG}`);
+    throw err;
+  } finally {
+    clearTimeout(llmTimeoutId);
+  }
 
   const raw = stripFences((msg.content[0] as { type: string; text: string }).text.trim());
 
@@ -59,19 +55,9 @@ Return ONLY valid JSON (no markdown, no backticks):
   try {
     parsed = JSON.parse(raw);
   } catch {
-    // Fallback without duplicate-prefix bug: use value_prop directly, not composed with name
-    const customerDesc =
-      (ctx.target_customer as Record<string, string>)?.description ?? "those who need it most";
-    parsed = {
-      mission: ctx.value_proposition
-        ? `Providing ${ctx.value_proposition.replace(/^[^a-z]*/i, "").toLowerCase()}.`
-        : `Delivering real results for ${customerDesc}.`,
-      vision: `A world where ${customerDesc} have the tools, support, and resources to succeed.`,
-      values: [
-        { name: "Results Over Process", description: "We measure success by outcomes, not effort." },
-      ],
-      tagline: `${business.name} — built to matter.`,
-    };
+    throw new Error(
+      `task_json_parse_failed:${TASK_SLUG} stop_reason=${msg?.stop_reason ?? "unknown"} raw_start=${raw.slice(0, 200).replace(/\s+/g, " ")}`,
+    );
   }
 
   await emit({ type: "cmd", text: "Saving mission document to business context", ts: Date.now() });

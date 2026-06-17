@@ -89,6 +89,60 @@ app.post("/run-task", async (c) => {
     return c.json(errBody("not_found", `task '${taskSlug}' not found`), 404);
   }
 
+  // ── Concurrency lock: reject if already running ──────────────────────
+  const { data: runningRow, error: lockErr } = await supabase
+    .from("task_runs")
+    .select("id")
+    .eq("business_id", business.id)
+    .eq("task_id", task.id)
+    .eq("status", "running")
+    .maybeSingle();
+  if (lockErr) {
+    log.error("internal.run_task.concurrency_lock_failed", {
+      business_id: business.id,
+      taskSlug,
+      err: lockErr.message,
+    });
+    return c.json(errBody("internal", "concurrency_lock_check_failed"), 500);
+  }
+  if (runningRow) {
+    return c.json(
+      {
+        error: "task_already_running",
+        message: "This task is already running for this business.",
+        task_slug: taskSlug,
+      },
+      409,
+    );
+  }
+
+  // ── Attempt cap: block if >= 2 failures since last admin clear ────────
+  // Non-fatal if table doesn't exist yet (migration 051 pending).
+  const { data: blockRow, error: blockErr } = await supabase
+    .from("task_trigger_blocks")
+    .select("blocked_at")
+    .eq("business_id", business.id)
+    .eq("task_id", task.id)
+    .is("cleared_at", null)
+    .maybeSingle();
+  if (blockErr) {
+    log.warn("internal.run_task.attempt_block_check_failed", {
+      business_id: business.id,
+      taskSlug,
+      err: blockErr.message,
+    });
+  } else if (blockRow) {
+    return c.json(
+      {
+        error: "task_attempt_limit_reached",
+        message: "2 failed attempts — needs review",
+        task_slug: taskSlug,
+        blocked_at: blockRow.blocked_at,
+      },
+      429,
+    );
+  }
+
   // Create the task_run row. No ownership / subscription / balance gates here —
   // this is an internal continuation of work the user already authorized in the
   // parent task. The parent task already passed those gates and (if applicable)

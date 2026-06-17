@@ -28,25 +28,28 @@ export async function runHeartbeatWatchdog(supabase: SupabaseClient): Promise<vo
     return;
   }
 
-  // Sweep paid task_runs that have been 'running' > 5 min. Paid tasks
-  // should complete in <90s in the happy path; anything past 5 min is
-  // almost always a crashed worker (waitUntil cancellation, Anthropic
-  // timeout, OOM). Extended from 3min to 5min so the chained
-  // generate-business-app-html step (Sonnet + 4000 max_tokens) has room
-  // on the long tail. The per-business inline sweep in
-  // business-task-run.ts uses the same 5-min cutoff. Per-task wall clock
-  // still belongs to each handler's withTimeout wrapper.
-  const taskTimeoutCutoff = new Date(Date.now() - 300_000).toISOString();
-  const { data: stalePaidTasks, error: paidErr } = await supabase
+  // Two-tier task_run sweep:
+  //   60s  — free-build and other short tasks (expected <30s in happy path)
+  //   300s — generate-business-app* tasks (legitimately run 60-120s)
+  // App-builder tasks are excluded from the 60s sweep to prevent killing
+  // healthy builds. The per-business inline sweep in business-task-run.ts
+  // uses the same two-tier logic.
+  const { data: longTaskRows } = await supabase
+    .from("tasks")
+    .select("id")
+    .like("slug", "generate-business-app%");
+  const longTaskIds = (longTaskRows ?? []).map((r: { id: string }) => r.id);
+
+  const shortCutoff = new Date(Date.now() - 60_000).toISOString();
+  const shortQ = supabase
     .from("task_runs")
-    .update({
-      status: "failed",
-      error: "timeout_5min",
-      completed_at: new Date().toISOString(),
-    })
+    .update({ status: "failed", error: "timeout_60s", completed_at: new Date().toISOString() })
     .eq("status", "running")
-    .lt("started_at", taskTimeoutCutoff)
+    .lt("started_at", shortCutoff)
     .select("id, business_id");
+  const { data: stalePaidTasks, error: paidErr } = await (longTaskIds.length > 0
+    ? shortQ.not("task_id", "in", `(${longTaskIds.join(",")})`)
+    : shortQ);
   if (paidErr) {
     log.error("watchdog_paid_sweep_failed", { err: paidErr.message });
   } else if (stalePaidTasks && stalePaidTasks.length > 0) {
@@ -54,6 +57,25 @@ export async function runHeartbeatWatchdog(supabase: SupabaseClient): Promise<vo
       count: stalePaidTasks.length,
       ids: (stalePaidTasks as { id: string }[]).map((r) => r.id),
     });
+  }
+
+  if (longTaskIds.length > 0) {
+    const longCutoff = new Date(Date.now() - 300_000).toISOString();
+    const { data: staleAppTasks, error: appErr } = await supabase
+      .from("task_runs")
+      .update({ status: "failed", error: "timeout_5min", completed_at: new Date().toISOString() })
+      .eq("status", "running")
+      .lt("started_at", longCutoff)
+      .in("task_id", longTaskIds)
+      .select("id, business_id");
+    if (appErr) {
+      log.error("watchdog_app_sweep_failed", { err: appErr.message });
+    } else if (staleAppTasks && staleAppTasks.length > 0) {
+      log.warn("watchdog_app_timeout", {
+        count: staleAppTasks.length,
+        ids: (staleAppTasks as { id: string }[]).map((r) => r.id),
+      });
+    }
   }
 
   if (!staleRuns || staleRuns.length === 0) return;

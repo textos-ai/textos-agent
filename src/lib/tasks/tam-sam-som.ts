@@ -1,57 +1,43 @@
 import type { TaskCtx, TaskResult } from "./types";
+import { resolvePrompt } from "./prompt-resolver";
+import { renderPrompt } from "./generic-document-runner";
+
+const TASK_SLUG = "tam-sam-som";
 
 function stripFences(s: string): string {
   return s.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/i, "").trim();
 }
 
 export async function runTamSamSom(tc: TaskCtx): Promise<TaskResult> {
-  const { business, ctx, anthropic, models, emit, supabase, taskRunId } = tc;
+  const { business, ctx, user, anthropic, models, emit, supabase, taskRunId } = tc;
 
   await emit({ type: "cmd", text: "Calculating TAM/SAM/SOM from research data", ts: Date.now() });
 
-  const prompt = `Calculate realistic TAM, SAM, and SOM for this business using publicly available market data.
+  const promptDef = await resolvePrompt(supabase, TASK_SLUG);
+  if (!promptDef.system_prompt || promptDef.system_prompt.trim() === "") {
+    throw new Error(`task_missing_system_prompt: ${TASK_SLUG}`);
+  }
+  const prompt = renderPrompt(promptDef.user_prompt_template, { business, ctx, user });
 
-Business: ${business.name}
-Industry: ${ctx.industry ?? ""}
-Business summary: ${ctx.business_summary ?? ""}
-Target customer: ${JSON.stringify(ctx.target_customer)}
-Business model: ${ctx.business_model ?? ""}
-Competitors: ${JSON.stringify(ctx.competitors)}
-
-Guidelines:
-- Use realistic, defensible numbers from known market research
-- TAM = total global/national market for this specific industry category
-- SAM = serviceable portion this business could realistically address
-- SOM = realistic share in year 1-3 given competition and GTM constraints
-- Express in USD with human-readable labels ("$5B", "$250M", "$2.5M")
-- Base reasoning on the specific industry, not generic defaults
-
-Return ONLY valid JSON (no markdown, no backticks):
-{
-  "tam": {
-    "usd": 5000000000,
-    "label": "$5B",
-    "description": "string — what this market is and source logic"
-  },
-  "sam": {
-    "usd": 250000000,
-    "label": "$250M",
-    "description": "string — how you scoped it down"
-  },
-  "som": {
-    "usd": 2500000,
-    "label": "$2.5M",
-    "description": "string — year 1-3 realistic capture"
-  },
-  "methodology": "string — brief explanation of the bottom-up approach",
-  "confidence": 65
-}`;
-
-  const msg = await anthropic.messages.create({
-    model: models.sonnet,
-    max_tokens: 800,
-    messages: [{ role: "user", content: prompt }],
-  });
+  const llmController = new AbortController();
+  const llmTimeoutId = setTimeout(() => llmController.abort(), 45_000);
+  let msg;
+  try {
+    msg = await anthropic.messages.create(
+      {
+        model: models.sonnet,
+        max_tokens: 800,
+        system: promptDef.system_prompt,
+        messages: [{ role: "user", content: prompt }],
+      },
+      { signal: llmController.signal },
+    );
+  } catch (err) {
+    if (llmController.signal.aborted) throw new Error(`task_timeout_45s:${TASK_SLUG}`);
+    throw err;
+  } finally {
+    clearTimeout(llmTimeoutId);
+  }
 
   const raw = stripFences((msg.content[0] as { type: string; text: string }).text.trim());
   let parsed: {
@@ -65,13 +51,9 @@ Return ONLY valid JSON (no markdown, no backticks):
   try {
     parsed = JSON.parse(raw);
   } catch {
-    parsed = {
-      tam: { usd: 1000000000, label: "$1B", description: `Estimated ${ctx.industry ?? "market"} TAM.` },
-      sam: { usd: 50000000, label: "$50M", description: "Serviceable segment based on target customer." },
-      som: { usd: 500000, label: "$500K", description: "Realistic year 1-3 capture." },
-      methodology: "Bottom-up estimate based on industry research.",
-      confidence: 50,
-    };
+    throw new Error(
+      `task_json_parse_failed:${TASK_SLUG} stop_reason=${msg?.stop_reason ?? "unknown"} raw_start=${raw.slice(0, 200).replace(/\s+/g, " ")}`,
+    );
   }
 
   await emit({

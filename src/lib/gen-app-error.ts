@@ -53,6 +53,7 @@ export function formatGenAppError(technical: string): GenAppErrorPayload {
       "Your app was built but the token charge didn't go through. The app is saved — please contact support to reconcile.";
   } else if (
     t.includes("timeout_5min") ||
+    t.includes("timeout_60s") ||
     t.includes("timeout_stale") ||
     t.toLowerCase().includes("aborterror") ||
     /_timeout_\d+s\b/.test(t)
