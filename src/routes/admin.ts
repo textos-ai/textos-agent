@@ -51,6 +51,9 @@ admin.use("/businesses", requireAdmin);
 admin.use("/businesses/*", requireAdmin);
 admin.use("/users", requireAdmin);
 admin.use("/users/*", requireAdmin);
+admin.use("/prompt-definitions", requireAdmin);
+admin.use("/prompt-definitions/*", requireAdmin);
+admin.use("/prompt-variables", requireAdmin);
 
 // ── GET /admin/email-queue ─────────────────────────────────────────────────
 // Returns pending and recent emails in the queue (latest 100).
@@ -1413,6 +1416,176 @@ admin.post("/users/:id/revoke-comp", async (c) => {
     previous_status: existingSub!.status as string,
     canceled_at:     now.toISOString(),
   });
+});
+
+// ── GET /admin/prompt-definitions ────────────────────────────────────────────
+// Returns the active prompt definition for every task that has one.
+admin.get("/prompt-definitions", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const { data, error } = await supabase
+    .from("prompt_definitions")
+    .select("id, task_slug, version, system_prompt, user_prompt_template, is_active, created_at, created_by, change_note")
+    .eq("is_active", true)
+    .order("task_slug", { ascending: true });
+  if (error) {
+    log.error("[admin] prompt_definitions_list_failed", { err: error.message });
+    return c.json(errBody("internal", "prompt_definitions_list_failed"), 500);
+  }
+  return c.json({ prompt_definitions: data ?? [] });
+});
+
+// ── GET /admin/prompt-definitions/:taskSlug ───────────────────────────────────
+// Returns all versions for a specific task, newest first.
+admin.get("/prompt-definitions/:taskSlug", async (c) => {
+  const taskSlug = c.req.param("taskSlug");
+  const supabase = createSupabaseClient(c.env);
+  const { data, error } = await supabase
+    .from("prompt_definitions")
+    .select("id, task_slug, version, system_prompt, user_prompt_template, is_active, created_at, created_by, change_note")
+    .eq("task_slug", taskSlug)
+    .order("version", { ascending: false });
+  if (error) {
+    log.error("[admin] prompt_definitions_task_failed", { taskSlug, err: error.message });
+    return c.json(errBody("internal", "prompt_definitions_task_failed"), 500);
+  }
+  return c.json({ versions: data ?? [] });
+});
+
+// ── POST /admin/prompt-definitions/:taskSlug ──────────────────────────────────
+// Creates a new version for a task (increments version, makes it active,
+// deactivates the previous active version). Never overwrites existing rows.
+const PostPromptBody = z.object({
+  user_prompt_template: z.string().min(1, "user_prompt_template is required"),
+  system_prompt:        z.string().nullable().optional(),
+  change_note:          z.string().max(500).nullish(),
+});
+
+admin.post("/prompt-definitions/:taskSlug", async (c) => {
+  const { user_id } = c.get("auth");
+  const taskSlug = c.req.param("taskSlug");
+
+  let body: z.infer<typeof PostPromptBody>;
+  try {
+    body = PostPromptBody.parse(await c.req.json());
+  } catch (err) {
+    log.error("[admin] prompt_definition_parse_failed", { taskSlug, err: String(err) });
+    return c.json(errBody("bad_request", "invalid body", String(err)), 400);
+  }
+
+  const supabase = createSupabaseClient(c.env);
+
+  const { data: task, error: taskErr } = await supabase
+    .from("tasks")
+    .select("slug")
+    .eq("slug", taskSlug)
+    .maybeSingle();
+  if (taskErr) return c.json(errBody("internal", "task_lookup_failed"), 500);
+  if (!task)   return c.json(errBody("not_found", `task '${taskSlug}' not found`), 404);
+
+  // Find the highest existing version for this task.
+  const { data: maxRow } = await supabase
+    .from("prompt_definitions")
+    .select("version")
+    .eq("task_slug", taskSlug)
+    .order("version", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const nextVersion = (maxRow?.version ?? 0) + 1;
+
+  // Deactivate the current active version (if any).
+  await supabase
+    .from("prompt_definitions")
+    .update({ is_active: false })
+    .eq("task_slug", taskSlug)
+    .eq("is_active", true);
+
+  // Insert the new version as active.
+  const { data: created, error: insertErr } = await supabase
+    .from("prompt_definitions")
+    .insert({
+      task_slug:            taskSlug,
+      version:              nextVersion,
+      system_prompt:        body.system_prompt ?? null,
+      user_prompt_template: body.user_prompt_template,
+      is_active:            true,
+      created_by:           user_id,
+      change_note:          body.change_note ?? null,
+    })
+    .select()
+    .single();
+
+  if (insertErr) {
+    log.error("[admin] prompt_definition_create_failed", { taskSlug, err: insertErr.message });
+    return c.json(errBody("internal", "prompt_definition_create_failed"), 500);
+  }
+
+  log.info("[admin] prompt_definition_created", { taskSlug, version: nextVersion, user_id });
+  return c.json({ prompt_definition: created }, 201);
+});
+
+// ── PATCH /admin/prompt-definitions/:id/activate ─────────────────────────────
+// Re-activates a specific version (no-op if already active).
+admin.patch("/prompt-definitions/:id/activate", async (c) => {
+  const { user_id } = c.get("auth");
+  const defId = c.req.param("id");
+  const supabase = createSupabaseClient(c.env);
+
+  const { data: def, error: readErr } = await supabase
+    .from("prompt_definitions")
+    .select("id, task_slug, version, is_active")
+    .eq("id", defId)
+    .maybeSingle();
+  if (readErr) return c.json(errBody("internal", "prompt_definition_read_failed"), 500);
+  if (!def)    return c.json(errBody("not_found", "prompt definition not found"), 404);
+
+  if (def.is_active) {
+    return c.json({ prompt_definition: def }); // already active — no-op
+  }
+
+  const taskSlug = def.task_slug as string;
+
+  // Deactivate whichever version is currently active.
+  await supabase
+    .from("prompt_definitions")
+    .update({ is_active: false })
+    .eq("task_slug", taskSlug)
+    .eq("is_active", true);
+
+  // Activate the requested version.
+  const { data: activated, error: activateErr } = await supabase
+    .from("prompt_definitions")
+    .update({ is_active: true })
+    .eq("id", defId)
+    .select()
+    .single();
+
+  if (activateErr) {
+    log.error("[admin] prompt_definition_activate_failed", { defId, err: activateErr.message });
+    return c.json(errBody("internal", "prompt_definition_activate_failed"), 500);
+  }
+
+  log.info("[admin] prompt_definition_activated", {
+    defId,
+    taskSlug,
+    version: def.version,
+    user_id,
+  });
+  return c.json({ prompt_definition: activated });
+});
+
+// ── GET /admin/prompt-variables ───────────────────────────────────────────────
+// Returns the full variable catalog for the authoring UX.
+admin.get("/prompt-variables", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const { data, error } = await supabase
+    .from("prompt_variables")
+    .select("id, name, description, source, created_at")
+    .order("name", { ascending: true });
+  if (error) {
+    log.error("[admin] prompt_variables_list_failed", { err: error.message });
+    return c.json(errBody("internal", "prompt_variables_list_failed"), 500);
+  }
+  return c.json({ variables: data ?? [] });
 });
 
 export default admin;

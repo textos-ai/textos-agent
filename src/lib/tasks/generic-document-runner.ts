@@ -9,6 +9,7 @@
 
 import type { TaskCtx, TaskResult } from "./types";
 import type { TaskRow } from "../../services/supabase";
+import { resolvePrompt } from "./prompt-resolver";
 
 import type { ModelConfig } from "../model-config";
 
@@ -56,17 +57,6 @@ async function resolveModelForTask(
   }
   return models[tier];
 }
-
-const SYSTEM = `You are a TextOS task agent generating a structured document for a business owner.
-
-Output requirements (strict):
-- Return ONLY a valid JSON object. No markdown fences, no commentary, no preamble.
-- Shape: { "title": string, "sections": [{ "heading": string, "body": string }] }
-- Each section.body uses GitHub-flavored markdown (headings, lists, bold, links).
-- Title is concise (5-10 words), Title Case.
-- 3 to 8 sections is typical. Each section heading is 2-6 words, Title Case.
-- Write for an operator/founder audience. Concrete, specific, and grounded in the business
-  context provided. Avoid fluff, clichés, and generic management-speak.`;
 
 const SHAPE_HINT =
   '{ "title": "string", "sections": [{ "heading": "string", "body": "string (markdown)" }] }';
@@ -200,11 +190,13 @@ export async function genericDocumentRunner(
 ): Promise<TaskResult> {
   const { business, ctx, user, anthropic, models, supabase, taskRunId } = taskCtx;
 
-  if (!task.prompt_template || task.prompt_template.trim() === "") {
-    throw new Error(`task_missing_prompt_template: ${task.slug}`);
+  const promptDef = await resolvePrompt(supabase, task.slug);
+  if (!promptDef.system_prompt || promptDef.system_prompt.trim() === '') {
+    throw new Error(`task_missing_system_prompt: ${task.slug}`);
   }
+  const systemPrompt = promptDef.system_prompt;
 
-  const rendered = renderPrompt(task.prompt_template, {
+  const rendered = renderPrompt(promptDef.user_prompt_template, {
     business,
     ctx,
     user,
@@ -234,7 +226,7 @@ export async function genericDocumentRunner(
     const msg = await anthropic.messages.create({
       model,
       max_tokens: 1200,
-      system: SYSTEM,
+      system: systemPrompt,
       messages: [{ role: "user", content: rendered + retryNote }],
     });
 
