@@ -63,6 +63,11 @@ apps platform (`apps-catalog`, `apps-businesses`, `apps-instances`,
 
 ## Relocated reference docs (were inline in this file)
 
+- **Agent / task execution architecture** → `AGENT-ARCHITECTURE-MANIFESTO.md`
+  (MANDATORY before any work touching agent execution, queuing, timeouts, or
+  batching. Covers: why `waitUntil` orphans long jobs, the correct primitives
+  (Queues/Workflows/DO), false fixes already tried, and the checklist every
+  execution change must pass.)
 - **Apps platform / Homer** → `src/lib/CLAUDE.md` + `docs/STYLE_GUIDE.md`
   + `docs/textos-component-factory-prd.md` +
   `docs/textos-homer-platform-prd.md` + `docs/apps-platform-state.md`.
