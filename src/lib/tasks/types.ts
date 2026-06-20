@@ -26,11 +26,20 @@ export interface TaskCtx {
   nextSeq: () => number;
   emit: (evt: StreamEvent) => Promise<void>;
   cfLocation?: { lat: number; lng: number } | null;
+  /** AbortSignal for per-agent hard timeout. When present, threaded to the
+   *  Anthropic SDK call so a timed-out fetch is cancelled at the network layer.
+   *  Absence means no external abort — the call runs to SDK/task completion. */
+  abortSignal?: AbortSignal | null;
+  /** True when the task is being run by the admin harness (not a real user run).
+   *  Propagated to business_assets.is_harness so harness output is filterable. */
+  isHarness?: boolean;
 }
 
 export interface TaskResult {
   output_data: Record<string, unknown>;
   context_updates?: Partial<Omit<BusinessContextRow, "id" | "business_id" | "user_id" | "created_at" | "updated_at">>;
+  /** The resolved LLM model ID used for this run. Written to task_runs.model on completion. */
+  model?: string;
 }
 
 export type TaskFn = (taskCtx: TaskCtx) => Promise<TaskResult>;

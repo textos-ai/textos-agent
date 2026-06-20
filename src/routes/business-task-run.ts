@@ -33,7 +33,7 @@ import { buildBundleSuggestions } from "../lib/withTokenDeduction";
 import { genericDocumentRunner } from "../lib/tasks/generic-document-runner";
 import type { TaskCtx } from "../lib/tasks/types";
 import { loadModelConfig } from "../lib/model-config";
-import { loadFeatureConfig } from "../lib/non-task-model-config";
+import { loadFeatureConfig, type FeatureConfig } from "../lib/non-task-model-config";
 import {
   genAppLog,
   takeGenAppEvents,
@@ -522,14 +522,14 @@ app.get("/:slug/task_runs/:id", async (c) => {
   // watchdog cron a safety net rather than the only line of defense.
   // Polls happen every 2s while a task is in flight, so a stuck row
   // clears within seconds instead of waiting for the next cron tick.
-  // Two-tier: free-build tasks (expected <30s) swept at 60s; app-builder
-  // tasks (generate-business-app*) kept at 300s — they legitimately run
-  // 60-120s and must not be swept early.
+  // Two-tier: free-build tasks (expected <30s) swept at 60s; long tasks
+  // (generate-business-app* + public-business-website) kept at 300s —
+  // they legitimately run 60-120s and must not be swept early.
   {
     const { data: longTaskRows } = await supabase
       .from("tasks")
       .select("id")
-      .like("slug", "generate-business-app%");
+      .or("slug.like.generate-business-app%,slug.eq.public-business-website");
     const longTaskIds = (longTaskRows ?? []).map((r: { id: string }) => r.id);
 
     const shortCutoff = new Date(Date.now() - 60_000).toISOString();
@@ -649,6 +649,8 @@ export async function runTaskInBackground(
   task: TaskRow,
   user_id: string,
   taskRunId: string,
+  signal?: AbortSignal,
+  isHarness = false,
 ): Promise<void> {
   const supabase = createSupabaseClient(env);
 
@@ -735,9 +737,27 @@ export async function runTaskInBackground(
     }
 
     const anthropic = createAnthropicClient(env);
+    // Accumulate token usage across all LLM calls in this task run so we can
+    // write input_tokens / output_tokens to task_runs on completion.
+    let _accInputTokens = 0, _accOutputTokens = 0;
+    const _origCreate = anthropic.messages.create.bind(anthropic.messages);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (anthropic.messages as any).create = async (...args: any[]) => {
+      const msg = await _origCreate(...args);
+      // Only non-streaming responses have .usage directly on the result.
+      const u = (msg as { usage?: { input_tokens?: number; output_tokens?: number } }).usage;
+      if (u) { _accInputTokens += u.input_tokens ?? 0; _accOutputTokens += u.output_tokens ?? 0; }
+      return msg;
+    };
+    // Load featureConfig only for dedicated-handler tasks (generate-business-app*)
+    // that actually read it via resolveFeatureModel. Generic document runner
+    // never reads featureConfig — skipping the load removes a dead DB query.
+    const dedicatedHandler = FREE_BUILD_TASK_HANDLERS[task.slug];
     const [models, featureConfig] = await Promise.all([
       loadModelConfig(supabase),
-      loadFeatureConfig(supabase),
+      dedicatedHandler
+        ? loadFeatureConfig(supabase)
+        : Promise.resolve({ defaultTier: "sonnet", overrides: {} } as FeatureConfig),
     ]);
 
     // runId is free-build-orchestrator-specific. Generic runs reuse the
@@ -760,6 +780,8 @@ export async function runTaskInBackground(
         /* no-op: paid V1 tasks don't stream SSE */
       },
       cfLocation: null,
+      abortSignal: signal ?? null,
+      isHarness,
     };
 
     // Check for dedicated handler first (free build tasks), fallback to generic runner
@@ -771,7 +793,6 @@ export async function runTaskInBackground(
         task_slug: task.slug,
       });
     }
-    const dedicatedHandler = FREE_BUILD_TASK_HANDLERS[task.slug];
     const result = dedicatedHandler
       ? await dedicatedHandler(taskCtx)
       : await genericDocumentRunner(taskCtx, task);
@@ -946,6 +967,9 @@ export async function runTaskInBackground(
         status: "completed",
         completed_at: new Date().toISOString(),
         output_data: result.output_data,
+        model: result.model ?? null,
+        input_tokens: _accInputTokens || null,
+        output_tokens: _accOutputTokens || null,
       })
       .eq("id", taskRunId)
       .eq("status", "running");
@@ -965,7 +989,9 @@ export async function runTaskInBackground(
     }
   } catch (err) {
     const message =
-      err instanceof Error ? err.message : String(err) || "unknown_error";
+      err instanceof Error && err.name === "AbortError"
+        ? "timeout_60s"
+        : err instanceof Error ? err.message : String(err) || "unknown_error";
     log.error("[task-run] background_failed", {
       business_id: business.id,
       task_slug: task.slug,

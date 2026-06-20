@@ -188,7 +188,7 @@ export async function genericDocumentRunner(
   taskCtx: TaskCtx,
   task: TaskRow,
 ): Promise<TaskResult> {
-  const { business, ctx, user, anthropic, models, supabase, taskRunId } = taskCtx;
+  const { business, ctx, user, anthropic, models, supabase, taskRunId, abortSignal, isHarness } = taskCtx;
 
   const promptDef = await resolvePrompt(supabase, task.slug);
   if (!promptDef.system_prompt || promptDef.system_prompt.trim() === '') {
@@ -218,22 +218,32 @@ export async function genericDocumentRunner(
         : `\n\n⚠️ Your previous response failed validation: ${lastErr}. ` +
           `Return ONLY a valid JSON object matching this shape, no markdown, no commentary: ${SHAPE_HINT}`;
 
-    // max_tokens picked to fit comfortably under the worker waitUntil
-    // window. Sonnet at ~70 tok/s → ~17s for 1200 tokens; Haiku at ~200
-    // tok/s → ~6s. Realistic output for our prompts (3-4 sections × 60-120
-    // words) is ~700-900 tokens, leaving ~300+ token buffer for occasional
-    // verbosity before truncation triggers JSON parse failure.
-    const msg = await anthropic.messages.create({
-      model,
-      max_tokens: 1200,
-      system: systemPrompt,
-      messages: [{ role: "user", content: rendered + retryNote }],
-    });
+    // max_tokens: 3000 — investor-deck and personal-landing-page can produce
+    // up to ~2500 tokens of JSON (10+ sections × 200-token bodies + structure).
+    // Typical tasks produce 700-900 tokens and stop naturally.
+    const msg = await anthropic.messages.create(
+      {
+        model,
+        max_tokens: 3000,
+        system: systemPrompt,
+        messages: [{ role: "user", content: rendered + retryNote }],
+      },
+      abortSignal ? { signal: abortSignal } : undefined,
+    );
 
     const block = msg.content[0];
     const text =
       block && block.type === "text" ? (block as { text: string }).text : "";
     const raw = stripFences(text.trim());
+
+    // Truncation — fail fast. A second call under the same ceiling will
+    // produce identical truncation. Only retry on genuine formatting failures
+    // (malformed JSON, prose output) where a fresh attempt can succeed.
+    if (msg.stop_reason === "max_tokens") {
+      throw new Error(
+        `task_output_truncated:${task.slug} stop_reason=max_tokens (max_tokens=3000)`
+      );
+    }
 
     let candidate: unknown;
     try {
@@ -307,6 +317,7 @@ export async function genericDocumentRunner(
     asset_data: parsed,
     asset_url: null,
     asset_text: null,
+    is_harness: isHarness ?? false,
     metadata: {
       model,
       token_cost: task.token_cost,
@@ -320,5 +331,6 @@ export async function genericDocumentRunner(
 
   return {
     output_data: parsed as unknown as Record<string, unknown>,
+    model,
   };
 }

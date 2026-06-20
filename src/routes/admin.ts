@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import type { Env } from "../env";
 import { requireAuth } from "../lib/jwt";
@@ -64,6 +65,8 @@ admin.use("/task-trigger-blocks", requireAdmin);
 admin.use("/task-trigger-blocks/*", requireAdmin);
 admin.use("/test-harness", requireAdmin);
 admin.use("/test-harness/*", requireAdmin);
+admin.use("/harness", requireAdmin);
+admin.use("/harness/*", requireAdmin);
 
 // ── GET /admin/email-queue ─────────────────────────────────────────────────
 // Returns pending and recent emails in the queue (latest 100).
@@ -1669,18 +1672,334 @@ admin.post("/task-trigger-blocks/clear", async (c) => {
   return c.json({ ok: true, cleared_at });
 });
 
+// ── Harness helpers ───────────────────────────────────────────────────────────
+
+type NotRunEntry = { slug: string; name: string; disposition: string; reason: string };
+type HarnessRunMeta = {
+  id: string; status: string; started_at: string; completed_at: string | null;
+  task_count: number; business_id: string | null;
+};
+
+function classifyTasksForHarness(
+  allTasks: TaskRow[],
+  activePromptSlugs: Set<string>,
+): { eligibleTasks: TaskRow[]; notRun: NotRunEntry[] } {
+  const eligibleTasks: TaskRow[] = [];
+  const notRun: NotRunEntry[] = [];
+  for (const task of allTasks) {
+    if (task.status !== "active") {
+      notRun.push({ slug: task.slug, name: task.name, disposition: `inactive_${task.status}`, reason: `status=${task.status}` });
+    } else if (task.kind === "system") {
+      notRun.push({ slug: task.slug, name: task.name, disposition: "excluded_system", reason: "kind=system, no user-facing LLM path" });
+    } else if (task.output_type === "configured") {
+      notRun.push({ slug: task.slug, name: task.name, disposition: "excluded_configured", reason: "output_type=configured, no LLM path" });
+    } else if (task.slug.startsWith("generate-business-app") || task.slug === "public-business-website") {
+      notRun.push({ slug: task.slug, name: task.name, disposition: "excluded_long_running", reason: "app-builder task or public-business-website, on 300s watchdog tier" });
+    } else if (!activePromptSlugs.has(task.slug)) {
+      notRun.push({ slug: task.slug, name: task.name, disposition: "skipped_no_prompt", reason: "active task but no active prompt_definitions row" });
+    } else {
+      eligibleTasks.push(task);
+    }
+  }
+  return { eligibleTasks, notRun };
+}
+
+const PHASE_SLUG_TO_NUM: Record<string, number> = { foundation: 1, launch: 2, scale: 3 };
+
+async function fetchHarnessRunStatus(
+  supabase: ReturnType<typeof createSupabaseClient>,
+  runId: string,
+  run: HarnessRunMeta,
+) {
+  const NOW = Date.now();
+  const SLOW_MS = 30_000;
+
+  const [{ data: runRows }, { data: phaseRows }] = await Promise.all([
+    supabase
+      .from("task_runs")
+      .select("id, status, started_at, completed_at, error, task_id, tasks(slug, name, output_type, lifecycle_phase_id)")
+      .eq("harness_run_id", runId)
+      .order("started_at"),
+    supabase.from("lifecycle_phases").select("id, slug"),
+  ]);
+
+  const phaseMap: Record<string, number> = {};
+  for (const p of (phaseRows ?? []) as Array<{ id: string; slug: string }>) {
+    phaseMap[p.id] = PHASE_SLUG_TO_NUM[p.slug] ?? 0;
+  }
+
+  type TaskRunRow = {
+    id: string; status: string; started_at: string;
+    completed_at: string | null; error: string | null; task_id: string;
+    tasks: { slug: string; name: string; output_type: string; lifecycle_phase_id: string | null } | null;
+  };
+  const rows = (runRows ?? []) as unknown as TaskRunRow[];
+
+  const tasks = rows.map(row => {
+    const startMs = new Date(row.started_at).getTime();
+    const isRunning = row.status === "running";
+    const isSlow = isRunning && NOW - startMs > SLOW_MS;
+    const effectiveStatus = isSlow ? "slow" : row.status;
+    const duration_s = row.completed_at
+      ? Math.round((new Date(row.completed_at).getTime() - startMs) / 1000)
+      : isRunning ? Math.round((NOW - startMs) / 1000)
+      : null;
+    const phaseId = row.tasks?.lifecycle_phase_id ?? null;
+    return {
+      task_run_id: row.id,
+      slug: row.tasks?.slug ?? "",
+      name: row.tasks?.name ?? "",
+      output_type: row.tasks?.output_type ?? "",
+      phase: phaseId ? (phaseMap[phaseId] ?? 0) : 0,
+      status: effectiveStatus,
+      duration_s,
+      error: row.error ?? null,
+      started_at: row.started_at,
+      completed_at: row.completed_at,
+    };
+  });
+
+  const summary = {
+    total: tasks.length,
+    running: tasks.filter(t => t.status === "running" || t.status === "slow").length,
+    slow: tasks.filter(t => t.status === "slow").length,
+    passed: tasks.filter(t => t.status === "completed").length,
+    failed: tasks.filter(t => t.status === "failed").length,
+    queued: tasks.filter(t => t.status === "queued").length,
+  };
+
+  let finalStatus = run.status;
+  let finalCompletedAt = run.completed_at;
+  if (tasks.length > 0 && run.status === "running" &&
+      tasks.every(t => t.status === "completed" || t.status === "failed")) {
+    finalCompletedAt = new Date().toISOString();
+    const { error: closeErr } = await supabase
+      .from("harness_runs")
+      .update({ status: "complete", completed_at: finalCompletedAt })
+      .eq("id", runId)
+      .eq("status", "running");
+    if (!closeErr) finalStatus = "complete";
+  }
+
+  const runStartMs = new Date(run.started_at).getTime();
+  const runEndMs = finalCompletedAt ? new Date(finalCompletedAt).getTime() : NOW;
+  const duration_s = Math.round((runEndMs - runStartMs) / 1000);
+
+  return {
+    harness_run_id: runId,
+    status: finalStatus,
+    started_at: run.started_at,
+    completed_at: finalCompletedAt ?? null,
+    duration_s,
+    summary,
+    tasks,
+  };
+}
+
+// ── GET /admin/harness/run ─────────────────────────────────────────────────
+// SSE stream that runs all eligible tasks sequentially (one at a time) and
+// emits progress events as each finishes. Mirrors the proven free-build
+// pattern: sequential awaits inside an open SSE connection keep the Worker
+// alive for the full run — no Queues, no waitUntil, no orphaning.
+//
+// Query param: ?business_slug=<slug>
+// Events: harness_start | task_start | task_complete | task_failed | harness_complete
+admin.get("/harness/run", async (c) => {
+  const business_slug = c.req.query("business_slug");
+  if (!business_slug) return c.json(errBody("bad_request", "business_slug required"), 400);
+
+  const supabase = createSupabaseClient(c.env);
+
+  const { data: bizRow, error: bizErr } = await supabase
+    .from("businesses")
+    .select("id, user_id, slug, name, kind, existing_business_url, existing_business_data, created_at")
+    .eq("slug", business_slug)
+    .eq("is_active", true)
+    .maybeSingle();
+  if (bizErr) return c.json(errBody("internal", "business_lookup_failed"), 500);
+  if (!bizRow) return c.json(errBody("not_found", `business '${business_slug}' not found`), 404);
+  const business = bizRow as BusinessRow;
+
+  const [{ data: promptRows, error: promptErr }, { data: allTaskRows, error: taskErr }] = await Promise.all([
+    supabase.from("prompt_definitions").select("task_slug").eq("is_active", true),
+    supabase.from("tasks").select(TASK_SELECT_COLUMNS).order("slug"),
+  ]);
+  if (promptErr) return c.json(errBody("internal", "prompt_lookup_failed"), 500);
+  if (taskErr) return c.json(errBody("internal", "task_list_failed"), 500);
+
+  const activePromptSlugs = new Set((promptRows ?? []).map((p: { task_slug: string }) => p.task_slug));
+  const allTasks = (allTaskRows ?? []) as unknown as TaskRow[];
+  const { eligibleTasks, notRun } = classifyTasksForHarness(allTasks, activePromptSlugs);
+
+  const { data: harnessRow, error: harnessErr } = await supabase
+    .from("harness_runs")
+    .insert({ status: "running", business_id: business.id, task_count: eligibleTasks.length })
+    .select("id, started_at")
+    .single();
+  if (harnessErr || !harnessRow) {
+    log.error("[harness/run] harness_run_insert_failed", { err: harnessErr?.message });
+    return c.json(errBody("internal", "harness_run_insert_failed"), 500);
+  }
+  const { id: harnessRunId } = harnessRow as { id: string; started_at: string };
+
+  return streamSSE(c, async (stream) => {
+    const emit = async (type: string, data: Record<string, unknown> = {}) => {
+      await stream.writeSSE({ event: type, data: JSON.stringify({ type, ts: Date.now(), ...data }) });
+    };
+
+    type TaskResult = { slug: string; name: string; status: string; duration_s: number; error: string | null };
+    const results: TaskResult[] = [];
+
+    await emit("harness_start", {
+      harness_run_id: harnessRunId,
+      task_count: eligibleTasks.length,
+      not_run_count: notRun.length,
+    });
+
+    for (const task of eligibleTasks) {
+      // Create task_run row with correct started_at for this task's actual start time.
+      const taskStarted = new Date().toISOString();
+      const { data: runRow, error: insertErr } = await supabase
+        .from("task_runs")
+        .insert({
+          user_id: business.user_id,
+          business_id: business.id,
+          task_id: task.id,
+          status: "running",
+          started_at: taskStarted,
+          harness_run_id: harnessRunId,
+          config: null,
+          is_harness: true,
+        })
+        .select("id")
+        .single();
+
+      if (insertErr || !runRow) {
+        await emit("task_failed", { slug: task.slug, name: task.name, duration_s: 0, error: "task_run_insert_failed" });
+        results.push({ slug: task.slug, name: task.name, status: "failed", duration_s: 0, error: "task_run_insert_failed" });
+        continue;
+      }
+
+      const taskRunId = (runRow as { id: string }).id;
+      const taskStartMs = Date.now();
+      await emit("task_start", { slug: task.slug, name: task.name, task_run_id: taskRunId });
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 60_000);
+
+      try {
+        await runTaskInBackground(c.env, business, task, business.user_id, taskRunId, controller.signal, true);
+
+        const duration_s = Math.round((Date.now() - taskStartMs) / 1000);
+
+        // runTaskInBackground writes the terminal status — read it back.
+        const { data: finalRow } = await supabase
+          .from("task_runs")
+          .select("status, error, input_tokens, output_tokens")
+          .eq("id", taskRunId)
+          .maybeSingle();
+
+        const finalStatus = (finalRow?.status as string) ?? "unknown";
+        const finalError = (finalRow?.error as string | null) ?? null;
+        const totalTokens = ((finalRow?.input_tokens as number | null) ?? 0) +
+                            ((finalRow?.output_tokens as number | null) ?? 0);
+
+        if (finalStatus === "completed") {
+          await emit("task_complete", { slug: task.slug, name: task.name, task_run_id: taskRunId, duration_s, total_tokens: totalTokens || null });
+          results.push({ slug: task.slug, name: task.name, status: "completed", duration_s, error: null });
+        } else {
+          await emit("task_failed", { slug: task.slug, name: task.name, task_run_id: taskRunId, duration_s, error: finalError });
+          results.push({ slug: task.slug, name: task.name, status: "failed", duration_s, error: finalError });
+        }
+      } catch (err) {
+        const duration_s = Math.round((Date.now() - taskStartMs) / 1000);
+        const errMsg = err instanceof Error ? err.message : String(err);
+        await emit("task_failed", { slug: task.slug, name: task.name, task_run_id: taskRunId, duration_s, error: errMsg });
+        results.push({ slug: task.slug, name: task.name, status: "failed", duration_s, error: errMsg });
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    }
+
+    // Mark harness_run complete.
+    await supabase
+      .from("harness_runs")
+      .update({ status: "complete", completed_at: new Date().toISOString() })
+      .eq("id", harnessRunId);
+
+    // Final summary sorted slowest-first.
+    const sorted = [...results].sort((a, b) => b.duration_s - a.duration_s);
+    await emit("harness_complete", {
+      harness_run_id: harnessRunId,
+      total: results.length,
+      passed: results.filter(r => r.status === "completed").length,
+      failed: results.filter(r => r.status === "failed").length,
+      results: sorted,
+    });
+
+    log.info("[harness/run] complete", {
+      harness_run_id: harnessRunId,
+      business_slug,
+      total: results.length,
+      passed: results.filter(r => r.status === "completed").length,
+      failed: results.filter(r => r.status === "failed").length,
+    });
+  });
+});
+
+// ── GET /admin/harness/current ─────────────────────────────────────────────
+// Returns the most recent harness run + per-task statuses. Used on page load
+// to show the last run without triggering a new one.
+admin.get("/harness/current", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+
+  const { data: run } = await supabase
+    .from("harness_runs")
+    .select("id, status, started_at, completed_at, task_count, business_id")
+    .order("started_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (!run) return c.json({ run: null, tasks: [], summary: null });
+
+  const data = await fetchHarnessRunStatus(supabase, (run as HarnessRunMeta).id, run as HarnessRunMeta);
+  return c.json(data);
+});
+
+// ── GET /admin/harness/:run_id/status ──────────────────────────────────────
+// Polling endpoint. Returns per-task statuses + run summary every 2-3s.
+// Derives slow = status='running' AND started_at < now()-30s.
+// Marks harness_run complete when all tasks reach a terminal status.
+admin.get("/harness/:run_id/status", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const runId = c.req.param("run_id");
+
+  const { data: run } = await supabase
+    .from("harness_runs")
+    .select("id, status, started_at, completed_at, task_count, business_id")
+    .eq("id", runId)
+    .maybeSingle();
+
+  if (!run) return c.json(errBody("not_found", "harness run not found"), 404);
+
+  const data = await fetchHarnessRunStatus(supabase, runId, run as HarnessRunMeta);
+  return c.json(data);
+});
+
 // ── POST /admin/test-harness/run ──────────────────────────────────────────────
 // Runs every eligible task once against a given business, polls for completion,
-// returns a results table. Admin/dev tool only.
+// returns a full accounting of every task in the catalog.
 //
-// Eligible = active + non-system + non-configured + slug NOT LIKE generate-business-app%
-//          + has an active prompt_definitions row.
+// Every task appears in the response — either in `results` (ran) or `not_run`
+// (with an exact per-task disposition). The summary.catalog_total must equal
+// results.length + not_run.length at all times.
 //
-// Excluded (documented in response):
-//   - generate-business-app* tasks: legitimately run 60-120s; excluded to keep harness ≤90s
-//   - output_type='configured' tasks: no LLM path
-//   - kind='system' tasks: no user-facing LLM path
-//   - tasks with no active prompt_definitions row: nothing to run
+// Dispositions for not_run tasks:
+//   inactive_draft / inactive_deprecated — task not in production
+//   excluded_system                      — kind=system, no user-facing LLM path
+//   excluded_configured                  — output_type=configured, no LLM path
+//   excluded_long_running                — legitimately runs >60s (300s watchdog tier)
+//   skipped_no_prompt                    — active but no prompt_definitions row
 admin.post("/test-harness/run", async (c) => {
   const supabase = createSupabaseClient(c.env);
 
@@ -1711,7 +2030,7 @@ admin.post("/test-harness/run", async (c) => {
   }
   const business = bizRow as BusinessRow;
 
-  // 2. Find eligible tasks
+  // 2. Fetch ALL tasks (every status) + active prompt slugs in parallel
   const { data: activePromptRows, error: promptErr } = await supabase
     .from("prompt_definitions")
     .select("task_slug")
@@ -1724,41 +2043,34 @@ admin.post("/test-harness/run", async (c) => {
     (activePromptRows ?? []).map((p: { task_slug: string }) => p.task_slug),
   );
 
-  const { data: taskRows, error: taskErr } = await supabase
+  const { data: allTaskRows, error: taskErr } = await supabase
     .from("tasks")
     .select(TASK_SELECT_COLUMNS)
-    .eq("status", "active")
-    .neq("kind", "system")
-    .neq("output_type", "configured")
-    .not("slug", "like", "generate-business-app%");
+    .order("slug", { ascending: true });
   if (taskErr) {
     log.error("[harness] task_list_failed", { err: taskErr.message });
     return c.json(errBody("internal", "task_list_failed"), 500);
   }
+  const allTasks = (allTaskRows ?? []) as unknown as TaskRow[];
 
-  const allCandidates = (taskRows ?? []) as unknown as TaskRow[];
-  const eligibleTasks = allCandidates.filter((t) => activePromptSlugs.has(t.slug));
-  const noPromptExcluded = allCandidates
-    .filter((t) => !activePromptSlugs.has(t.slug))
-    .map((t) => ({ slug: t.slug, name: t.name, reason: "no_active_prompt" }));
-
-  const staticExclusions = [
-    { slug: "generate-business-app*", name: "App Builder tasks", reason: "long_running_excluded_≥60s" },
-    { slug: "(configured)", name: "Configured output tasks", reason: "no_llm_path" },
-    { slug: "(system)", name: "System tasks", reason: "system_kind_excluded" },
-  ];
+  // 3. Classify every task into eligible (will run) or not_run (with exact reason)
+  const { eligibleTasks, notRun } = classifyTasksForHarness(allTasks, activePromptSlugs);
 
   if (eligibleTasks.length === 0) {
     return c.json({
       harness_run_at: new Date().toISOString(),
       test_business: { slug: business.slug, name: business.name, id: business.id },
-      summary: { total: 0, passed: 0, failed: 0, skipped: 0 },
-      excluded: [...staticExclusions, ...noPromptExcluded],
+      summary: {
+        catalog_total: allTasks.length,
+        ran: 0, passed: 0, failed: 0,
+        not_run: notRun.length,
+      },
+      not_run: notRun,
       results: [],
     });
   }
 
-  // 3. Insert task_run rows and launch via waitUntil
+  // 4. Insert task_run rows and launch via waitUntil
   type HarnessEntry = { task: TaskRow; run_id: string };
   const launched: HarnessEntry[] = [];
   const launchFailed: Array<{ slug: string; name: string; error: string }> = [];
@@ -1797,19 +2109,19 @@ admin.post("/test-harness/run", async (c) => {
     run_ids: launched.map((e) => e.run_id),
   });
 
-  // 4. Poll for completion (max 90s, 3s intervals)
+  // 5. Poll for completion (max 90s, 3s intervals)
   // Apply inline 60s sweep at each tick since cron is disabled in test env.
   type RunRow = { id: string; status: string; started_at: string; completed_at: string | null; error: string | null };
   const pendingIds = new Set(launched.map((e) => e.run_id));
   const doneRows = new Map<string, RunRow>();
   const pollStart = Date.now();
 
-  // Fetch app-builder task IDs once (for the sweep exclusion)
-  const { data: appTaskRows } = await supabase
+  // Long-task IDs for the sweep exclusion (same set excluded from eligibility above)
+  const { data: longTaskRowsForSweep } = await supabase
     .from("tasks")
     .select("id")
-    .like("slug", "generate-business-app%");
-  const appTaskIds = (appTaskRows ?? []).map((r: { id: string }) => r.id);
+    .or("slug.like.generate-business-app%,slug.eq.public-business-website");
+  const longTaskIdsForSweep = (longTaskRowsForSweep ?? []).map((r: { id: string }) => r.id);
 
   while (pendingIds.size > 0 && Date.now() - pollStart < 90_000) {
     await new Promise<void>((resolve) => setTimeout(resolve, 3000));
@@ -1823,8 +2135,8 @@ admin.post("/test-harness/run", async (c) => {
       .eq("status", "running")
       .lt("started_at", sweepCutoff)
       .in("id", pendingArr);
-    await (appTaskIds.length > 0
-      ? sweepQ.not("task_id", "in", `(${appTaskIds.join(",")})`)
+    await (longTaskIdsForSweep.length > 0
+      ? sweepQ.not("task_id", "in", `(${longTaskIdsForSweep.join(",")})`)
       : sweepQ);
 
     // Check current status of all pending runs
@@ -1841,7 +2153,7 @@ admin.post("/test-harness/run", async (c) => {
     }
   }
 
-  // 5. Assemble results
+  // 6. Assemble results (tasks that ran)
   type HarnessResult = {
     task: string; name: string; status: string;
     duration_s: number | null; error: string | null; task_run_id: string;
@@ -1864,7 +2176,6 @@ admin.post("/test-harness/run", async (c) => {
         task_run_id: entry.run_id,
       });
     } else {
-      // Still running after 90s — shouldn't happen after 60s sweep, but cover it
       results.push({
         task: entry.task.slug,
         name: entry.task.name,
@@ -1892,17 +2203,243 @@ admin.post("/test-harness/run", async (c) => {
 
   log.info("[harness] complete", {
     business_slug,
-    total: results.length,
+    catalog_total: allTasks.length,
+    ran: results.length,
     passed,
     failed,
+    not_run: notRun.length,
   });
 
   return c.json({
     harness_run_at: new Date().toISOString(),
     test_business: { slug: business.slug, name: business.name, id: business.id },
-    summary: { total: results.length, passed, failed, skipped: noPromptExcluded.length },
-    excluded: [...staticExclusions, ...noPromptExcluded],
+    summary: {
+      catalog_total: allTasks.length,
+      ran: results.length,
+      passed,
+      failed,
+      not_run: notRun.length,
+      not_run_breakdown: {
+        inactive: notRun.filter((r) => r.disposition.startsWith("inactive")).length,
+        excluded: notRun.filter((r) => r.disposition.startsWith("excluded")).length,
+        skipped_no_prompt: notRun.filter((r) => r.disposition === "skipped_no_prompt").length,
+      },
+    },
+    not_run: notRun,
     results,
+  });
+});
+
+// ── GET /admin/harness/runs ───────────────────────────────────────────────────
+// List of harness runs (newest-first), each with pass/fail counts.
+// Used by the per-day/per-run history page (view d).
+admin.get("/harness/runs", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const limit = Math.min(parseInt(c.req.query("limit") ?? "100"), 500);
+
+  const { data: runs, error: runsErr } = await supabase
+    .from("harness_runs")
+    .select("id, status, started_at, completed_at, task_count, business_id")
+    .order("started_at", { ascending: false })
+    .limit(limit);
+
+  if (runsErr) return c.json(errBody("internal", "harness_runs_fetch_failed"), 500);
+
+  const runIds = (runs ?? []).map((r: { id: string }) => r.id);
+  let statsMap: Record<string, { passed: number; failed: number }> = {};
+
+  if (runIds.length > 0) {
+    const { data: taskRows } = await supabase
+      .from("task_runs")
+      .select("harness_run_id, status")
+      .in("harness_run_id", runIds);
+
+    for (const row of (taskRows ?? []) as { harness_run_id: string; status: string }[]) {
+      const s = statsMap[row.harness_run_id] ?? { passed: 0, failed: 0 };
+      if (row.status === "completed") s.passed++;
+      else if (row.status === "failed") s.failed++;
+      statsMap[row.harness_run_id] = s;
+    }
+  }
+
+  const result = (runs ?? []).map((r: { id: string; status: string; started_at: string; completed_at: string | null; task_count: number; business_id: string }) => {
+    const s = statsMap[r.id] ?? { passed: 0, failed: 0 };
+    const startMs = r.started_at ? new Date(r.started_at).getTime() : null;
+    const endMs = r.completed_at ? new Date(r.completed_at).getTime() : null;
+    return {
+      id: r.id,
+      status: r.status,
+      started_at: r.started_at,
+      completed_at: r.completed_at,
+      task_count: r.task_count,
+      business_id: r.business_id,
+      passed: s.passed,
+      failed: s.failed,
+      duration_s: startMs && endMs ? Math.round((endMs - startMs) / 1000) : null,
+    };
+  });
+
+  return c.json({ runs: result });
+});
+
+// ── GET /admin/harness/runs/:run_id/tasks ─────────────────────────────────────
+// All task_runs for a specific harness run, sorted slowest-first.
+// Used by the all-tasks comparison page (view c).
+admin.get("/harness/runs/:run_id/tasks", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const runId = c.req.param("run_id");
+
+  const [{ data: run }, { data: tasks, error: tasksErr }] = await Promise.all([
+    supabase
+      .from("harness_runs")
+      .select("id, status, started_at, completed_at, task_count, business_id")
+      .eq("id", runId)
+      .maybeSingle(),
+    supabase
+      .from("task_runs")
+      .select("id, status, started_at, completed_at, error, model, output_data, tasks!inner(slug, name)")
+      .eq("harness_run_id", runId)
+      .order("started_at"),
+  ]);
+
+  if (!run) return c.json(errBody("not_found", "harness run not found"), 404);
+  if (tasksErr) return c.json(errBody("internal", "task_runs_fetch_failed"), 500);
+
+  type TaskRunRow = { id: string; status: string; started_at: string; completed_at: string | null; error: string | null; model: string | null; output_data: unknown; tasks: { slug: string; name: string } };
+  const mapped = ((tasks ?? []) as unknown as TaskRunRow[]).map((t) => {
+    const startMs = t.started_at ? new Date(t.started_at).getTime() : null;
+    const endMs = t.completed_at ? new Date(t.completed_at).getTime() : null;
+    return {
+      task_run_id: t.id,
+      slug: t.tasks.slug,
+      name: t.tasks.name,
+      status: t.status,
+      started_at: t.started_at,
+      completed_at: t.completed_at,
+      duration_s: startMs && endMs ? Math.round((endMs - startMs) / 1000) : null,
+      model: t.model,
+      error: t.error,
+      has_output: !!t.output_data,
+    };
+  });
+
+  // Sort slowest-first (nulls last)
+  mapped.sort((a, b) => {
+    if (a.duration_s == null && b.duration_s == null) return 0;
+    if (a.duration_s == null) return 1;
+    if (b.duration_s == null) return -1;
+    return b.duration_s - a.duration_s;
+  });
+
+  const runRow = run as { id: string; status: string; started_at: string; completed_at: string | null; task_count: number; business_id: string };
+  const startMs = runRow.started_at ? new Date(runRow.started_at).getTime() : null;
+  const endMs = runRow.completed_at ? new Date(runRow.completed_at).getTime() : null;
+
+  return c.json({
+    run: {
+      ...runRow,
+      duration_s: startMs && endMs ? Math.round((endMs - startMs) / 1000) : null,
+      passed: mapped.filter(t => t.status === "completed").length,
+      failed: mapped.filter(t => t.status === "failed").length,
+    },
+    tasks: mapped,
+  });
+});
+
+// ── GET /admin/harness/tasks ──────────────────────────────────────────────────
+// All task slugs/names that have at least one harness run, with run count.
+// Used to populate the task picker on the per-task history page (view b).
+admin.get("/harness/tasks", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+
+  const { data: rows, error } = await supabase
+    .from("task_runs")
+    .select("task_id, tasks!inner(slug, name)")
+    .eq("is_harness", true)
+    .order("task_id");
+
+  if (error) return c.json(errBody("internal", "harness_tasks_fetch_failed"), 500);
+
+  type Row = { task_id: string; tasks: { slug: string; name: string } };
+  const countMap: Record<string, { slug: string; name: string; run_count: number }> = {};
+  for (const r of (rows ?? []) as unknown as Row[]) {
+    const key = r.tasks.slug;
+    if (!countMap[key]) countMap[key] = { slug: r.tasks.slug, name: r.tasks.name, run_count: 0 };
+    countMap[key].run_count++;
+  }
+
+  const tasks = Object.values(countMap).sort((a, b) => a.name.localeCompare(b.name));
+  return c.json({ tasks });
+});
+
+// ── GET /admin/harness/tasks/:slug/history ────────────────────────────────────
+// All harness runs of a specific task, newest-first.
+// Used by the per-task history page (view b).
+admin.get("/harness/tasks/:slug/history", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const slug = c.req.param("slug");
+
+  const { data: rows, error } = await supabase
+    .from("task_runs")
+    .select("id, status, started_at, completed_at, error, model, harness_run_id, tasks!inner(slug, name)")
+    .eq("is_harness", true)
+    .eq("tasks.slug", slug)
+    .order("started_at", { ascending: false })
+    .limit(200);
+
+  if (error) return c.json(errBody("internal", "task_history_fetch_failed"), 500);
+
+  type Row = { id: string; status: string; started_at: string; completed_at: string | null; error: string | null; model: string | null; harness_run_id: string; tasks: { slug: string; name: string } };
+  const typed = (rows ?? []) as unknown as Row[];
+
+  if (typed.length === 0) return c.json(errBody("not_found", `no harness runs found for task '${slug}'`), 404);
+
+  const taskName = typed[0].tasks.name;
+  const mapped = typed.map((r) => {
+    const startMs = r.started_at ? new Date(r.started_at).getTime() : null;
+    const endMs = r.completed_at ? new Date(r.completed_at).getTime() : null;
+    return {
+      task_run_id: r.id,
+      harness_run_id: r.harness_run_id,
+      status: r.status,
+      started_at: r.started_at,
+      completed_at: r.completed_at,
+      duration_s: startMs && endMs ? Math.round((endMs - startMs) / 1000) : null,
+      model: r.model,
+      error: r.error,
+    };
+  });
+
+  return c.json({ slug, name: taskName, runs: mapped });
+});
+
+// ── GET /admin/harness/task-runs/:id/output ───────────────────────────────────
+// Returns output_data for a specific harness task_run.
+// Used by the output viewer (view e) — reads task_runs.output_data directly.
+admin.get("/harness/task-runs/:id/output", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const id = c.req.param("id");
+
+  const { data: row, error } = await supabase
+    .from("task_runs")
+    .select("id, status, output_data, error, tasks!inner(slug, name)")
+    .eq("id", id)
+    .eq("is_harness", true)
+    .maybeSingle();
+
+  if (error) return c.json(errBody("internal", "output_fetch_failed"), 500);
+  if (!row) return c.json(errBody("not_found", "harness task run not found"), 404);
+
+  type Row = { id: string; status: string; output_data: unknown; error: string | null; tasks: { slug: string; name: string } };
+  const typed = row as unknown as Row;
+
+  return c.json({
+    task_run_id: typed.id,
+    slug: typed.tasks.slug,
+    name: typed.tasks.name,
+    status: typed.status,
+    error: typed.error,
+    output_data: typed.output_data ?? null,
   });
 });
 
