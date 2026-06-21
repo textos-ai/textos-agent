@@ -2347,7 +2347,7 @@ admin.get("/harness/runs/:run_id/tasks", async (c) => {
 });
 
 // ── GET /admin/harness/tasks ──────────────────────────────────────────────────
-// All task slugs/names that have at least one harness run, with run count.
+// All task slugs/names that have at least one run (harness or user), with run count.
 // Used to populate the task picker on the per-task history page (view b).
 admin.get("/harness/tasks", async (c) => {
   const supabase = createSupabaseClient(c.env);
@@ -2355,7 +2355,6 @@ admin.get("/harness/tasks", async (c) => {
   const { data: rows, error } = await supabase
     .from("task_runs")
     .select("task_id, tasks!inner(slug, name)")
-    .eq("is_harness", true)
     .order("task_id");
 
   if (error) return c.json(errBody("internal", "harness_tasks_fetch_failed"), 500);
@@ -2373,7 +2372,7 @@ admin.get("/harness/tasks", async (c) => {
 });
 
 // ── GET /admin/harness/tasks/:slug/history ────────────────────────────────────
-// All harness runs of a specific task, newest-first.
+// All runs (harness + user) of a specific task, newest-first.
 // Used by the per-task history page (view b).
 admin.get("/harness/tasks/:slug/history", async (c) => {
   const supabase = createSupabaseClient(c.env);
@@ -2381,18 +2380,17 @@ admin.get("/harness/tasks/:slug/history", async (c) => {
 
   const { data: rows, error } = await supabase
     .from("task_runs")
-    .select("id, status, started_at, completed_at, error, model, harness_run_id, tasks!inner(slug, name)")
-    .eq("is_harness", true)
+    .select("id, status, started_at, completed_at, error, model, harness_run_id, is_harness, tasks!inner(slug, name)")
     .eq("tasks.slug", slug)
     .order("started_at", { ascending: false })
     .limit(200);
 
   if (error) return c.json(errBody("internal", "task_history_fetch_failed"), 500);
 
-  type Row = { id: string; status: string; started_at: string; completed_at: string | null; error: string | null; model: string | null; harness_run_id: string; tasks: { slug: string; name: string } };
+  type Row = { id: string; status: string; started_at: string; completed_at: string | null; error: string | null; model: string | null; harness_run_id: string; is_harness: boolean; tasks: { slug: string; name: string } };
   const typed = (rows ?? []) as unknown as Row[];
 
-  if (typed.length === 0) return c.json(errBody("not_found", `no harness runs found for task '${slug}'`), 404);
+  if (typed.length === 0) return c.json(errBody("not_found", `no runs found for task '${slug}'`), 404);
 
   const taskName = typed[0].tasks.name;
   const mapped = typed.map((r) => {
@@ -2401,6 +2399,7 @@ admin.get("/harness/tasks/:slug/history", async (c) => {
     return {
       task_run_id: r.id,
       harness_run_id: r.harness_run_id,
+      is_harness: r.is_harness,
       status: r.status,
       started_at: r.started_at,
       completed_at: r.completed_at,
@@ -2414,7 +2413,7 @@ admin.get("/harness/tasks/:slug/history", async (c) => {
 });
 
 // ── GET /admin/harness/task-runs/:id/output ───────────────────────────────────
-// Returns output_data for a specific harness task_run.
+// Returns output_data for any task_run (harness or user).
 // Used by the output viewer (view e) — reads task_runs.output_data directly.
 admin.get("/harness/task-runs/:id/output", async (c) => {
   const supabase = createSupabaseClient(c.env);
@@ -2424,11 +2423,10 @@ admin.get("/harness/task-runs/:id/output", async (c) => {
     .from("task_runs")
     .select("id, status, output_data, error, tasks!inner(slug, name)")
     .eq("id", id)
-    .eq("is_harness", true)
     .maybeSingle();
 
   if (error) return c.json(errBody("internal", "output_fetch_failed"), 500);
-  if (!row) return c.json(errBody("not_found", "harness task run not found"), 404);
+  if (!row) return c.json(errBody("not_found", "task run not found"), 404);
 
   type Row = { id: string; status: string; output_data: unknown; error: string | null; tasks: { slug: string; name: string } };
   const typed = row as unknown as Row;
