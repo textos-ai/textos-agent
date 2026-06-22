@@ -259,14 +259,6 @@ app.post("/callback", async (c) => {
           research_confidence_score: 60,
           last_research_run_at: new Date().toISOString(),
         });
-        // Store raw snapshot as a business_asset so the builder can render it immediately
-        await supabase.from("business_assets").insert({
-          business_id: biz.id,
-          asset_type: "research_snapshot",
-          asset_subtype: "anonymous",
-          asset_data: { snapshot, input },
-          is_current: true,
-        });
         // One-time-use: delete token so it can't be claimed twice
         await c.env.SNAPSHOT_KV.delete(`snapshot:${parsed.snapshot_token}`);
 
