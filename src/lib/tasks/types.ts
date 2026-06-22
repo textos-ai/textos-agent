@@ -6,6 +6,14 @@ import type { StreamEvent } from "../stream-events";
 import type { ModelConfig } from "../model-config";
 import type { FeatureConfig } from "../non-task-model-config";
 
+/** A business_assets row passed in as input to a task (e.g. social post from a strategy doc). */
+export interface SourceAsset {
+  id: string;
+  text: string;
+  subtype: string | null;
+  assetType: string;
+}
+
 /**
  * Context passed to every task implementation.
  * The orchestrator builds this once and threads it through each task.
@@ -33,6 +41,10 @@ export interface TaskCtx {
   /** True when the task is being run by the admin harness (not a real user run).
    *  Propagated to business_assets.is_harness so harness output is filterable. */
   isHarness?: boolean;
+  /** Optional source document passed into the task via task_runs.config.source_asset_id.
+   *  Populated in business-task-run.ts; handlers read it as {{source.block}} in templates
+   *  or directly via taskCtx.sourceAsset. Absent = context-only mode. */
+  sourceAsset?: SourceAsset | null;
 }
 
 export interface TaskResult {

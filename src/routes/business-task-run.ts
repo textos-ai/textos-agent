@@ -31,7 +31,7 @@ import {
 } from "../services/supabase";
 import { buildBundleSuggestions } from "../lib/withTokenDeduction";
 import { genericDocumentRunner } from "../lib/tasks/generic-document-runner";
-import type { TaskCtx } from "../lib/tasks/types";
+import type { TaskCtx, SourceAsset } from "../lib/tasks/types";
 import { loadModelConfig } from "../lib/model-config";
 import { loadFeatureConfig, type FeatureConfig } from "../lib/non-task-model-config";
 import {
@@ -736,6 +736,55 @@ export async function runTaskInBackground(
       throw new Error("user_not_found");
     }
 
+    // Load source asset when the task_runs.config contains a source_asset_id.
+    // Ownership is enforced via business_id — one business cannot reference another's assets.
+    let sourceAsset: SourceAsset | null = null;
+    const { data: cfgForSource } = await supabase
+      .from("task_runs")
+      .select("config")
+      .eq("id", taskRunId)
+      .maybeSingle();
+    const sourceAssetId =
+      typeof (cfgForSource?.config as Record<string, unknown> | null)?.source_asset_id === "string"
+        ? ((cfgForSource!.config as Record<string, unknown>).source_asset_id as string)
+        : null;
+    if (sourceAssetId) {
+      const { data: saRow, error: saErr } = await supabase
+        .from("business_assets")
+        .select("id, asset_type, asset_subtype, asset_text, asset_data")
+        .eq("id", sourceAssetId)
+        .eq("business_id", business.id)
+        .maybeSingle();
+      if (saErr) {
+        throw new Error(`source_asset_load_failed: ${saErr.message}`);
+      }
+      if (!saRow) {
+        throw new Error(`source_asset_not_found: ${sourceAssetId}`);
+      }
+      // Extract plain text from the asset. Prefer asset_text if pre-extracted;
+      // otherwise flatten the standard {title, sections} document shape.
+      let text = "";
+      if (saRow.asset_text) {
+        text = saRow.asset_text as string;
+      } else if (saRow.asset_data && typeof saRow.asset_data === "object") {
+        const doc = saRow.asset_data as {
+          title?: string;
+          sections?: Array<{ heading: string; body: string }>;
+        };
+        if (doc.title && Array.isArray(doc.sections)) {
+          text = `${doc.title}\n\n${doc.sections.map((s) => `${s.heading}\n${s.body}`).join("\n\n")}`;
+        } else {
+          text = JSON.stringify(saRow.asset_data);
+        }
+      }
+      sourceAsset = {
+        id: saRow.id as string,
+        text,
+        subtype: (saRow.asset_subtype as string | null) ?? null,
+        assetType: saRow.asset_type as string,
+      };
+    }
+
     const anthropic = createAnthropicClient(env);
     // Accumulate token usage across all LLM calls in this task run so we can
     // write input_tokens / output_tokens to task_runs on completion.
@@ -782,6 +831,7 @@ export async function runTaskInBackground(
       cfLocation: null,
       abortSignal: signal ?? null,
       isHarness,
+      sourceAsset,
     };
 
     // Check for dedicated handler first (free build tasks), fallback to generic runner

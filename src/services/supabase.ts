@@ -18,7 +18,8 @@ export interface TaskRow {
     | "daycycle"
     | "personal_website"
     | "public_business_website"
-    | "business_manager";
+    | "business_manager"
+    | "marketing";
   is_default: boolean;
   plan_required: "free" | "core_paid" | "premium_only" | "premium_inactive";
   visibility:
@@ -38,7 +39,7 @@ export interface TaskRow {
     | "video";
   inputs_required: Record<string, unknown> | null;
   status: "draft" | "active" | "deprecated";
-  kind: "manual" | "system" | "scheduled";
+  kind: "autonomous" | "configured" | "guide" | "system";
   config_page_path: string | null;
   lifecycle_phase_id: string | null;
   is_regeneratable: boolean;

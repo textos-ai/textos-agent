@@ -44,6 +44,7 @@ import { runFindAUniqueBusinessName } from "./tasks/find-a-unique-business-name"
 import { runGenerateBusinessAppDesign } from "./tasks/generate-business-app-design";
 import { runGenerateBusinessAppHtml } from "./tasks/generate-business-app-html";
 import { runGenerateBusinessAppV2 } from "./tasks/generate-business-app-v2";
+import { runGenerateSocialPost } from "./tasks/generate-social-post";
 
 // Slug → TaskFn dispatch map. Acceptable code constant per CLAUDE.md:
 // it maps slug → handler function, which is execution logic, not DB data.
@@ -72,6 +73,8 @@ export const FREE_BUILD_TASK_HANDLERS: Record<string, TaskFn> = {
   "generate-business-app-html":     runGenerateBusinessAppHtml,
   // V2: archetype-driven single-step pipeline
   "generate-business-app-v2":       runGenerateBusinessAppV2,
+  // Marketing: social post (context-only or document+context via sourceAsset)
+  "generate-social-post":           runGenerateSocialPost,
 };
 
 /**
