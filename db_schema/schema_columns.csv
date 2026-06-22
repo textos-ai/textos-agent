@@ -1,0 +1,203 @@
+table_name,ordinal_position,column_name,data_type,is_nullable,column_default
+business_assets,1,id,uuid,NO,gen_random_uuid()
+business_assets,2,business_id,uuid,NO,null
+business_assets,3,task_run_id,uuid,YES,null
+business_assets,4,asset_type,text,NO,null
+business_assets,5,asset_subtype,text,YES,null
+business_assets,6,asset_url,text,YES,null
+business_assets,7,asset_text,text,YES,null
+business_assets,8,asset_data,jsonb,YES,null
+business_assets,9,created_at,timestamp with time zone,NO,now()
+business_assets,10,updated_at,timestamp with time zone,NO,now()
+business_assets,11,metadata,jsonb,NO,'{}'::jsonb
+business_assets,12,is_current,boolean,NO,true
+business_assets,13,is_editable,boolean,YES,null
+business_assets,14,app_slug,text,YES,null
+business_assets,15,app_icon,text,YES,null
+business_assets,16,is_locked,boolean,NO,false
+business_assets,17,locked_at,timestamp with time zone,YES,null
+business_assets,18,is_harness,boolean,NO,false
+business_context,1,id,uuid,NO,uuid_generate_v4()
+business_context,2,business_id,uuid,NO,null
+business_context,3,user_id,uuid,NO,null
+business_context,4,user_profile,jsonb,NO,'{}'::jsonb
+business_context,5,user_research_log,jsonb,NO,'[]'::jsonb
+business_context,6,business_summary,text,YES,null
+business_context,7,industry,text,YES,null
+business_context,8,business_model,text,YES,null
+business_context,9,target_customer,jsonb,NO,'{}'::jsonb
+business_context,10,value_proposition,text,YES,null
+business_context,11,market_size,jsonb,NO,'{}'::jsonb
+business_context,12,competitors,jsonb,NO,'[]'::jsonb
+business_context,13,market_trends,jsonb,NO,'[]'::jsonb
+business_context,14,positioning_statement,text,YES,null
+business_context,15,brand_voice,text,YES,null
+business_context,16,key_differentiators,jsonb,NO,'[]'::jsonb
+business_context,17,financial_snapshot,jsonb,NO,'{}'::jsonb
+business_context,18,customer_signals,jsonb,NO,'{}'::jsonb
+business_context,19,open_questions,jsonb,NO,'[]'::jsonb
+business_context,20,telegram_chat_id,text,YES,null
+business_context,21,last_research_run_at,timestamp with time zone,YES,null
+business_context,22,research_confidence_score,integer,NO,0
+business_context,23,created_at,timestamp with time zone,NO,now()
+business_context,24,updated_at,timestamp with time zone,NO,now()
+business_context,25,agent_name,text,YES,null
+businesses,1,id,uuid,NO,uuid_generate_v4()
+businesses,2,user_id,uuid,NO,null
+businesses,3,slug,text,NO,null
+businesses,4,name,text,NO,null
+businesses,5,kind,USER-DEFINED,NO,null
+businesses,6,existing_business_url,text,YES,null
+businesses,7,existing_business_data,jsonb,YES,null
+businesses,8,created_at,timestamp with time zone,NO,now()
+businesses,9,phase,text,NO,'founding'::text
+businesses,10,mode,text,NO,'cruise'::text
+businesses,11,show_credentials_publicly,boolean,NO,false
+businesses,12,hero_layout,text,YES,null
+businesses,13,hero_font,text,YES,null
+businesses,14,hero_image_url,text,YES,null
+businesses,15,hero_image_credit,text,YES,null
+businesses,16,accent_color,text,YES,null
+businesses,17,eyebrow_vocab,text,YES,'editorial'::text
+businesses,18,seo_title,text,YES,null
+businesses,19,seo_description,text,YES,null
+businesses,20,seo_keywords,jsonb,NO,'[]'::jsonb
+businesses,21,calendly_url,text,YES,null
+businesses,22,accent_color_override,text,YES,null
+businesses,23,og_image_url,text,YES,null
+businesses,24,og_image_hash,text,YES,null
+businesses,25,og_image_generated_at,timestamp with time zone,YES,null
+businesses,26,stripe_connect_account_id,text,YES,null
+businesses,27,stripe_connect_account_status,text,YES,null
+businesses,28,stripe_connect_onboarded_at,timestamp with time zone,YES,null
+businesses,29,is_active,boolean,NO,true
+businesses,30,hero_css_pattern,text,YES,null
+businesses,31,hero_eyebrow,text,YES,null
+businesses,32,hero_headline,text,YES,null
+businesses,33,hero_headline_accent,text,YES,null
+businesses,34,hero_subhead,text,YES,null
+businesses,35,hero_cta_label,text,YES,null
+businesses,36,hero_cta_type,text,YES,null
+businesses,37,icp_headline,text,YES,null
+businesses,38,icp_description,text,YES,null
+businesses,39,icp_signals,jsonb,NO,'[]'::jsonb
+businesses,40,pain_points,jsonb,NO,'[]'::jsonb
+businesses,41,metrics,jsonb,NO,'[]'::jsonb
+businesses,42,palate_cleanser,jsonb,NO,'{}'::jsonb
+businesses,43,why_us,jsonb,NO,'[]'::jsonb
+businesses,44,nav_links,jsonb,NO,'[]'::jsonb
+businesses,45,what_we_do_eyebrow,text,YES,null
+businesses,46,what_we_do_headline,text,YES,null
+businesses,47,what_we_do_body,text,YES,null
+businesses,48,founder_eyebrow,text,YES,null
+businesses,49,founder_headline,text,YES,null
+businesses,50,founder_body,text,YES,null
+businesses,51,page_views,integer,NO,0
+content_assets,1,id,uuid,NO,gen_random_uuid()
+content_assets,2,business_id,uuid,NO,null
+content_assets,3,source_asset_id,uuid,YES,null
+content_assets,4,task_run_id,uuid,YES,null
+content_assets,5,content_type,text,NO,null
+content_assets,6,target_platform,text,YES,null
+content_assets,7,generated_body,text,NO,null
+content_assets,8,status,text,NO,'draft'::text
+content_assets,9,created_at,timestamp with time zone,NO,now()
+marketing_carousels,1,id,uuid,NO,gen_random_uuid()
+marketing_carousels,2,business_id,uuid,NO,null
+marketing_carousels,3,user_id,uuid,NO,null
+marketing_carousels,4,topic,text,YES,null
+marketing_carousels,5,card_count,integer,NO,8
+marketing_carousels,6,cards,jsonb,NO,null
+marketing_carousels,7,created_at,timestamp with time zone,YES,now()
+marketing_carousels,8,saved_at,timestamp with time zone,YES,null
+marketing_carousels,9,is_locked,boolean,YES,false
+prompt_definitions,1,id,uuid,NO,gen_random_uuid()
+prompt_definitions,2,task_slug,text,NO,null
+prompt_definitions,3,version,integer,NO,null
+prompt_definitions,4,system_prompt,text,YES,null
+prompt_definitions,5,user_prompt_template,text,NO,null
+prompt_definitions,6,is_active,boolean,NO,false
+prompt_definitions,7,created_at,timestamp with time zone,NO,now()
+prompt_definitions,8,created_by,uuid,YES,null
+prompt_definitions,9,change_note,text,YES,null
+prompt_variables,1,id,uuid,NO,gen_random_uuid()
+prompt_variables,2,name,text,NO,null
+prompt_variables,3,description,text,NO,null
+prompt_variables,4,source,text,NO,null
+prompt_variables,5,created_at,timestamp with time zone,NO,now()
+task_runs,1,id,uuid,NO,uuid_generate_v4()
+task_runs,2,user_id,uuid,NO,null
+task_runs,3,business_id,uuid,YES,null
+task_runs,4,task_id,uuid,NO,null
+task_runs,5,status,USER-DEFINED,NO,'queued'::task_run_status
+task_runs,6,started_at,timestamp with time zone,NO,now()
+task_runs,7,completed_at,timestamp with time zone,YES,null
+task_runs,8,output_data,jsonb,YES,null
+task_runs,9,paid_amount_cents,integer,NO,0
+task_runs,10,error,text,YES,null
+task_runs,11,state,USER-DEFINED,NO,'proposed'::task_state
+task_runs,12,proposed_at,timestamp with time zone,YES,now()
+task_runs,13,failed_at,timestamp with time zone,YES,null
+task_runs,14,work_log,jsonb,NO,'[]'::jsonb
+task_runs,15,is_current,boolean,NO,true
+task_runs,16,retry_count,integer,NO,0
+task_runs,17,max_retries,integer,NO,3
+task_runs,18,config,jsonb,YES,null
+task_runs,19,run_id,uuid,YES,null
+task_runs,20,harness_run_id,uuid,YES,null
+task_runs,21,input_tokens,integer,YES,null
+task_runs,22,output_tokens,integer,YES,null
+task_runs,23,is_harness,boolean,NO,false
+task_runs,24,model,text,YES,null
+tasks,1,id,uuid,NO,uuid_generate_v4()
+tasks,2,slug,text,NO,null
+tasks,3,name,text,NO,null
+tasks,4,description_short,text,YES,null
+tasks,5,description_long,text,YES,null
+tasks,6,area,USER-DEFINED,NO,null
+tasks,7,is_default,boolean,NO,false
+tasks,8,plan_required,USER-DEFINED,NO,'free'::task_plan_required
+tasks,9,visibility,USER-DEFINED,NO,'always_visible'::task_visibility
+tasks,10,price_cents,integer,NO,0
+tasks,11,prompt_template,text,YES,null
+tasks,12,output_type,text,NO,'document'::text
+tasks,13,inputs_required,jsonb,NO,'{}'::jsonb
+tasks,14,creator_id,uuid,YES,null
+tasks,15,status,USER-DEFINED,NO,'active'::task_status
+tasks,16,created_at,timestamp with time zone,NO,now()
+tasks,17,updated_at,timestamp with time zone,NO,now()
+tasks,18,execution_order,integer,YES,99
+tasks,19,surface,text,NO,'builder'::text
+tasks,20,token_cost,integer,NO,0
+tasks,21,lifecycle_phase_id,uuid,YES,null
+tasks,22,is_regeneratable,boolean,NO,true
+tasks,23,asset_user_editable,boolean,NO,false
+tasks,24,kind,text,NO,'manual'::text
+tasks,25,config_page_path,text,YES,null
+tasks,26,is_featured,boolean,NO,false
+tasks,27,text_controllable,boolean,NO,false
+tasks,28,is_long_running,boolean,NO,false
+tasks,29,progress_verb,text,YES,null
+token_balances,1,id,uuid,NO,uuid_generate_v4()
+token_balances,2,business_id,uuid,NO,null
+token_balances,3,user_id,uuid,NO,null
+token_balances,4,period_tokens_included,integer,NO,30
+token_balances,5,period_tokens_used,integer,NO,0
+token_balances,6,period_started_at,timestamp with time zone,NO,now()
+token_balances,7,period_ends_at,timestamp with time zone,YES,null
+token_balances,8,topup_tokens_remaining,integer,NO,0
+token_balances,9,lifetime_tokens_used,integer,NO,0
+token_balances,10,lifetime_topups_purchased,integer,NO,0
+token_balances,11,created_at,timestamp with time zone,NO,now()
+token_balances,12,updated_at,timestamp with time zone,NO,now()
+token_transactions,1,id,uuid,NO,uuid_generate_v4()
+token_transactions,2,business_id,uuid,NO,null
+token_transactions,3,user_id,uuid,NO,null
+token_transactions,4,kind,text,NO,null
+token_transactions,5,tokens,integer,NO,null
+token_transactions,6,task_slug,text,YES,null
+token_transactions,7,task_run_id,uuid,YES,null
+token_transactions,8,topup_id,uuid,YES,null
+token_transactions,9,description,text,YES,null
+token_transactions,10,metadata,jsonb,NO,'{}'::jsonb
+token_transactions,11,created_at,timestamp with time zone,NO,now()

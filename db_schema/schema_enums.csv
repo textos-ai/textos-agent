@@ -1,0 +1,11 @@
+enum_name,values
+business_kind,new_idea | find_for_me | existing
+subscription_status,active | past_due | canceled | trialing
+task_area,business_builder | daycycle | personal_website | public_business_website | business_manager | marketing
+task_kind,autonomous | configured | guide | system
+task_output_type,document | dashboard_view | report | structured_data | generated_site | image | image_set | video
+task_plan_required,free | core_paid | premium_only | premium_inactive
+task_run_status,queued | running | completed | failed
+task_state,proposed | running | complete | failed
+task_status,draft | active | deprecated
+task_visibility,hidden | teaser_locked | fully_locked | always_visible

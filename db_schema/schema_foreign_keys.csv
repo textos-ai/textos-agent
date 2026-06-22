@@ -1,0 +1,89 @@
+table_name,constraint_name,definition
+businesses,businesses_user_id_fkey,FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+user_subscriptions,user_subscriptions_plan_id_fkey,FOREIGN KEY (plan_id) REFERENCES subscription_plans(id)
+user_subscriptions,user_subscriptions_user_id_fkey,FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+tasks,tasks_creator_id_fkey,FOREIGN KEY (creator_id) REFERENCES users(id) ON DELETE SET NULL
+tasks,tasks_lifecycle_phase_id_fkey,FOREIGN KEY (lifecycle_phase_id) REFERENCES lifecycle_phases(id)
+task_runs,task_runs_business_id_fkey,FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE SET NULL
+task_runs,task_runs_harness_run_id_fkey,FOREIGN KEY (harness_run_id) REFERENCES harness_runs(id) ON DELETE SET NULL
+task_runs,task_runs_run_id_fkey,FOREIGN KEY (run_id) REFERENCES playbook_runs(id) ON DELETE SET NULL
+task_runs,task_runs_task_id_fkey,FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE RESTRICT
+task_runs,task_runs_user_id_fkey,FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+task_purchases,task_purchases_business_id_fkey,FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE SET NULL
+task_purchases,task_purchases_task_id_fkey,FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE RESTRICT
+task_purchases,task_purchases_user_id_fkey,FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+business_context,business_context_business_id_fkey,FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+business_context,business_context_user_id_fkey,FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+email_queue,email_queue_approved_by_fkey,FOREIGN KEY (approved_by) REFERENCES users(id)
+email_queue,email_queue_business_id_fkey,FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+email_queue,email_queue_task_run_id_fkey,FOREIGN KEY (task_run_id) REFERENCES task_runs(id) ON DELETE SET NULL
+email_queue,email_queue_user_id_fkey,FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+business_assets,business_assets_business_id_fkey,FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+business_assets,business_assets_task_run_id_fkey,FOREIGN KEY (task_run_id) REFERENCES task_runs(id) ON DELETE SET NULL
+stream_events,stream_events_business_id_fkey,FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+stream_events,stream_events_run_id_fkey,FOREIGN KEY (run_id) REFERENCES playbook_runs(id) ON DELETE CASCADE
+business_goals,business_goals_business_id_fkey,FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+charge_windows,charge_windows_business_id_fkey,FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+milestones,milestones_business_id_fkey,FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+lesson_completions,lesson_completions_lesson_id_fkey,FOREIGN KEY (lesson_id) REFERENCES lessons(id) ON DELETE CASCADE
+lesson_completions,lesson_completions_user_id_fkey,FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+badges,badges_lesson_id_fkey,FOREIGN KEY (lesson_id) REFERENCES lessons(id) ON DELETE CASCADE
+badge_earnings,badge_earnings_badge_id_fkey,FOREIGN KEY (badge_id) REFERENCES badges(id) ON DELETE CASCADE
+badge_earnings,badge_earnings_user_id_fkey,FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+marketing_carousels,marketing_carousels_business_id_fkey,FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+marketing_carousels,marketing_carousels_user_id_fkey,FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+business_subscriptions,business_subscriptions_business_id_fkey,FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+business_subscriptions,business_subscriptions_user_id_fkey,FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+token_balances,token_balances_business_id_fkey,FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+token_balances,token_balances_user_id_fkey,FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+token_transactions,token_transactions_business_id_fkey,FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+token_transactions,token_transactions_task_run_id_fkey,FOREIGN KEY (task_run_id) REFERENCES task_runs(id)
+token_transactions,token_transactions_user_id_fkey,FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+token_purchases,token_purchases_business_id_fkey,FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+token_purchases,token_purchases_user_id_fkey,FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+task_edits,task_edits_edited_by_fkey,FOREIGN KEY (edited_by) REFERENCES users(id)
+task_edits,task_edits_task_id_fkey,FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+task_apis,task_apis_api_id_fkey,FOREIGN KEY (api_id) REFERENCES external_apis(id) ON DELETE RESTRICT
+task_apis,task_apis_task_id_fkey,FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+email_change_requests,email_change_requests_user_id_fkey,FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+admin_actions,admin_actions_admin_user_id_fkey,FOREIGN KEY (admin_user_id) REFERENCES users(id)
+admin_actions,admin_actions_target_user_id_fkey,FOREIGN KEY (target_user_id) REFERENCES users(id)
+business_apps,business_apps_app_id_fkey,FOREIGN KEY (app_id) REFERENCES apps(id) ON DELETE RESTRICT
+business_apps,business_apps_business_id_fkey,FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+business_apps,business_apps_user_id_fkey,FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+business_app_events,business_app_events_business_app_id_fkey,FOREIGN KEY (business_app_id) REFERENCES business_apps(id) ON DELETE CASCADE
+business_app_credentials,business_app_credentials_business_app_id_fkey,FOREIGN KEY (business_app_id) REFERENCES business_apps(id) ON DELETE CASCADE
+leads,leads_business_app_event_id_fkey,FOREIGN KEY (business_app_event_id) REFERENCES business_app_events(id) ON DELETE SET NULL
+leads,leads_business_app_id_fkey,FOREIGN KEY (business_app_id) REFERENCES business_apps(id) ON DELETE SET NULL
+leads,leads_business_id_fkey,FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+app_configs,app_configs_asset_id_fkey,FOREIGN KEY (asset_id) REFERENCES business_assets(id) ON DELETE CASCADE
+app_configs,app_configs_business_id_fkey,FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+app_visitor_tokens,app_visitor_tokens_business_id_fkey,FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+app_usage_log,app_usage_log_asset_id_fkey,FOREIGN KEY (asset_id) REFERENCES business_assets(id) ON DELETE CASCADE
+app_usage_log,app_usage_log_business_id_fkey,FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+app_bug_log,app_bug_log_asset_id_fkey,FOREIGN KEY (asset_id) REFERENCES business_assets(id) ON DELETE CASCADE
+app_bug_log,app_bug_log_business_id_fkey,FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+factory_v2_app_skin,factory_v2_app_skin_business_id_fkey,FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+plan,plan_business_id_fkey,FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+plan_phase,plan_phase_lifecycle_phase_id_fkey,FOREIGN KEY (lifecycle_phase_id) REFERENCES lifecycle_phases(id) ON DELETE SET NULL
+plan_phase,plan_phase_plan_id_fkey,FOREIGN KEY (plan_id) REFERENCES plan(id) ON DELETE CASCADE
+phase_milestone,phase_milestone_plan_phase_id_fkey,FOREIGN KEY (plan_phase_id) REFERENCES plan_phase(id) ON DELETE CASCADE
+playbook,playbook_assigned_to_fkey,FOREIGN KEY (assigned_to) REFERENCES users(id) ON DELETE SET NULL
+playbook,playbook_business_id_fkey,FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+playbook,playbook_plan_id_fkey,FOREIGN KEY (plan_id) REFERENCES plan(id) ON DELETE SET NULL
+playbook,playbook_plan_phase_id_fkey,FOREIGN KEY (plan_phase_id) REFERENCES plan_phase(id) ON DELETE SET NULL
+playbook_runs,playbook_runs_business_id_fkey,FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+playbook_runs,playbook_runs_playbook_id_fkey,FOREIGN KEY (playbook_id) REFERENCES playbook(id) ON DELETE CASCADE
+playbook_runs,playbook_runs_user_id_fkey,FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+playbook_task,playbook_task_manual_done_by_fkey,FOREIGN KEY (manual_done_by) REFERENCES users(id) ON DELETE SET NULL
+playbook_task,playbook_task_playbook_id_fkey,FOREIGN KEY (playbook_id) REFERENCES playbook(id) ON DELETE CASCADE
+playbook_task,playbook_task_task_id_fkey,FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE RESTRICT
+playbook_task,playbook_task_task_run_id_fkey,FOREIGN KEY (task_run_id) REFERENCES task_runs(id) ON DELETE SET NULL
+task_objectives,task_objectives_objective_id_fkey,FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE CASCADE
+task_objectives,task_objectives_task_id_fkey,FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+prompt_definitions,prompt_definitions_created_by_fkey,FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+prompt_definitions,prompt_definitions_task_slug_fkey,FOREIGN KEY (task_slug) REFERENCES tasks(slug) ON DELETE CASCADE
+harness_runs,harness_runs_business_id_fkey,FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE SET NULL
+content_assets,content_assets_business_id_fkey,FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+content_assets,content_assets_source_asset_id_fkey,FOREIGN KEY (source_asset_id) REFERENCES business_assets(id) ON DELETE SET NULL
+content_assets,content_assets_task_run_id_fkey,FOREIGN KEY (task_run_id) REFERENCES task_runs(id) ON DELETE SET NULL
