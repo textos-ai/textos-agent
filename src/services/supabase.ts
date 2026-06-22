@@ -39,7 +39,7 @@ export interface TaskRow {
     | "video";
   inputs_required: Record<string, unknown> | null;
   status: "draft" | "active" | "deprecated";
-  kind: "autonomous" | "configured" | "guide" | "system";
+  kind: "manual" | "system" | "scheduled";
   config_page_path: string | null;
   lifecycle_phase_id: string | null;
   is_regeneratable: boolean;

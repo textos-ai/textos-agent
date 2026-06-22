@@ -65,7 +65,7 @@ VALUES (
   0,
   'structured_data',
   1,
-  'autonomous',
+  'manual',
   'active',
   true,
   false,
@@ -77,10 +77,11 @@ ON CONFLICT (slug) DO NOTHING;
 
 -- ── 3. lifecycle_phase_id → product-marketing ────────────────────────────────
 
+-- product-marketing was deleted by migration 045 and merged into 'launch'.
 UPDATE public.tasks t
 SET lifecycle_phase_id = lp.id
 FROM public.lifecycle_phases lp
-WHERE lp.slug = 'product-marketing'
+WHERE lp.slug = 'launch'
   AND t.slug   = 'generate-social-post';
 
 -- ── 4. task_apis: bind to anthropic-claude-sonnet ────────────────────────────
