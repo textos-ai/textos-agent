@@ -71,9 +71,11 @@ app.get("/:slug/marketing/content-assets", async (c) => {
 });
 
 // ── PATCH /:slug/marketing/content-assets/:id ────────────────────────────────
-// Moves a draft to 'approved' or 'dismissed'.
-// Validates status against UI_ALLOWED_STATUSES, confirms business ownership,
-// and confirms the asset belongs to this business before updating.
+// Two mutually exclusive modes — provide exactly one of:
+//   { status: "approved" | "dismissed" }  — status transition (no body change)
+//   { generated_body: "..." }             — inline body edit (status unchanged)
+// Both modes require ownership: slug → businesses.user_id = auth.user_id,
+// and confirm the asset belongs to this business before writing.
 
 app.patch("/:slug/marketing/content-assets/:id", async (c) => {
   const auth = c.get("auth") as { user_id: string };
@@ -81,15 +83,27 @@ app.patch("/:slug/marketing/content-assets/:id", async (c) => {
   const id = c.req.param("id");
   const supabase = createSupabaseClient(c.env);
 
-  let body: { status?: string };
+  let body: { status?: string; generated_body?: string };
   try {
     body = await c.req.json();
   } catch {
     return c.json({ error: "Invalid request body" }, 400);
   }
 
-  if (!body.status || !UI_ALLOWED_STATUSES.has(body.status)) {
+  const hasStatus = typeof body.status === "string";
+  const hasBody   = typeof body.generated_body === "string";
+
+  if (!hasStatus && !hasBody) {
+    return c.json({ error: "Provide 'status' or 'generated_body'" }, 400);
+  }
+  if (hasStatus && hasBody) {
+    return c.json({ error: "Provide 'status' or 'generated_body', not both" }, 400);
+  }
+  if (hasStatus && !UI_ALLOWED_STATUSES.has(body.status!)) {
     return c.json({ error: "status must be 'approved' or 'dismissed'" }, 400);
+  }
+  if (hasBody && body.generated_body!.trim() === "") {
+    return c.json({ error: "generated_body cannot be empty" }, 400);
   }
 
   const business = await getBusinessBySlug(supabase, auth.user_id, slug);
@@ -109,17 +123,21 @@ app.patch("/:slug/marketing/content-assets/:id", async (c) => {
   }
   if (!asset) return c.json({ error: "Content asset not found" }, 404);
 
+  const patch = hasStatus
+    ? { status: body.status! }
+    : { generated_body: body.generated_body! };
+
   const { error: updateErr } = await supabase
     .from("content_assets")
-    .update({ status: body.status })
+    .update(patch)
     .eq("id", id);
 
   if (updateErr) {
     log.error("[marketing-content] update_failed", { id, err: updateErr.message });
-    return c.json({ error: "Failed to update status" }, 500);
+    return c.json({ error: "Failed to update" }, 500);
   }
 
-  return c.json({ ok: true, id, status: body.status });
+  return c.json({ ok: true, id, ...patch });
 });
 
 export default app;
