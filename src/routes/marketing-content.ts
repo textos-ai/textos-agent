@@ -3,6 +3,9 @@ import type { Env } from "../env";
 import { requireAuth } from "../lib/jwt";
 import { log } from "../lib/logger";
 import { createSupabaseClient, getBusinessBySlug } from "../services/supabase";
+import { createAnthropicClient } from "../services/anthropic";
+import { loadModelConfig } from "../lib/model-config";
+import { loadFeatureConfig, resolveFeatureModel } from "../lib/non-task-model-config";
 
 const app = new Hono<{ Bindings: Env }>();
 app.use("*", requireAuth);
@@ -39,7 +42,7 @@ app.get("/:slug/marketing/content-assets", async (c) => {
       )
     `)
     .eq("business_id", business.id)
-    .eq("status", "draft")
+    .in("status", ["draft", "approved"])
     .order("created_at", { ascending: false });
 
   if (error) {
@@ -138,6 +141,161 @@ app.patch("/:slug/marketing/content-assets/:id", async (c) => {
   }
 
   return c.json({ ok: true, id, ...patch });
+});
+
+// ── POST /:slug/marketing/content-assets/:id/generate-hook ───────────────────
+// Accepts { content: string }, extracts the opener (~first sentence or 15 words),
+// and rewrites it into a sharper social hook via LLM.
+// Returns { hook: string, original_opener: string }.
+
+app.post("/:slug/marketing/content-assets/:id/generate-hook", async (c) => {
+  const auth = c.get("auth") as { user_id: string };
+  const slug = c.req.param("slug");
+  const id = c.req.param("id");
+  const supabase = createSupabaseClient(c.env);
+
+  let body: { content?: string };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "Invalid request body" }, 400);
+  }
+
+  if (typeof body.content !== "string" || body.content.trim() === "") {
+    return c.json({ error: "Provide a non-empty 'content' string" }, 400);
+  }
+
+  const business = await getBusinessBySlug(supabase, auth.user_id, slug);
+  if (!business) return c.json({ error: "Business not found" }, 404);
+
+  const { data: asset, error: fetchErr } = await supabase
+    .from("content_assets")
+    .select("id")
+    .eq("id", id)
+    .eq("business_id", business.id)
+    .maybeSingle();
+
+  if (fetchErr) {
+    log.error("[marketing-content] hook_asset_check_failed", { id, err: fetchErr.message });
+    return c.json({ error: "Failed to look up asset" }, 500);
+  }
+  if (!asset) return c.json({ error: "Content asset not found" }, 404);
+
+  // Extract opener: first sentence (≤20 words) or first 15 words as fallback
+  const content = body.content.trim();
+  const sentenceMatch = content.match(/^[^.!?]*[.!?]/);
+  const firstSentence = sentenceMatch ? sentenceMatch[0].trim() : null;
+  const words = content.split(/\s+/);
+  const fifteenWords = words.slice(0, 15).join(" ");
+  const original_opener =
+    firstSentence && firstSentence.split(/\s+/).length <= 20
+      ? firstSentence
+      : fifteenWords;
+
+  const [models, featureConfig] = await Promise.all([
+    loadModelConfig(supabase),
+    loadFeatureConfig(supabase),
+  ]);
+  const model = resolveFeatureModel("feature-hook-generator", featureConfig, models);
+
+  const anthropic = createAnthropicClient(c.env);
+  const completion = await anthropic.messages.create({
+    model,
+    max_tokens: 120,
+    system:
+      "You are a social media copywriter. Rewrite the given opening into a sharper, more compelling hook for Bluesky. Stay under 15 words. Return ONLY the rewritten hook — no explanations, no quotes.",
+    messages: [
+      {
+        role: "user",
+        content: `Opening: ${original_opener}\n\nRewrite into a sharper hook (max 15 words):`,
+      },
+    ],
+  });
+
+  const block = completion.content[0];
+  const hook = block.type === "text" ? block.text.trim() : "";
+
+  log.info("[marketing-content] hook_generated", {
+    business_id: business.id,
+    asset_id: id,
+    model,
+  });
+
+  return c.json({ hook, original_opener });
+});
+
+// ── POST /:slug/marketing/content-assets/:id/shorten ─────────────────────────
+// Accepts { content: string, limit: number }, rewrites the full post to fit
+// within `limit` characters while preserving voice and key points.
+// Returns { shortened: string }.
+
+app.post("/:slug/marketing/content-assets/:id/shorten", async (c) => {
+  const auth = c.get("auth") as { user_id: string };
+  const slug = c.req.param("slug");
+  const id = c.req.param("id");
+  const supabase = createSupabaseClient(c.env);
+
+  let body: { content?: string; limit?: number };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "Invalid request body" }, 400);
+  }
+
+  if (typeof body.content !== "string" || body.content.trim() === "") {
+    return c.json({ error: "Provide a non-empty 'content' string" }, 400);
+  }
+  const limit = typeof body.limit === "number" ? body.limit : 300;
+
+  const business = await getBusinessBySlug(supabase, auth.user_id, slug);
+  if (!business) return c.json({ error: "Business not found" }, 404);
+
+  const { data: asset, error: fetchErr } = await supabase
+    .from("content_assets")
+    .select("id")
+    .eq("id", id)
+    .eq("business_id", business.id)
+    .maybeSingle();
+
+  if (fetchErr) {
+    log.error("[marketing-content] shorten_asset_check_failed", { id, err: fetchErr.message });
+    return c.json({ error: "Failed to look up asset" }, 500);
+  }
+  if (!asset) return c.json({ error: "Content asset not found" }, 404);
+
+  const [models, featureConfig] = await Promise.all([
+    loadModelConfig(supabase),
+    loadFeatureConfig(supabase),
+  ]);
+  const model = resolveFeatureModel("feature-shorten", featureConfig, models);
+
+  const anthropic = createAnthropicClient(c.env);
+  const completion = await anthropic.messages.create({
+    model,
+    max_tokens: 512,
+    system:
+      "You are a social media editor. Rewrite the given post to fit within the character limit while preserving its voice, core message, and key points. Do not truncate or use ellipses — rewrite it to be genuinely shorter. Return ONLY the rewritten post, no explanation.",
+    messages: [
+      {
+        role: "user",
+        content: `Rewrite to fit within ${limit} characters:\n\n${body.content.trim()}`,
+      },
+    ],
+  });
+
+  const block = completion.content[0];
+  const shortened = block.type === "text" ? block.text.trim() : "";
+
+  log.info("[marketing-content] post_shortened", {
+    business_id: business.id,
+    asset_id: id,
+    original_len: body.content.length,
+    shortened_len: shortened.length,
+    limit,
+    model,
+  });
+
+  return c.json({ shortened });
 });
 
 export default app;

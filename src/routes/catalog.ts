@@ -175,6 +175,27 @@ app.get("/objectives", async (c) => {
   return c.json({ objectives, tasks });
 });
 
+// GET /api/catalog/platforms
+// Returns all active platforms with their constraints.
+// Public — no auth required. Service-role client bypasses RLS.
+app.get("/platforms", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+
+  const { data, error } = await supabase
+    .from("platforms")
+    .select("id, slug, display_name, char_limit, hashtag_limit, constraints, sort_order, connect_mode, requires_page, requires_org, connect_notes")
+    .eq("is_active", true)
+    .order("sort_order", { ascending: true });
+
+  if (error) {
+    log.error("platforms_fetch_failed", { err: String(error) });
+    return c.json({ error: "platforms unavailable" }, 500);
+  }
+
+  c.header("Cache-Control", "public, max-age=300");
+  return c.json({ platforms: data ?? [] });
+});
+
 function deriveCategory(task: any): string {
   const s: string = task.slug || "";
 

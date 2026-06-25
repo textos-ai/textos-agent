@@ -5,6 +5,7 @@
 import type { TaskCtx, TaskResult } from "./types";
 import { resolvePrompt } from "./prompt-resolver";
 import { renderPrompt } from "./generic-document-runner";
+import { resolveFeatureModel } from "../non-task-model-config";
 
 interface SocialPostOutput {
   post: string;
@@ -44,8 +45,8 @@ function validateOutput(parsed: unknown): SocialPostOutput | null {
 export async function runGenerateSocialPost(taskCtx: TaskCtx): Promise<TaskResult> {
   const {
     business, ctx, user,
-    anthropic, models, supabase,
-    taskRunId, abortSignal, sourceAsset,
+    anthropic, models, featureConfig, supabase,
+    taskRunId, abortSignal, sourceAsset, config,
   } = taskCtx;
 
   const promptDef = await resolvePrompt(supabase, "generate-social-post");
@@ -67,11 +68,21 @@ export async function runGenerateSocialPost(taskCtx: TaskCtx): Promise<TaskResul
     subtype: sourceAsset?.subtype ?? "",
   };
 
+  // Build direction block from optional steering params (config.angle + config.direction).
+  // Angle comes from a UI chip (predefined framing); direction is free-text.
+  // Either, both, or neither may be present. Empty block → context-only mode.
+  const rawAngle = typeof config?.angle === 'string' ? config.angle.trim() : '';
+  const rawDir   = typeof config?.direction === 'string' ? config.direction.trim() : '';
+  const dirParts: string[] = [];
+  if (rawAngle) dirParts.push(`Angle: ${rawAngle}`);
+  if (rawDir)   dirParts.push(`Direction: ${rawDir}`);
+  const direction = { block: dirParts.join('\n') };
+
   const rendered = renderPrompt(promptDef.user_prompt_template, {
-    business, ctx, user, source,
+    business, ctx, user, source, direction,
   });
 
-  const model = models.sonnet;
+  const model = resolveFeatureModel("feature-content-generation", featureConfig, models);
 
   let result: SocialPostOutput | null = null;
   let lastErr = "";
@@ -122,6 +133,24 @@ export async function runGenerateSocialPost(taskCtx: TaskCtx): Promise<TaskResul
 
   if (!result) {
     throw new Error(`generate_social_post_invalid_output: ${lastErr}`);
+  }
+
+  // Append hashtags for any keywords the user selected.
+  // Keywords come from businesses.seo_keywords; the UI sends them as config.keywords (string[]).
+  // Format: title-case, spaces stripped (#SmallBusinessAccounting).
+  // No cap — the user's multi-select is the cap.
+  const selectedKws = Array.isArray(config?.keywords)
+    ? (config.keywords as unknown[]).filter((k): k is string => typeof k === 'string')
+    : [];
+  if (selectedKws.length > 0) {
+    const hashtags = selectedKws
+      .map(kw => '#' + kw.split(/\s+/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(''))
+      .join(' ');
+    result = {
+      ...result,
+      post: result.post + '\n\n' + hashtags,
+      character_count: result.post.length + 2 + hashtags.length,
+    };
   }
 
   // Write to content_assets — source_asset_id links back to the input doc when present.

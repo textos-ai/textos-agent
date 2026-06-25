@@ -186,11 +186,14 @@ app.post("/callback", async (c) => {
   try {
     await upsertUser(supabase, { id: auth.user_id, email: auth.email });
   } catch (err) {
+    const errMsg = err instanceof Error
+      ? err.message
+      : JSON.stringify(err);
     log.error("user_upsert_failed", {
-      err: String(err),
+      err: errMsg,
       user_id: auth.user_id,
     });
-    return c.json(errBody("upstream_error", String(err)), 502);
+    return c.json(errBody("upstream_error", errMsg), 502);
   }
 
   let user = await getUserById(supabase, auth.user_id);

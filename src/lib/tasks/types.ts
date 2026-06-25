@@ -45,6 +45,10 @@ export interface TaskCtx {
    *  Populated in business-task-run.ts; handlers read it as {{source.block}} in templates
    *  or directly via taskCtx.sourceAsset. Absent = context-only mode. */
   sourceAsset?: SourceAsset | null;
+  /** The task_runs.config JSONB forwarded from the POST /run request body.
+   *  Null when no config was supplied. Handlers read it for user-provided params
+   *  (e.g. config.direction, config.angle for generate-social-post steering). */
+  config?: Record<string, unknown> | null;
 }
 
 export interface TaskResult {

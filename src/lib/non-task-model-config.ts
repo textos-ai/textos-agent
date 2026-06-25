@@ -25,9 +25,12 @@ export const FEATURE_REGISTRY = [
   { key: "feature-anonymous-research",  label: "Anonymous Research" },
   { key: "feature-visual-picker",       label: "Visual Identity Picker" },
   { key: "feature-story-cards",         label: "Story Card Generator" },
+  { key: "feature-content-generation",  label: "Content Generation" },
   { key: "feature-admin-seo",           label: "Admin SEO Backfill" },
   { key: "feature-app-builder",         label: "Generated App Build Step" },
   { key: "feature-app-result",          label: "Generated App Runtime Result" },
+  { key: "feature-hook-generator",      label: "Hook Generator" },
+  { key: "feature-shorten",             label: "Post Shortener" },
 ] as const;
 
 export type FeatureKey = typeof FEATURE_REGISTRY[number]["key"];

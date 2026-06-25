@@ -74,6 +74,13 @@ app.get("/:slug/social/connect/status", async (c) => {
   }
 
   const cfg = (data.config ?? {}) as ZernioConfig;
+  // DIAG: log raw accounts so wrangler tail can confirm what's actually in DB
+  log.info("[social-connect] status_diag", {
+    business_id: business.id,
+    profileId: cfg.profileId ?? null,
+    accounts_count: cfg.accounts?.length ?? 0,
+    accounts_raw: JSON.stringify(cfg.accounts ?? []),
+  });
   return c.json({
     connected: (cfg.accounts?.length ?? 0) > 0,
     profileId: cfg.profileId ?? null,
@@ -176,7 +183,14 @@ app.post("/:slug/social/connect/init", async (c) => {
     : `/business/${slug}/marketing/review`;
   const redirectUrl = `${frontendUrl}${returnPath}${returnPath.includes("?") ? "&" : "?"}zernio_done=1`;
 
-  const connectResult = await getConnectUrl(apiKey, platform, profileId, redirectUrl);
+  const { data: platformRow } = await supabase
+    .from("platforms")
+    .select("connect_mode")
+    .eq("slug", platform)
+    .maybeSingle();
+  const headless = (platformRow?.connect_mode ?? "interactive") === "headless";
+
+  const connectResult = await getConnectUrl(apiKey, platform, profileId, redirectUrl, headless);
   if (!connectResult.ok) {
     log.error("[social-connect] get_connect_url_failed", {
       business_id: business.id,

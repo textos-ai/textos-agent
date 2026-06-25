@@ -832,6 +832,7 @@ export async function runTaskInBackground(
       abortSignal: signal ?? null,
       isHarness,
       sourceAsset,
+      config: (cfgForSource?.config as Record<string, unknown> | null) ?? null,
     };
 
     // Check for dedicated handler first (free build tasks), fallback to generic runner

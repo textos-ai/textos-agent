@@ -47,6 +47,15 @@ Every emit is streamed to the browser AND persisted to `stream_events`.
 
 ---
 
+## Model selection in custom handlers — non-negotiable
+Every custom handler must resolve its model via `resolveFeatureModel('feature-key',
+featureConfig, models)`. Import `resolveFeatureModel` from `'../non-task-model-config'`.
+The feature key must be registered in `FEATURE_REGISTRY` and have an `external_apis` DB row
+(via migration). Never write `models.sonnet`, `models.haiku`, or `models.opus` directly —
+that bypasses admin control. Run `npm run check:models` from the repo root to audit.
+
+---
+
 ## Registering a task (the only acceptable hardcoded map)
 
 `src/lib/free-build-orchestrator.ts` holds `FREE_BUILD_TASK_HANDLERS:

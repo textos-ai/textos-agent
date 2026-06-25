@@ -56,6 +56,9 @@ export interface Env {
   STRIPE_PRICE_TOPUP_75: string;
   /** Unsplash API access key — used to fetch hero images for public business sites. */
   UNSPLASH_ACCESS_KEY: string;
+  /** Zernio social publishing API key — set via `wrangler secret put ZERNIO_API_KEY --env <env>`.
+   *  Format: sk_ + 64 hex chars. Required for social account connect and post publish flows. */
+  ZERNIO_API_KEY: string;
   /** R2 bucket for generated assets (logos, hero images, exports). */
   ASSETS: R2Bucket;
   /** Shared secret for internal worker→worker calls (chain-pattern task triggers).

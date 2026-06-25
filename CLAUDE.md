@@ -84,6 +84,31 @@ apps platform (`apps-catalog`, `apps-businesses`, `apps-instances`,
 
 ## Standing rules (highest cost of violation)
 
+### Every LLM call routes through the model-selection system — non-negotiable
+Direct access to `models.haiku`, `models.sonnet`, or `models.opus` in any handler,
+route, or feature is a defect. Every LLM call resolves its model through one of two
+sanctioned paths:
+
+- **Generic-runner tasks** (no dedicated handler): `resolveModelForTask(supabase, models, task.id)` —
+  reads the `task_apis` primary binding → tier → `models[tier]`. Admin controls which
+  tier via the Task Manager.
+- **Custom task handlers + all non-task LLM surfaces**: `resolveFeatureModel(featureKey,
+  featureConfig, models)` — reads the `feature-*` override ?? `feature-default` tier →
+  `models[tier]`. The feature key must be in `FEATURE_REGISTRY` with a DB row.
+
+The only files permitted to read `models.<tier>` directly are the resolver internals:
+`src/lib/model-config.ts`, `src/lib/non-task-model-config.ts`,
+`src/lib/tasks/generic-document-runner.ts`.
+
+**Admin visibility test:** "Can I change which model this surface uses in `/admin/models`
+without a code change?" If no, the surface is wired wrong.
+
+**Recon gate — mandatory before writing any LLM-calling code:** state which resolver the
+new surface will use and confirm the registry entry / `task_apis` row exists. Do this
+before writing the implementation, not after.
+
+**Guard:** `npm run check:models` scans `src/` for violations. Run it before every deploy.
+
 ### NO CONSTANTS for database-driven data — non-negotiable
 The DB is the single source of truth. Never create a constant/array/map
 that duplicates data in `tasks`, `task_runs`, `business_assets`,

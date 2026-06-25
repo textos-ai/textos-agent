@@ -12,7 +12,8 @@
     "build": "tsc --noEmit",
     "types": "wrangler types",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "check:models": "node scripts/check-model-access.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",

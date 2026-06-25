@@ -67,6 +67,8 @@ admin.use("/test-harness", requireAdmin);
 admin.use("/test-harness/*", requireAdmin);
 admin.use("/harness", requireAdmin);
 admin.use("/harness/*", requireAdmin);
+admin.use("/platforms", requireAdmin);
+admin.use("/platforms/*", requireAdmin);
 
 // ── GET /admin/email-queue ─────────────────────────────────────────────────
 // Returns pending and recent emails in the queue (latest 100).
@@ -2439,6 +2441,89 @@ admin.get("/harness/task-runs/:id/output", async (c) => {
     error: typed.error,
     output_data: typed.output_data ?? null,
   });
+});
+
+// ── GET /admin/platforms ──────────────────────────────────────────────────────
+// Returns ALL platforms including inactive (admin needs to see and re-activate).
+admin.get("/platforms", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const { data, error } = await supabase
+    .from("platforms")
+    .select("id, slug, display_name, char_limit, hashtag_limit, constraints, is_active, sort_order, updated_at")
+    .order("sort_order", { ascending: true });
+  if (error) {
+    log.error("[admin] platforms_fetch_failed", { err: error.message });
+    return c.json(errBody("internal", "platforms_fetch_failed"), 500);
+  }
+  return c.json({ platforms: data ?? [] });
+});
+
+// ── POST /admin/platforms ─────────────────────────────────────────────────────
+admin.post("/platforms", async (c) => {
+  let body: Record<string, unknown>;
+  try { body = await c.req.json(); } catch { return c.json(errBody("bad_request", "invalid json"), 400); }
+
+  const slug = typeof body.slug === "string" ? body.slug.trim().toLowerCase() : "";
+  const display_name = typeof body.display_name === "string" ? body.display_name.trim() : "";
+  if (!slug || !display_name) return c.json(errBody("bad_request", "slug and display_name required"), 400);
+
+  const supabase = createSupabaseClient(c.env);
+  const { data, error } = await supabase
+    .from("platforms")
+    .insert({
+      slug,
+      display_name,
+      char_limit:    typeof body.char_limit    === "number" ? body.char_limit    : null,
+      hashtag_limit: typeof body.hashtag_limit === "number" ? body.hashtag_limit : null,
+      constraints:   typeof body.constraints   === "object" && body.constraints !== null ? body.constraints : {},
+      is_active:     body.is_active !== false,
+      sort_order:    typeof body.sort_order === "number" ? body.sort_order : 0,
+    })
+    .select("id, slug, display_name, char_limit, hashtag_limit, constraints, is_active, sort_order")
+    .single();
+
+  if (error) {
+    log.error("[admin] platform_create_failed", { slug, err: error.message });
+    return c.json(errBody("internal", error.message), error.code === "23505" ? 409 : 500);
+  }
+  log.info("[admin] platform_created", { slug });
+  return c.json({ platform: data }, 201);
+});
+
+// ── PATCH /admin/platforms/:id ────────────────────────────────────────────────
+admin.patch("/platforms/:id", async (c) => {
+  const id = c.req.param("id");
+  let body: Record<string, unknown>;
+  try { body = await c.req.json(); } catch { return c.json(errBody("bad_request", "invalid json"), 400); }
+
+  const patch: Record<string, unknown> = {};
+  if (typeof body.display_name  === "string")  patch.display_name  = body.display_name.trim();
+  if (typeof body.char_limit    === "number")   patch.char_limit    = body.char_limit;
+  if (body.char_limit           === null)       patch.char_limit    = null;
+  if (typeof body.hashtag_limit === "number")   patch.hashtag_limit = body.hashtag_limit;
+  if (body.hashtag_limit        === null)       patch.hashtag_limit = null;
+  if (typeof body.is_active     === "boolean")  patch.is_active     = body.is_active;
+  if (typeof body.sort_order    === "number")   patch.sort_order    = body.sort_order;
+  if (typeof body.constraints   === "object" && body.constraints !== null) patch.constraints = body.constraints;
+
+  if (Object.keys(patch).length === 0) return c.json(errBody("bad_request", "no patchable fields"), 400);
+
+  const supabase = createSupabaseClient(c.env);
+  const { data, error } = await supabase
+    .from("platforms")
+    .update(patch)
+    .eq("id", id)
+    .select("id, slug, display_name, char_limit, hashtag_limit, constraints, is_active, sort_order")
+    .single();
+
+  if (error) {
+    log.error("[admin] platform_update_failed", { id, err: error.message });
+    return c.json(errBody("internal", error.message), 500);
+  }
+  if (!data) return c.json(errBody("not_found", "platform not found"), 404);
+
+  log.info("[admin] platform_updated", { id, patch: Object.keys(patch) });
+  return c.json({ platform: data });
 });
 
 export default admin;

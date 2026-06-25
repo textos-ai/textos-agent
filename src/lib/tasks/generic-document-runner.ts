@@ -126,7 +126,7 @@ function repairJSONAggressive(raw: string): string {
  */
 export function renderPrompt(
   template: string,
-  vars: { business: unknown; ctx: unknown; user: unknown; source?: unknown },
+  vars: { business: unknown; ctx: unknown; user: unknown; source?: unknown; direction?: unknown },
 ): string {
   return template.replace(/\{\{([\w.]+)\}\}/g, (_, path: string) => {
     const keys = path.split(".");
