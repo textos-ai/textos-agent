@@ -169,8 +169,6 @@ export async function getProfileAccounts(
   }
 
   const data = (await res.json()) as Record<string, unknown>;
-  // DIAG: log raw Zernio response shape so we can confirm field names
-  console.log("[zernio] getProfileAccounts raw", JSON.stringify(data).slice(0, 2000));
   // GET /accounts returns an array directly or wrapped in { accounts: [...] }
   const rawAccounts = (
     Array.isArray(data) ? data :

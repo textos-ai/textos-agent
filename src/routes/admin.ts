@@ -2449,7 +2449,7 @@ admin.get("/platforms", async (c) => {
   const supabase = createSupabaseClient(c.env);
   const { data, error } = await supabase
     .from("platforms")
-    .select("id, slug, display_name, char_limit, hashtag_limit, constraints, is_active, sort_order, updated_at")
+    .select("id, slug, display_name, char_limit, hashtag_limit, constraints, is_active, sort_order, max_posts_per_window, window_seconds, min_seconds_between_posts, updated_at")
     .order("sort_order", { ascending: true });
   if (error) {
     log.error("[admin] platforms_fetch_failed", { err: error.message });
@@ -2478,8 +2478,11 @@ admin.post("/platforms", async (c) => {
       constraints:   typeof body.constraints   === "object" && body.constraints !== null ? body.constraints : {},
       is_active:     body.is_active !== false,
       sort_order:    typeof body.sort_order === "number" ? body.sort_order : 0,
+      max_posts_per_window:      typeof body.max_posts_per_window      === "number" ? body.max_posts_per_window      : null,
+      window_seconds:            typeof body.window_seconds            === "number" ? body.window_seconds            : null,
+      min_seconds_between_posts: typeof body.min_seconds_between_posts === "number" ? body.min_seconds_between_posts : null,
     })
-    .select("id, slug, display_name, char_limit, hashtag_limit, constraints, is_active, sort_order")
+    .select("id, slug, display_name, char_limit, hashtag_limit, constraints, is_active, sort_order, max_posts_per_window, window_seconds, min_seconds_between_posts")
     .single();
 
   if (error) {
@@ -2505,6 +2508,12 @@ admin.patch("/platforms/:id", async (c) => {
   if (typeof body.is_active     === "boolean")  patch.is_active     = body.is_active;
   if (typeof body.sort_order    === "number")   patch.sort_order    = body.sort_order;
   if (typeof body.constraints   === "object" && body.constraints !== null) patch.constraints = body.constraints;
+  if (typeof body.max_posts_per_window      === "number") patch.max_posts_per_window      = body.max_posts_per_window;
+  if (body.max_posts_per_window             === null)     patch.max_posts_per_window      = null;
+  if (typeof body.window_seconds            === "number") patch.window_seconds            = body.window_seconds;
+  if (body.window_seconds                   === null)     patch.window_seconds            = null;
+  if (typeof body.min_seconds_between_posts === "number") patch.min_seconds_between_posts = body.min_seconds_between_posts;
+  if (body.min_seconds_between_posts        === null)     patch.min_seconds_between_posts = null;
 
   if (Object.keys(patch).length === 0) return c.json(errBody("bad_request", "no patchable fields"), 400);
 
@@ -2513,7 +2522,7 @@ admin.patch("/platforms/:id", async (c) => {
     .from("platforms")
     .update(patch)
     .eq("id", id)
-    .select("id, slug, display_name, char_limit, hashtag_limit, constraints, is_active, sort_order")
+    .select("id, slug, display_name, char_limit, hashtag_limit, constraints, is_active, sort_order, max_posts_per_window, window_seconds, min_seconds_between_posts")
     .single();
 
   if (error) {

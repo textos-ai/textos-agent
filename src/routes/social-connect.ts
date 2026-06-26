@@ -74,13 +74,6 @@ app.get("/:slug/social/connect/status", async (c) => {
   }
 
   const cfg = (data.config ?? {}) as ZernioConfig;
-  // DIAG: log raw accounts so wrangler tail can confirm what's actually in DB
-  log.info("[social-connect] status_diag", {
-    business_id: business.id,
-    profileId: cfg.profileId ?? null,
-    accounts_count: cfg.accounts?.length ?? 0,
-    accounts_raw: JSON.stringify(cfg.accounts ?? []),
-  });
   return c.json({
     connected: (cfg.accounts?.length ?? 0) > 0,
     profileId: cfg.profileId ?? null,
@@ -111,14 +104,6 @@ app.post("/:slug/social/connect/init", async (c) => {
   if (!business) return c.json({ error: "Business not found" }, 404);
 
   const apiKey = c.env.ZERNIO_API_KEY;
-  // DEBUG — remove after key delivery confirmed
-  const cleanedKey = (apiKey ?? "").replace(/^﻿/, "").trim();
-  log.info("[social-connect] api_key_check", {
-    raw_length: apiKey?.length ?? 0,
-    clean_length: cleanedKey.length,
-    prefix: cleanedKey.slice(0, 4),
-    has_whitespace: /\s/.test(cleanedKey),
-  });
   if (!apiKey) {
     log.error("[social-connect] missing_api_key", { business_id: business.id });
     return c.json({ error: "Social publishing not configured" }, 503);

@@ -106,13 +106,6 @@ app.post("/:slug/marketing/content-assets/:id/publish", async (c) => {
   }
 
   const cfg = ((integration as any).config ?? {}) as ZernioConfig;
-  const blueskyAccount = (cfg.accounts ?? []).find((a) => a.platform === "bluesky");
-  if (!blueskyAccount) {
-    return c.json(
-      { error: "No Bluesky account connected — use 'Connect Bluesky' in the review queue" },
-      503,
-    );
-  }
 
   const apiKey = c.env.ZERNIO_API_KEY;
   if (!apiKey) {
@@ -124,6 +117,15 @@ app.post("/:slug/marketing/content-assets/:id/publish", async (c) => {
 
   const content        = String((asset as any).generated_body ?? "");
   const targetPlatform = String((asset as any).target_platform ?? "bluesky").toLowerCase();
+
+  const platformAccount = (cfg.accounts ?? []).find((a) => a.platform === targetPlatform);
+  if (!platformAccount) {
+    const displayName = targetPlatform.charAt(0).toUpperCase() + targetPlatform.slice(1);
+    return c.json(
+      { error: `${displayName} isn't connected yet — go to Platforms in the sidebar to connect it.` },
+      503,
+    );
+  }
 
   const { data: platformRow } = await supabase
     .from("platforms")
@@ -146,7 +148,7 @@ app.post("/:slug/marketing/content-assets/:id/publish", async (c) => {
   const result = await publishPost(apiKey, {
     content,
     platform: targetPlatform,
-    accountId: blueskyAccount.accountId,
+    accountId: platformAccount.accountId,
   });
 
   if (!result.ok) {
@@ -241,7 +243,7 @@ app.post("/:slug/marketing/content-assets/:id/publish", async (c) => {
     .eq("id", id);
 
   if (updateErr) {
-    // Post IS live on Bluesky — don't mask it, but warn about DB lag
+    // Post is live on the platform — don't mask it, but warn about DB lag
     log.error("[social-publish] db_update_failed", {
       business_id: business.id,
       asset_id: id,
@@ -252,7 +254,7 @@ app.post("/:slug/marketing/content-assets/:id/publish", async (c) => {
       ok: true,
       zernio_post_id: result.postId,
       status: "published",
-      warning: "Published to Bluesky but status record may be delayed",
+      warning: "Published but status record may be delayed",
     });
   }
 
@@ -260,8 +262,8 @@ app.post("/:slug/marketing/content-assets/:id/publish", async (c) => {
     business_id: business.id,
     asset_id: id,
     zernio_post_id: result.postId,
-    platform: "bluesky",
-    handle: blueskyAccount.handle,
+    platform: targetPlatform,
+    handle: platformAccount.handle,
   });
 
   return c.json({ ok: true, zernio_post_id: result.postId, status: "published" });
