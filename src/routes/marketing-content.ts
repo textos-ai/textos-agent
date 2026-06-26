@@ -43,6 +43,7 @@ app.get("/:slug/marketing/content-assets", async (c) => {
     `)
     .eq("business_id", business.id)
     .in("status", ["draft", "approved"])
+    .is("deleted_at", null)
     .order("created_at", { ascending: false });
 
   if (error) {
@@ -141,6 +142,46 @@ app.patch("/:slug/marketing/content-assets/:id", async (c) => {
   }
 
   return c.json({ ok: true, id, ...patch });
+});
+
+// ── DELETE /:slug/marketing/content-assets/:id ───────────────────────────────
+// Soft-delete: stamps deleted_at = now(). Row stays in DB; query filter excludes it.
+
+app.delete("/:slug/marketing/content-assets/:id", async (c) => {
+  const auth = c.get("auth") as { user_id: string };
+  const slug = c.req.param("slug");
+  const id   = c.req.param("id");
+  const supabase = createSupabaseClient(c.env);
+
+  const business = await getBusinessBySlug(supabase, auth.user_id, slug);
+  if (!business) return c.json({ error: "Business not found" }, 404);
+
+  const { data: asset, error: fetchErr } = await supabase
+    .from("content_assets")
+    .select("id")
+    .eq("id", id)
+    .eq("business_id", business.id)
+    .is("deleted_at", null)
+    .maybeSingle();
+
+  if (fetchErr) {
+    log.error("[marketing-content] delete_check_failed", { id, err: fetchErr.message });
+    return c.json({ error: "Failed to look up asset" }, 500);
+  }
+  if (!asset) return c.json({ error: "Content asset not found" }, 404);
+
+  const { error: delErr } = await supabase
+    .from("content_assets")
+    .update({ deleted_at: new Date().toISOString() })
+    .eq("id", id);
+
+  if (delErr) {
+    log.error("[marketing-content] delete_failed", { id, err: delErr.message });
+    return c.json({ error: "Failed to delete" }, 500);
+  }
+
+  log.info("[marketing-content] soft_deleted", { business_id: business.id, id });
+  return c.json({ ok: true, id });
 });
 
 // ── POST /:slug/marketing/content-assets/:id/generate-hook ───────────────────
