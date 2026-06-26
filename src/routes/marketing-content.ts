@@ -144,6 +144,158 @@ app.patch("/:slug/marketing/content-assets/:id", async (c) => {
   return c.json({ ok: true, id, ...patch });
 });
 
+// ── GET /:slug/marketing/content-assets/archive ─────────────────────────────
+// Returns off-queue content_assets by filter:
+//   deleted   = deleted_at IS NOT NULL (any status)
+//   published = status 'published' AND deleted_at null
+//   failed    = status 'failed'    AND deleted_at null
+
+app.get("/:slug/marketing/content-assets/archive", async (c) => {
+  const auth = c.get("auth") as { user_id: string };
+  const slug   = c.req.param("slug");
+  const filter = c.req.query("filter") ?? "deleted";
+  const supabase = createSupabaseClient(c.env);
+
+  if (!["deleted", "published", "failed"].includes(filter)) {
+    return c.json({ error: "filter must be deleted, published, or failed" }, 400);
+  }
+
+  const business = await getBusinessBySlug(supabase, auth.user_id, slug);
+  if (!business) return c.json({ error: "Business not found" }, 404);
+
+  let query = supabase
+    .from("content_assets")
+    .select("id, content_type, target_platform, generated_body, status, created_at, deleted_at, published_at")
+    .eq("business_id", business.id)
+    .order("created_at", { ascending: false });
+
+  if (filter === "deleted") {
+    query = query.not("deleted_at", "is", null);
+  } else if (filter === "published") {
+    query = query.eq("status", "published").is("deleted_at", null);
+  } else {
+    query = query.eq("status", "failed").is("deleted_at", null);
+  }
+
+  const { data, error } = await query;
+
+  if (error) {
+    log.error("[marketing-content] archive_list_failed", {
+      business_id: business.id,
+      filter,
+      err: error.message,
+    });
+    return c.json({ error: "Failed to load archive" }, 500);
+  }
+
+  return c.json({ items: data ?? [], filter });
+});
+
+// ── POST /:slug/marketing/content-assets/:id/restore ─────────────────────────
+// Restores a deleted or failed card back to the active queue.
+//   Deleted rows : clears deleted_at (preserves existing status)
+//   Failed rows  : resets status → draft, clears deleted_at if also soft-deleted
+
+app.post("/:slug/marketing/content-assets/:id/restore", async (c) => {
+  const auth = c.get("auth") as { user_id: string };
+  const slug = c.req.param("slug");
+  const id   = c.req.param("id");
+  const supabase = createSupabaseClient(c.env);
+
+  const business = await getBusinessBySlug(supabase, auth.user_id, slug);
+  if (!business) return c.json({ error: "Business not found" }, 404);
+
+  const { data: asset, error: fetchErr } = await supabase
+    .from("content_assets")
+    .select("id, status, deleted_at")
+    .eq("id", id)
+    .eq("business_id", business.id)
+    .maybeSingle();
+
+  if (fetchErr) {
+    log.error("[marketing-content] restore_check_failed", { id, err: fetchErr.message });
+    return c.json({ error: "Failed to look up asset" }, 500);
+  }
+  if (!asset) return c.json({ error: "Content asset not found" }, 404);
+
+  const patch: Record<string, unknown> = {};
+  if (asset.deleted_at)          patch.deleted_at = null;
+  if (asset.status === "failed") patch.status     = "draft";
+
+  if (!Object.keys(patch).length) {
+    return c.json({ error: "Asset is already active" }, 400);
+  }
+
+  const { error: updateErr } = await supabase
+    .from("content_assets")
+    .update(patch)
+    .eq("id", id);
+
+  if (updateErr) {
+    log.error("[marketing-content] restore_failed", { id, err: updateErr.message });
+    return c.json({ error: "Failed to restore" }, 500);
+  }
+
+  log.info("[marketing-content] restored", { business_id: business.id, id });
+  return c.json({ ok: true, id });
+});
+
+// ── POST /:slug/marketing/content-assets/:id/republish ───────────────────────
+// Creates a NEW draft copy of a published post. The source row is NOT modified.
+// Returns { ok, source_id, new_id } so the caller can verify the copy was made.
+
+app.post("/:slug/marketing/content-assets/:id/republish", async (c) => {
+  const auth = c.get("auth") as { user_id: string };
+  const slug = c.req.param("slug");
+  const id   = c.req.param("id");
+  const supabase = createSupabaseClient(c.env);
+
+  const business = await getBusinessBySlug(supabase, auth.user_id, slug);
+  if (!business) return c.json({ error: "Business not found" }, 404);
+
+  const { data: source, error: fetchErr } = await supabase
+    .from("content_assets")
+    .select("id, status, generated_body, target_platform, content_type")
+    .eq("id", id)
+    .eq("business_id", business.id)
+    .maybeSingle();
+
+  if (fetchErr) {
+    log.error("[marketing-content] republish_check_failed", { id, err: fetchErr.message });
+    return c.json({ error: "Failed to look up asset" }, 500);
+  }
+  if (!source) return c.json({ error: "Content asset not found" }, 404);
+  if (source.status !== "published") {
+    return c.json({ error: "Only published posts can be republished" }, 400);
+  }
+
+  const { data: newRow, error: insertErr } = await supabase
+    .from("content_assets")
+    .insert({
+      business_id:    business.id,
+      content_type:   source.content_type,
+      target_platform: source.target_platform,
+      generated_body: source.generated_body,
+      status:         "draft",
+      source_asset_id: source.id,
+    })
+    .select("id")
+    .single();
+
+  if (insertErr) {
+    log.error("[marketing-content] republish_insert_failed", { id, err: insertErr.message });
+    return c.json({ error: "Failed to create draft copy" }, 500);
+  }
+
+  log.info("[marketing-content] republished", {
+    business_id: business.id,
+    source_id: id,
+    new_id: newRow.id,
+  });
+
+  return c.json({ ok: true, source_id: id, new_id: newRow.id });
+});
+
 // ── DELETE /:slug/marketing/content-assets/:id ───────────────────────────────
 // Soft-delete: stamps deleted_at = now(). Row stays in DB; query filter excludes it.
 
