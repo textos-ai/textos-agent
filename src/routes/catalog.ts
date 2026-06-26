@@ -183,7 +183,7 @@ app.get("/platforms", async (c) => {
 
   const { data, error } = await supabase
     .from("platforms")
-    .select("id, slug, display_name, char_limit, hashtag_limit, constraints, sort_order, connect_mode, requires_page, requires_org, connect_notes, max_posts_per_window, window_seconds, min_seconds_between_posts")
+    .select("id, slug, display_name, char_limit, hashtag_limit, constraints, sort_order, connect_mode, requires_page, requires_org, connect_notes, recommended_cadence, cadence_reason, cadence_updated_at")
     .eq("is_active", true)
     .order("sort_order", { ascending: true });
 
