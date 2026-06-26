@@ -188,6 +188,38 @@ export async function getProfileAccounts(
   return { ok: true, accounts };
 }
 
+// ── Account disconnection ─────────────────────────────────────────────────────
+
+/**
+ * Disconnect (delete) a connected social account from Zernio.
+ * Confirmed endpoint: DELETE /accounts/{accountId}
+ * No request body; no profileId required — accountId is the sole identifier.
+ * Success 200: { message: "Account disconnected successfully" }
+ * Error 404: account not found on Zernio (already disconnected upstream).
+ */
+export async function disconnectAccount(
+  apiKey: string,
+  accountId: string,
+): Promise<ZernioResult<{ message: string }>> {
+  let res: Response;
+  try {
+    res = await zernioFetch(apiKey, `/accounts/${encodeURIComponent(accountId)}`, {
+      method: "DELETE",
+    });
+  } catch (e) {
+    return { ok: false, error: `Zernio disconnectAccount network error: ${String(e)}` };
+  }
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => "(unreadable)");
+    return zernioErr("disconnectAccount", res.status, body);
+  }
+
+  const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  const message = String(data.message ?? "Account disconnected successfully");
+  return { ok: true, message };
+}
+
 // ── Publishing ────────────────────────────────────────────────────────────────
 
 export type PublishInput = {

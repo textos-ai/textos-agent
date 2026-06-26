@@ -22,6 +22,7 @@ import { log } from "../lib/logger";
 import { createSupabaseClient, getBusinessBySlug } from "../services/supabase";
 import {
   createProfile,
+  disconnectAccount,
   getConnectUrl,
   getProfileAccounts,
   resolvePendingConnection,
@@ -276,7 +277,9 @@ app.post("/:slug/social/connect/sync", async (c) => {
 });
 
 // ── DELETE /:slug/social/connect/accounts/:platform ──────────────────────────
-// Remove one platform's account from business_integrations.config.accounts.
+// Strict ordering: disconnect on Zernio FIRST, then remove locally.
+// If Zernio fails → halt, return friendly error, leave local config intact.
+// Never clear locally while the account is still live upstream.
 
 app.delete("/:slug/social/connect/accounts/:platform", async (c) => {
   const auth     = c.get("auth") as { user_id: string };
@@ -286,6 +289,12 @@ app.delete("/:slug/social/connect/accounts/:platform", async (c) => {
 
   const business = await getBusinessBySlug(supabase, auth.user_id, slug);
   if (!business) return c.json({ error: "Business not found" }, 404);
+
+  const apiKey = c.env.ZERNIO_API_KEY;
+  if (!apiKey) {
+    log.error("[social-connect] disconnect_missing_api_key", { business_id: business.id });
+    return c.json({ error: "Social publishing not configured" }, 503);
+  }
 
   const { data: existing, error: fetchErr } = await supabase
     .from("business_integrations")
@@ -300,7 +309,52 @@ app.delete("/:slug/social/connect/accounts/:platform", async (c) => {
   }
   if (!existing) return c.json({ error: "No integration on record" }, 404);
 
-  const cfg      = (existing.config ?? {}) as ZernioConfig;
+  const cfg     = (existing.config ?? {}) as ZernioConfig;
+  const account = (cfg.accounts ?? []).find((a) => a.platform === platform);
+  if (!account) return c.json({ error: "Platform not connected" }, 404);
+
+  const displayName = platform.charAt(0).toUpperCase() + platform.slice(1);
+
+  // ── Step 1: Disconnect on Zernio FIRST ───────────────────────────────────
+  log.info("[social-connect] disconnect_zernio_attempt", {
+    business_id: business.id,
+    platform,
+    accountId: account.accountId,
+  });
+
+  const zernioResult = await disconnectAccount(apiKey, account.accountId);
+
+  if (!zernioResult.ok) {
+    // 404 = account is already gone upstream — safe to clean up locally.
+    // Any other error = Zernio is live but unreachable; halt to avoid phantom.
+    if (zernioResult.status !== 404) {
+      log.error("[social-connect] disconnect_zernio_failed", {
+        business_id: business.id,
+        platform,
+        accountId: account.accountId,
+        err: zernioResult.error,
+      });
+      return c.json(
+        { error: `Couldn't disconnect ${displayName} right now — please try again in a moment.` },
+        502,
+      );
+    }
+    // 404 path — already gone on Zernio, fall through to local cleanup
+    log.warn("[social-connect] disconnect_zernio_already_gone", {
+      business_id: business.id,
+      platform,
+      accountId: account.accountId,
+    });
+  } else {
+    log.info("[social-connect] disconnect_zernio_ok", {
+      business_id: business.id,
+      platform,
+      accountId: account.accountId,
+      message: zernioResult.message,
+    });
+  }
+
+  // ── Step 2: Zernio confirmed (or was already gone) — remove locally ───────
   const accounts = (cfg.accounts ?? []).filter((a) => a.platform !== platform);
 
   const { error: updateErr } = await supabase
@@ -310,8 +364,15 @@ app.delete("/:slug/social/connect/accounts/:platform", async (c) => {
     .eq("provider", "zernio");
 
   if (updateErr) {
-    log.error("[social-connect] disconnect_update_failed", { business_id: business.id, err: updateErr.message });
-    return c.json({ error: "Failed to update accounts" }, 500);
+    // Zernio is already disconnected here — log the desync prominently.
+    log.error("[social-connect] disconnect_local_write_failed", {
+      business_id: business.id,
+      platform,
+      accountId: account.accountId,
+      detail: "Zernio disconnected but local config update failed — state desync",
+      err: updateErr.message,
+    });
+    return c.json({ error: "Failed to update local connection state" }, 500);
   }
 
   log.info("[social-connect] disconnected", { business_id: business.id, platform });
