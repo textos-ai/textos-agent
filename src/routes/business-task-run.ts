@@ -883,6 +883,13 @@ export async function runTaskInBackground(
       }
     }
 
+    // Trust guarantee (server-side backstop for the UI gate): with locked-only on
+    // and no locked source assembled, FAIL LOUD — never silently fall back to
+    // unlocked/synthesized context. Applies to the "everything" + locked case.
+    if (lockedOnly && !sourceAsset) {
+      throw new Error("locked_only_no_locked_docs: no locked documents to ground generation");
+    }
+
     const anthropic = createAnthropicClient(env);
     // Accumulate token usage across all LLM calls in this task run so we can
     // write input_tokens / output_tokens to task_runs on completion.
