@@ -129,12 +129,28 @@ app.post("/:slug/marketing/content-assets/:id/publish", async (c) => {
 
   const { data: platformRow } = await supabase
     .from("platforms")
-    .select("char_limit")
+    .select("char_limit, publish_supported, display_name")
     .eq("slug", targetPlatform)
     .maybeSingle();
   const charLimit = typeof (platformRow as any)?.char_limit === "number"
     ? (platformRow as any).char_limit
     : 300;
+
+  // Publish support gate — checked before any Zernio call.
+  // publish_supported is admin-editable in the platforms table; FALSE = coming soon.
+  if (platformRow && (platformRow as any).publish_supported === false) {
+    const displayName = String((platformRow as any).display_name
+      ?? (targetPlatform.charAt(0).toUpperCase() + targetPlatform.slice(1)));
+    log.warn("[social-publish] publish_blocked_unsupported", {
+      business_id: business.id,
+      asset_id:    id,
+      platform:    targetPlatform,
+    });
+    return c.json(
+      { error: `${displayName} publishing isn't available yet — it's coming soon.` },
+      422,
+    );
+  }
 
   if (content.length > charLimit) {
     return c.json(

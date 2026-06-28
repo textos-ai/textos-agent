@@ -276,6 +276,136 @@ app.post("/:slug/social/connect/sync", async (c) => {
   return c.json({ ok: true, accounts: newAccounts });
 });
 
+// ── POST /:slug/social/connect/reconcile ─────────────────────────────────────
+// Called on content page load to detect drift where a platform was disconnected
+// directly on Zernio's side without going through Victora.
+// REMOVE-ONLY: drops stored accounts whose accountId is no longer in Zernio's
+// live list. Never adds accounts from Zernio that aren't in stored config.
+// Fail-safe: if the Zernio call fails, returns stored config unchanged — a
+// failed sync must never look like "everything disconnected."
+
+app.post("/:slug/social/connect/reconcile", async (c) => {
+  const auth = c.get("auth") as { user_id: string };
+  const slug = c.req.param("slug");
+  const supabase = createSupabaseClient(c.env);
+
+  const business = await getBusinessBySlug(supabase, auth.user_id, slug);
+  if (!business) return c.json({ error: "Business not found" }, 404);
+
+  const apiKey = c.env.ZERNIO_API_KEY;
+  if (!apiKey) {
+    log.error("[social-connect] reconcile_missing_api_key", { business_id: business.id });
+    return c.json({ error: "Social publishing not configured" }, 503);
+  }
+
+  const { data, error: fetchErr } = await supabase
+    .from("business_integrations")
+    .select("config, is_active, updated_at")
+    .eq("business_id", business.id)
+    .eq("provider", "zernio")
+    .maybeSingle();
+
+  if (fetchErr) {
+    log.error("[social-connect] reconcile_fetch_failed", {
+      business_id: business.id,
+      err: fetchErr.message,
+    });
+    return c.json({ error: "Failed to load integration" }, 500);
+  }
+
+  if (!data) {
+    return c.json({ connected: false, accounts: [], reconciled: false });
+  }
+
+  const cfg = (data.config ?? {}) as ZernioConfig;
+  const storedAccounts: ZernioAccount[] = cfg.accounts ?? [];
+
+  if (!cfg.profileId) {
+    return c.json({
+      connected: false,
+      profileId: null,
+      accounts: storedAccounts,
+      isActive: data.is_active,
+      updatedAt: data.updated_at,
+      reconciled: false,
+    });
+  }
+
+  log.info("[social-connect] reconcile_zernio_attempt", {
+    business_id: business.id,
+    profileId: cfg.profileId,
+    stored_count: storedAccounts.length,
+  });
+
+  const result = await getProfileAccounts(apiKey, cfg.profileId);
+
+  if (!result.ok) {
+    log.error("[social-connect] reconcile_zernio_failed", {
+      business_id: business.id,
+      profileId: cfg.profileId,
+      err: result.error,
+    });
+    return c.json({
+      connected: storedAccounts.length > 0,
+      profileId: cfg.profileId,
+      accounts: storedAccounts,
+      isActive: data.is_active,
+      updatedAt: data.updated_at,
+      reconciled: false,
+    });
+  }
+
+  const liveIds = new Set(result.accounts.map((a) => a.accountId));
+  const kept    = storedAccounts.filter((a) =>  liveIds.has(a.accountId));
+  const removed = storedAccounts.filter((a) => !liveIds.has(a.accountId));
+
+  if (removed.length > 0) {
+    log.info("[social-connect] reconcile_removed", {
+      business_id: business.id,
+      profileId: cfg.profileId,
+      removed: removed.map((a) => ({ accountId: a.accountId, platform: a.platform })),
+    });
+
+    const { error: updateErr } = await supabase
+      .from("business_integrations")
+      .update({ config: { ...cfg, accounts: kept } })
+      .eq("business_id", business.id)
+      .eq("provider", "zernio");
+
+    if (updateErr) {
+      log.error("[social-connect] reconcile_update_failed", {
+        business_id: business.id,
+        err: updateErr.message,
+      });
+      return c.json({
+        connected: storedAccounts.length > 0,
+        profileId: cfg.profileId,
+        accounts: storedAccounts,
+        isActive: data.is_active,
+        updatedAt: data.updated_at,
+        reconciled: false,
+      });
+    }
+  }
+
+  log.info("[social-connect] reconcile_ok", {
+    business_id: business.id,
+    profileId: cfg.profileId,
+    kept_count: kept.length,
+    removed_count: removed.length,
+  });
+
+  return c.json({
+    connected: kept.length > 0,
+    profileId: cfg.profileId,
+    accounts: kept,
+    isActive: data.is_active,
+    updatedAt: data.updated_at,
+    reconciled: true,
+    removed_count: removed.length,
+  });
+});
+
 // ── DELETE /:slug/social/connect/accounts/:platform ──────────────────────────
 // Strict ordering: disconnect on Zernio FIRST, then remove locally.
 // If Zernio fails → halt, return friendly error, leave local config intact.

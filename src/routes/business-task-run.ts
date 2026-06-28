@@ -324,13 +324,48 @@ app.post("/:slug/tasks/:taskSlug/run", async (c) => {
   );
   const available = periodRemaining + (balance.topup_tokens_remaining as number);
 
-  if (available < task.token_cost) {
-    const deficit = task.token_cost - available;
+  // For generate-social-post, token cost scales by platform count (one charge per platform).
+  // Resolve connected publish-supported platforms here so the pre-check reflects true cost.
+  let preCheckCost = task.token_cost;
+  if (task.slug === "generate-social-post") {
+    const { data: zInt } = await supabase
+      .from("business_integrations")
+      .select("config")
+      .eq("business_id", business.id)
+      .eq("provider", "zernio")
+      .eq("is_active", true)
+      .maybeSingle();
+    const zCfg = ((zInt as any)?.config ?? {}) as { accounts?: { platform: string }[] };
+    const slugs = (zCfg.accounts ?? []).map((a: { platform: string }) => a.platform).filter(Boolean);
+    let platformCount = 0;
+    if (slugs.length > 0) {
+      const { data: pRows } = await supabase
+        .from("platforms")
+        .select("slug")
+        .in("slug", slugs)
+        .eq("publish_supported", true)
+        .eq("is_active", true);
+      platformCount = (pRows ?? []).length;
+    }
+    if (platformCount === 0) {
+      return c.json(
+        {
+          error: "no_platforms_connected",
+          message: "Connect a social account first — go to Platforms in the sidebar.",
+        },
+        422,
+      );
+    }
+    preCheckCost = task.token_cost * platformCount;
+  }
+
+  if (available < preCheckCost) {
+    const deficit = preCheckCost - available;
     return c.json(
       {
         error: "insufficient_tokens",
         available,
-        requested: task.token_cost,
+        requested: preCheckCost,
         deficit,
         bundle_suggestions: buildBundleSuggestions(deficit),
         business_id: business.id,
@@ -923,6 +958,11 @@ export async function runTaskInBackground(
         return;
       }
       effectiveCost = mapped;
+    } else if (task.slug === "generate-social-post") {
+      // Multiply by the number of platforms actually generated for, as returned
+      // by the handler. Each platform = one token charge (task.token_cost = cost per platform).
+      const platformCount = Number(result.output_data.platform_count ?? 1);
+      effectiveCost = task.token_cost * platformCount;
     }
 
     if (effectiveCost === 0) {

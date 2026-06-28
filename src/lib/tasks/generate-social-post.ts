@@ -1,15 +1,16 @@
 // Custom handler for generate-social-post.
-// Dual-mode: context-only (no sourceAsset) or document+context (sourceAsset present).
-// Writes to content_assets (not business_assets) and returns structured output.
+// Dynamic per-platform fan-out: resolves connected publish-supported platforms
+// at generation time, calls LLM once per platform with injected {{platform.*}} vars,
+// writes one content_assets row per platform with target_platform = canonical slug.
+// No hardcoded platform list anywhere in this file.
 
 import type { TaskCtx, TaskResult } from "./types";
 import { resolvePrompt } from "./prompt-resolver";
 import { renderPrompt } from "./generic-document-runner";
 import { resolveFeatureModel } from "../non-task-model-config";
 
-interface SocialPostOutput {
+interface PlatformPostOutput {
   post: string;
-  platform_hint: string;
   hook: string;
   cta: string;
   character_count: number;
@@ -23,11 +24,10 @@ function stripFences(s: string): string {
     .trim();
 }
 
-function validateOutput(parsed: unknown): SocialPostOutput | null {
+function validateOutput(parsed: unknown): PlatformPostOutput | null {
   if (!parsed || typeof parsed !== "object") return null;
   const obj = parsed as Record<string, unknown>;
   if (typeof obj.post !== "string" || obj.post.trim() === "") return null;
-  if (typeof obj.platform_hint !== "string" || obj.platform_hint.trim() === "") return null;
   if (typeof obj.hook !== "string" || obj.hook.trim() === "") return null;
   if (typeof obj.cta !== "string" || obj.cta.trim() === "") return null;
   const cc = typeof obj.character_count === "number"
@@ -35,7 +35,6 @@ function validateOutput(parsed: unknown): SocialPostOutput | null {
     : obj.post.length;
   return {
     post: obj.post.trim(),
-    platform_hint: obj.platform_hint.trim(),
     hook: obj.hook.trim(),
     cta: obj.cta.trim(),
     character_count: cc,
@@ -49,18 +48,58 @@ export async function runGenerateSocialPost(taskCtx: TaskCtx): Promise<TaskResul
     taskRunId, abortSignal, sourceAsset, config,
   } = taskCtx;
 
+  // 1. Resolve which platforms to generate for: connected accounts ∩ publish_supported.
+  // Source of truth: business_integrations.config.accounts (Zernio slugs) ∩ platforms table.
+  const { data: integration } = await supabase
+    .from("business_integrations")
+    .select("config")
+    .eq("business_id", business.id)
+    .eq("provider", "zernio")
+    .eq("is_active", true)
+    .maybeSingle();
+
+  const zConfig = ((integration as any)?.config ?? {}) as {
+    accounts?: { accountId: string; platform: string; handle?: string }[];
+  };
+  const connectedSlugs = (zConfig.accounts ?? []).map((a) => a.platform).filter(Boolean);
+
+  if (connectedSlugs.length === 0) {
+    throw new Error("no_connected_platforms: connect a social account first to generate posts");
+  }
+
+  const { data: platRows, error: platErr } = await supabase
+    .from("platforms")
+    .select("slug, display_name, char_limit, hashtag_limit")
+    .in("slug", connectedSlugs)
+    .eq("publish_supported", true)
+    .eq("is_active", true)
+    .order("sort_order", { ascending: true });
+
+  if (platErr) throw new Error(`platform_lookup_failed: ${platErr.message}`);
+
+  const platforms = (platRows ?? []) as Array<{
+    slug: string;
+    display_name: string;
+    char_limit: number | null;
+    hashtag_limit: number | null;
+  }>;
+
+  if (platforms.length === 0) {
+    throw new Error("no_publish_supported_platforms: connected platform does not support publishing yet");
+  }
+
+  // 2. Resolve prompt and model (shared across all platform calls).
   const promptDef = await resolvePrompt(supabase, "generate-social-post");
   if (!promptDef.system_prompt || promptDef.system_prompt.trim() === "") {
     throw new Error("task_missing_system_prompt: generate-social-post");
   }
 
-  // Build source object for template substitution.
-  // {{source.block}} expands to a labeled document block when a source asset
-  // is present, or empty string in context-only mode.
+  const model = resolveFeatureModel("feature-content-generation", featureConfig, models);
+
+  // Shared template vars (same for all platforms)
   const sourceBlock = sourceAsset
     ? `## Source: ${sourceAsset.subtype ?? sourceAsset.assetType}\n\n${sourceAsset.text}\n\nUse the above document as primary context for this post.\n\n`
     : "";
-
   const source = {
     block: sourceBlock,
     text: sourceAsset?.text ?? "",
@@ -68,118 +107,121 @@ export async function runGenerateSocialPost(taskCtx: TaskCtx): Promise<TaskResul
     subtype: sourceAsset?.subtype ?? "",
   };
 
-  // Build direction block from optional steering params (config.angle + config.direction).
-  // Angle comes from a UI chip (predefined framing); direction is free-text.
-  // Either, both, or neither may be present. Empty block → context-only mode.
-  const rawAngle = typeof config?.angle === 'string' ? config.angle.trim() : '';
-  const rawDir   = typeof config?.direction === 'string' ? config.direction.trim() : '';
+  const rawAngle = typeof config?.angle === "string" ? config.angle.trim() : "";
+  const rawDir   = typeof config?.direction === "string" ? config.direction.trim() : "";
   const dirParts: string[] = [];
   if (rawAngle) dirParts.push(`Angle: ${rawAngle}`);
   if (rawDir)   dirParts.push(`Direction: ${rawDir}`);
-  const direction = { block: dirParts.join('\n') };
+  const direction = { block: dirParts.join("\n") };
 
-  const rendered = renderPrompt(promptDef.user_prompt_template, {
-    business, ctx, user, source, direction,
-  });
+  const selectedKws = Array.isArray(config?.keywords)
+    ? (config.keywords as unknown[]).filter((k): k is string => typeof k === "string")
+    : [];
 
-  const model = resolveFeatureModel("feature-content-generation", featureConfig, models);
+  // 3. Generate one post per platform; insert one content_assets row per platform.
+  const contentAssetIds: string[] = [];
 
-  let result: SocialPostOutput | null = null;
-  let lastErr = "";
-
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    const retryNote = attempt === 1
-      ? ""
-      : `\n\n⚠ Previous response failed validation: ${lastErr}. Return ONLY valid JSON matching {"post":"...","platform_hint":"...","hook":"...","cta":"...","character_count":0}.`;
-
-    const msg = await anthropic.messages.create(
-      {
-        model,
-        max_tokens: 1024,
-        system: promptDef.system_prompt,
-        messages: [{ role: "user", content: rendered + retryNote }],
+  for (const plat of platforms) {
+    // Inject platform-specific vars so the prompt can write natively for each platform.
+    const rendered = renderPrompt(promptDef.user_prompt_template, {
+      business, ctx, user, source, direction,
+      platform: {
+        name: plat.display_name,
+        slug: plat.slug,
+        char_limit: String(plat.char_limit ?? 300),
       },
-      abortSignal ? { signal: abortSignal } : undefined,
-    );
+    });
 
-    if (msg.stop_reason === "max_tokens") {
-      throw new Error("task_output_truncated:generate-social-post stop_reason=max_tokens");
+    let result: PlatformPostOutput | null = null;
+    let lastErr = "";
+
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const retryNote = attempt === 1
+        ? ""
+        : `\n\n⚠ Previous response failed validation: ${lastErr}. Return ONLY valid JSON matching {"post":"...","hook":"...","cta":"...","character_count":0}.`;
+
+      const msg = await anthropic.messages.create(
+        {
+          model,
+          max_tokens: 1024,
+          system: promptDef.system_prompt,
+          messages: [{ role: "user", content: rendered + retryNote }],
+        },
+        abortSignal ? { signal: abortSignal } : undefined,
+      );
+
+      if (msg.stop_reason === "max_tokens") {
+        throw new Error("task_output_truncated:generate-social-post stop_reason=max_tokens");
+      }
+
+      const block = msg.content[0];
+      const text = block && block.type === "text" ? (block as { text: string }).text : "";
+      const raw = stripFences(text.trim());
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        try {
+          parsed = JSON.parse(raw.replace(/[\n\r\t]/g, " "));
+        } catch (e) {
+          lastErr = `JSON parse error: ${(e as Error).message}`;
+          continue;
+        }
+      }
+
+      const valid = validateOutput(parsed);
+      if (valid) {
+        result = valid;
+        break;
+      }
+      lastErr = "shape mismatch (need { post, hook, cta, character_count })";
     }
 
-    const block = msg.content[0];
-    const text = block && block.type === "text" ? (block as { text: string }).text : "";
-    const raw = stripFences(text.trim());
+    if (!result) {
+      throw new Error(`generate_social_post_invalid_output[${plat.slug}]: ${lastErr}`);
+    }
 
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      // Collapse raw newlines (most common LLM JSON failure mode) and retry parse.
-      try {
-        parsed = JSON.parse(raw.replace(/[\n\r\t]/g, " "));
-      } catch (e) {
-        lastErr = `JSON parse error: ${(e as Error).message}`;
-        continue;
+    // Append hashtags post-generation; only if they fit within the platform's char_limit.
+    let finalPost = result.post;
+    if (selectedKws.length > 0) {
+      const limit = typeof plat.hashtag_limit === "number" ? plat.hashtag_limit : selectedKws.length;
+      const hashtags = selectedKws
+        .slice(0, limit)
+        .map((kw) => "#" + kw.split(/\s+/).map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(""))
+        .join(" ");
+      const combined = result.post + "\n\n" + hashtags;
+      if (!plat.char_limit || combined.length <= plat.char_limit) {
+        finalPost = combined;
       }
     }
 
-    const valid = validateOutput(parsed);
-    if (valid) {
-      result = valid;
-      break;
+    const { data: caRow, error: caErr } = await supabase
+      .from("content_assets")
+      .insert({
+        business_id: business.id,
+        source_asset_id: sourceAsset?.id ?? null,
+        task_run_id: taskRunId,
+        content_type: "social_post",
+        target_platform: plat.slug,
+        generated_body: finalPost,
+        status: "draft",
+      })
+      .select("id")
+      .single();
+
+    if (caErr || !caRow) {
+      throw new Error(`content_assets_insert_failed[${plat.slug}]: ${caErr?.message ?? "no row returned"}`);
     }
-    lastErr = "shape mismatch (need { post, platform_hint, hook, cta, character_count })";
-  }
 
-  if (!result) {
-    throw new Error(`generate_social_post_invalid_output: ${lastErr}`);
-  }
-
-  // Append hashtags for any keywords the user selected.
-  // Keywords come from businesses.seo_keywords; the UI sends them as config.keywords (string[]).
-  // Format: title-case, spaces stripped (#SmallBusinessAccounting).
-  // No cap — the user's multi-select is the cap.
-  const selectedKws = Array.isArray(config?.keywords)
-    ? (config.keywords as unknown[]).filter((k): k is string => typeof k === 'string')
-    : [];
-  if (selectedKws.length > 0) {
-    const hashtags = selectedKws
-      .map(kw => '#' + kw.split(/\s+/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(''))
-      .join(' ');
-    result = {
-      ...result,
-      post: result.post + '\n\n' + hashtags,
-      character_count: result.post.length + 2 + hashtags.length,
-    };
-  }
-
-  // Write to content_assets — source_asset_id links back to the input doc when present.
-  const { data: caRow, error: caErr } = await supabase
-    .from("content_assets")
-    .insert({
-      business_id: business.id,
-      source_asset_id: sourceAsset?.id ?? null,
-      task_run_id: taskRunId,
-      content_type: "social_post",
-      target_platform: result.platform_hint,
-      generated_body: result.post,
-      status: "draft",
-    })
-    .select("id")
-    .single();
-
-  if (caErr || !caRow) {
-    throw new Error(`content_assets_insert_failed: ${caErr?.message ?? "no row returned"}`);
+    contentAssetIds.push((caRow as { id: string }).id);
   }
 
   return {
     output_data: {
-      content_asset_id: (caRow as { id: string }).id,
-      post: result.post,
-      platform_hint: result.platform_hint,
-      hook: result.hook,
-      cta: result.cta,
-      character_count: result.character_count,
+      content_asset_ids: contentAssetIds,
+      platform_count: platforms.length,
+      platform_slugs: platforms.map((p) => p.slug),
       mode: sourceAsset ? "document" : "context_only",
     },
     model,
