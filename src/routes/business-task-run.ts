@@ -49,6 +49,17 @@ import { FREE_BUILD_TASK_HANDLERS } from "../lib/free-build-orchestrator";
 const app = new Hono<{ Bindings: Env }>();
 app.use("*", requireAuth);
 
+// Flatten a document's stored shape ({ title, sections: [{heading, body}] }) into
+// the plain source text the generator expects. Falls back to JSON for odd shapes.
+function flattenDocData(data: unknown): string {
+  if (!data || typeof data !== "object") return "";
+  const doc = data as { title?: string; sections?: Array<{ heading: string; body: string }> };
+  if (doc.title && Array.isArray(doc.sections)) {
+    return `${doc.title}\n\n${doc.sections.map((s) => `${s.heading}\n${s.body}`).join("\n\n")}`;
+  }
+  return JSON.stringify(data);
+}
+
 // ── POST /:slug/tasks/:taskSlug/run ─────────────────────────────────────
 app.post("/:slug/tasks/:taskSlug/run", async (c) => {
   const auth = c.get("auth");
@@ -772,19 +783,56 @@ export async function runTaskInBackground(
       throw new Error("user_not_found");
     }
 
-    // Load source asset when the task_runs.config contains a source_asset_id.
-    // Ownership is enforced via business_id — one business cannot reference another's assets.
+    // Resolve the generation SOURCE from task_runs.config. Three modes:
+    //   • source_run_id  → a specific document = a completed task_run's output_data
+    //                      (the canonical document source the Documents page lists).
+    //   • source_asset_id→ legacy: a business_assets row by id (back-compat).
+    //   • locked_only with no specific doc → "Everything Victora knows" restricted
+    //                      to the user's LOCKED documents only (trust mode): assemble
+    //                      a combined source from every locked document.
+    // Ownership is enforced via business_id throughout.
     let sourceAsset: SourceAsset | null = null;
     const { data: cfgForSource } = await supabase
       .from("task_runs")
       .select("config")
       .eq("id", taskRunId)
       .maybeSingle();
-    const sourceAssetId =
-      typeof (cfgForSource?.config as Record<string, unknown> | null)?.source_asset_id === "string"
-        ? ((cfgForSource!.config as Record<string, unknown>).source_asset_id as string)
-        : null;
-    if (sourceAssetId) {
+    const srcCfg = (cfgForSource?.config as Record<string, unknown> | null) ?? null;
+    const sourceRunId   = typeof srcCfg?.source_run_id === "string" ? (srcCfg.source_run_id as string) : null;
+    const sourceAssetId = typeof srcCfg?.source_asset_id === "string" ? (srcCfg.source_asset_id as string) : null;
+    const lockedOnly    = srcCfg?.locked_only === true;
+
+    if (sourceRunId) {
+      // Canonical document = a task_run's output_data ({title, sections}).
+      const { data: runRow, error: runErr } = await supabase
+        .from("task_runs")
+        .select("id, output_data")
+        .eq("id", sourceRunId)
+        .eq("business_id", business.id)
+        .maybeSingle();
+      if (runErr) throw new Error(`source_run_load_failed: ${runErr.message}`);
+      if (!runRow || !runRow.output_data) throw new Error(`source_run_not_found: ${sourceRunId}`);
+      // Trust mode: a picked doc must be locked when locked-only is on.
+      if (lockedOnly) {
+        const { data: la } = await supabase
+          .from("business_assets")
+          .select("metadata")
+          .eq("business_id", business.id)
+          .eq("task_run_id", sourceRunId)
+          .maybeSingle();
+        if ((la?.metadata as Record<string, unknown> | null)?.is_locked !== true) {
+          throw new Error("source_doc_not_locked: locked-only mode requires a locked document");
+        }
+      }
+      const od = runRow.output_data as { title?: string };
+      sourceAsset = {
+        id: runRow.id as string,
+        text: flattenDocData(runRow.output_data),
+        subtype: typeof od?.title === "string" && od.title.trim() ? od.title.trim() : "document",
+        assetType: "document",
+        businessAssetId: null, // not a business_assets row → no FK
+      };
+    } else if (sourceAssetId) {
       const { data: saRow, error: saErr } = await supabase
         .from("business_assets")
         .select("id, asset_type, asset_subtype, asset_text, asset_data")
@@ -797,28 +845,42 @@ export async function runTaskInBackground(
       if (!saRow) {
         throw new Error(`source_asset_not_found: ${sourceAssetId}`);
       }
-      // Extract plain text from the asset. Prefer asset_text if pre-extracted;
-      // otherwise flatten the standard {title, sections} document shape.
-      let text = "";
-      if (saRow.asset_text) {
-        text = saRow.asset_text as string;
-      } else if (saRow.asset_data && typeof saRow.asset_data === "object") {
-        const doc = saRow.asset_data as {
-          title?: string;
-          sections?: Array<{ heading: string; body: string }>;
-        };
-        if (doc.title && Array.isArray(doc.sections)) {
-          text = `${doc.title}\n\n${doc.sections.map((s) => `${s.heading}\n${s.body}`).join("\n\n")}`;
-        } else {
-          text = JSON.stringify(saRow.asset_data);
-        }
-      }
+      const text = saRow.asset_text ? (saRow.asset_text as string) : flattenDocData(saRow.asset_data);
       sourceAsset = {
         id: saRow.id as string,
         text,
         subtype: (saRow.asset_subtype as string | null) ?? null,
         assetType: saRow.asset_type as string,
+        businessAssetId: saRow.id as string,
       };
+    } else if (lockedOnly) {
+      // "Everything Victora knows" restricted to LOCKED documents — assemble a
+      // combined source from every locked document (lock state lives in
+      // business_assets.metadata). No locked docs → no source block (falls back
+      // to business_context, which always rides along).
+      const { data: docs } = await supabase
+        .from("business_assets")
+        .select("asset_text, asset_data, metadata")
+        .eq("business_id", business.id)
+        .eq("asset_type", "document");
+      const locked = (docs ?? []).filter(
+        (d) => (d.metadata as Record<string, unknown> | null)?.is_locked === true,
+      );
+      if (locked.length > 0) {
+        const combined = locked
+          .map((d) => (d.asset_text ? String(d.asset_text) : flattenDocData(d.asset_data)))
+          .filter((t) => t && t.trim())
+          .join("\n\n---\n\n");
+        if (combined.trim()) {
+          sourceAsset = {
+            id: "",
+            text: combined,
+            subtype: `${locked.length} locked document${locked.length === 1 ? "" : "s"}`,
+            assetType: "document",
+            businessAssetId: null,
+          };
+        }
+      }
     }
 
     const anthropic = createAnthropicClient(env);

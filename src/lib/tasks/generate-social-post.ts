@@ -212,7 +212,9 @@ export async function runGenerateSocialPost(taskCtx: TaskCtx): Promise<TaskResul
       .from("content_assets")
       .insert({
         business_id: business.id,
-        source_asset_id: sourceAsset?.id ?? null,
+        // FK → business_assets(id); only set for a single business_asset source.
+        // task_run / combined-locked sources have no business_asset id (null).
+        source_asset_id: sourceAsset?.businessAssetId ?? null,
         task_run_id: taskRunId,
         content_type: "social_post",
         target_platform: plat.slug,

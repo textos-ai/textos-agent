@@ -6,12 +6,18 @@ import type { StreamEvent } from "../stream-events";
 import type { ModelConfig } from "../model-config";
 import type { FeatureConfig } from "../non-task-model-config";
 
-/** A business_assets row passed in as input to a task (e.g. social post from a strategy doc). */
+/** A document passed in as input to a task (e.g. social post from a strategy doc).
+ *  The source may be a business_assets row OR a task_run's output_data (the
+ *  canonical document store the Documents page lists), or a combined set of
+ *  locked documents — so `id` is just a reference/label. `businessAssetId` is
+ *  the FK-safe id written to content_assets.source_asset_id: a real
+ *  business_assets id, or null when the source isn't a single business_asset. */
 export interface SourceAsset {
   id: string;
   text: string;
   subtype: string | null;
   assetType: string;
+  businessAssetId?: string | null;
 }
 
 /**
