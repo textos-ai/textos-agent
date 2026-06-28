@@ -96,9 +96,24 @@ export async function runGenerateSocialPost(taskCtx: TaskCtx): Promise<TaskResul
 
   const model = resolveFeatureModel("feature-content-generation", featureConfig, models);
 
-  // Shared template vars (same for all platforms)
+  // Shared template vars (same for all platforms).
+  // When a source document is selected it is the PRIMARY SUBJECT — a strong,
+  // explicit directive so the document's content drives the post and isn't lost
+  // to the (rich) business context, which stays as voice/background only.
   const sourceBlock = sourceAsset
-    ? `## Source: ${sourceAsset.subtype ?? sourceAsset.assetType}\n\n${sourceAsset.text}\n\nUse the above document as primary context for this post.\n\n`
+    ? [
+        `## SOURCE DOCUMENT — THIS IS WHAT THE POST IS ABOUT`,
+        ``,
+        sourceAsset.text,
+        ``,
+        `INSTRUCTION: Write the post ABOUT the document above. Its specifics — the real ` +
+          `figures, findings, claims, names, and details — are the SUBJECT of this post. Pull ` +
+          `concrete specifics from it (e.g. exact numbers, facts, conclusions) and build the post ` +
+          `around them so the document's content is clearly recognizable. Use the business profile ` +
+          `above ONLY for voice, tone, and framing — never as the subject. Do NOT write a generic ` +
+          `post about the business; the post must be grounded in and about THIS document.`,
+        ``,
+      ].join("\n")
     : "";
   const source = {
     block: sourceBlock,

@@ -49,15 +49,62 @@ import { FREE_BUILD_TASK_HANDLERS } from "../lib/free-build-orchestrator";
 const app = new Hono<{ Bindings: Env }>();
 app.use("*", requireAuth);
 
-// Flatten a document's stored shape ({ title, sections: [{heading, body}] }) into
-// the plain source text the generator expects. Falls back to JSON for odd shapes.
-function flattenDocData(data: unknown): string {
-  if (!data || typeof data !== "object") return "";
-  const doc = data as { title?: string; sections?: Array<{ heading: string; body: string }> };
-  if (doc.title && Array.isArray(doc.sections)) {
-    return `${doc.title}\n\n${doc.sections.map((s) => `${s.heading}\n${s.body}`).join("\n\n")}`;
+// Convert ANY document output_data shape into clean, readable PROSE (never a
+// JSON dump). Walks the structure recursively and emits human-readable text the
+// model can write from — works for {title, sections}, market-sizing's
+// {tam,sam,som:{label,description}}, persona/mission docs, etc. — shape-agnostic.
+function humanizeKey(key: string): string {
+  if (/^[a-z]{1,4}$/i.test(key)) return key.toUpperCase();      // tam/sam/som → TAM/SAM/SOM
+  return key.replace(/[_-]+/g, " ").trim().replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function flattenValue(value: unknown, label?: string): string {
+  const tag = (s: string) => (label ? `${label}: ${s}` : s);
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") {
+    const t = value.trim();
+    return t ? tag(t) : "";
   }
-  return JSON.stringify(data);
+  if (typeof value === "number" || typeof value === "boolean") return tag(String(value));
+  if (Array.isArray(value)) {
+    return value.map((v) => flattenValue(v)).filter(Boolean).join("\n");
+  }
+  if (typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    // Whole-document shape: { title, sections: [{ heading, body }] }
+    if (typeof obj.title === "string" && Array.isArray(obj.sections)) {
+      const secs = (obj.sections as Array<{ heading?: string; body?: string }>)
+        .map((s) => [s.heading, s.body].filter((x) => typeof x === "string" && x.trim()).join("\n"))
+        .filter(Boolean)
+        .join("\n\n");
+      return `${obj.title}\n\n${secs}`.trim();
+    }
+    // Section shape: { heading, body }
+    if (typeof obj.heading === "string" || typeof obj.body === "string") {
+      const line = [obj.heading, obj.body].filter((x) => typeof x === "string" && (x as string).trim()).join("\n");
+      return line ? tag(line) : "";
+    }
+    // Labeled value: { label?, description?, ... } — prefer label + description,
+    // ignore noisy sibling primitives (e.g. usd). → "TAM: $23B — <description>"
+    if (typeof obj.label === "string" || typeof obj.description === "string") {
+      const lbl = typeof obj.label === "string" ? obj.label.trim() : "";
+      const desc = typeof obj.description === "string" ? obj.description.trim() : "";
+      const val = [lbl, desc].filter(Boolean).join(" — ");
+      return val ? tag(val) : "";
+    }
+    // Generic object: each key → "Humanized Key: <value>"
+    const parts: string[] = [];
+    for (const [k, v] of Object.entries(obj)) {
+      const flat = flattenValue(v, humanizeKey(k));
+      if (flat) parts.push(flat);
+    }
+    return parts.join("\n");
+  }
+  return "";
+}
+
+function flattenDocData(data: unknown): string {
+  return flattenValue(data).trim();
 }
 
 // ── POST /:slug/tasks/:taskSlug/run ─────────────────────────────────────
@@ -825,9 +872,16 @@ export async function runTaskInBackground(
         }
       }
       const od = runRow.output_data as { title?: string };
+      const flatText = flattenDocData(runRow.output_data);
+      log.info("[task-run] source_doc_flattened", {
+        task_run_id: taskRunId,
+        source_run_id: sourceRunId,
+        text_len: flatText.length,
+        snippet: flatText.slice(0, 300),
+      });
       sourceAsset = {
         id: runRow.id as string,
-        text: flattenDocData(runRow.output_data),
+        text: flatText,
         subtype: typeof od?.title === "string" && od.title.trim() ? od.title.trim() : "document",
         assetType: "document",
         businessAssetId: null, // not a business_assets row → no FK
