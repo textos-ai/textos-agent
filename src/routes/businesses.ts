@@ -454,14 +454,37 @@ function docAssetMeta(raw: { metadata?: Record<string, unknown> | null }) {
   };
 }
 
+function prettySubtype(subtype: string | null): string {
+  if (!subtype) return "Document";
+  return subtype
+    .split(/[-_]/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
 function normalizeDocAsset(row: {
   id: string;
   task_run_id: string | null;
   asset_text: string | null;
+  asset_subtype?: string | null;
+  asset_data?: Record<string, unknown> | null;
   metadata: Record<string, unknown> | null;
 }) {
   const { is_locked, locked_at } = docAssetMeta(row);
-  return { id: row.id, task_run_id: row.task_run_id, asset_text: row.asset_text, is_locked, locked_at };
+  // Title for pickers/lists: prefer the document's own title (asset_data.title),
+  // fall back to a humanized subtype (the task slug that produced it).
+  const dataTitle = typeof row.asset_data?.title === "string" ? (row.asset_data.title as string).trim() : "";
+  const title = dataTitle || prettySubtype(row.asset_subtype ?? null);
+  return {
+    id: row.id,
+    task_run_id: row.task_run_id,
+    asset_text: row.asset_text,
+    asset_subtype: row.asset_subtype ?? null,
+    title,
+    is_locked,
+    locked_at,
+  };
 }
 
 // ── GET /:slug/document-assets ────────────────────────────────────────────
@@ -482,7 +505,7 @@ app.get("/:slug/document-assets", async (c) => {
 
   const { data: rows, error } = await supabase
     .from("business_assets")
-    .select("id, task_run_id, asset_text, metadata")
+    .select("id, task_run_id, asset_text, asset_subtype, asset_data, metadata")
     .eq("business_id", business.id)
     .eq("asset_type", "document")
     .order("created_at", { ascending: true });
