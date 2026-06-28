@@ -74,6 +74,79 @@ app.get("/:slug/marketing/content-assets", async (c) => {
   return c.json({ items });
 });
 
+// ── GET /:slug/marketing/metrics ─────────────────────────────────────────────
+// Two-tier counts from OUR content_assets (no Zernio reach data).
+//   overall:     all-platform published (every platform VERSION), today, this
+//                week, distinct IDEAS (task_run_id), in-draft.
+//   perPlatform: same numbers scoped to each platform slug (keyed lowercase).
+// Idea-vs-version: each generate request = one task_run = one idea, fanned out
+// to one content_assets row PER platform — so distinct task_run_id = ideas,
+// row count = platform versions. Soft-deleted rows (deleted_at) are excluded.
+app.get("/:slug/marketing/metrics", async (c) => {
+  const auth = c.get("auth") as { user_id: string };
+  const slug = c.req.param("slug");
+  const supabase = createSupabaseClient(c.env);
+
+  const business = await getBusinessBySlug(supabase, auth.user_id, slug);
+  if (!business) return c.json({ error: "Business not found" }, 404);
+
+  const { data, error } = await supabase
+    .from("content_assets")
+    .select("status, target_platform, task_run_id, published_at")
+    .eq("business_id", business.id)
+    .is("deleted_at", null);
+
+  if (error) {
+    log.error("[marketing-content] metrics_failed", {
+      business_id: business.id,
+      err: error.message,
+    });
+    return c.json({ error: "Failed to load metrics" }, 500);
+  }
+
+  const rows = (data ?? []) as Array<{
+    status: string;
+    target_platform: string | null;
+    task_run_id: string | null;
+    published_at: string | null;
+  }>;
+
+  // UTC day / week (Monday) boundaries for the momentum line.
+  const now = new Date();
+  const startOfToday = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const daysSinceMon = (now.getUTCDay() + 6) % 7;
+  const startOfWeek = startOfToday - daysSinceMon * 86_400_000;
+
+  const inToday = (ts: string | null) => !!ts && Date.parse(ts) >= startOfToday;
+  const inWeek  = (ts: string | null) => !!ts && Date.parse(ts) >= startOfWeek;
+
+  const overall = { published: 0, today: 0, week: 0, ideas: 0, draft: 0 };
+  const ideaSet = new Set<string>();
+  const perPlatform: Record<string, { published: number; today: number; week: number; draft: number }> = {};
+
+  const bucket = (slugKey: string) =>
+    (perPlatform[slugKey] ??= { published: 0, today: 0, week: 0, draft: 0 });
+
+  for (const r of rows) {
+    if (r.task_run_id) ideaSet.add(r.task_run_id);
+    const pslug = (r.target_platform ?? "").toLowerCase();
+    const pb = pslug ? bucket(pslug) : null;
+
+    if (r.status === "published") {
+      overall.published++;
+      if (pb) pb.published++;
+      if (inToday(r.published_at)) { overall.today++; if (pb) pb.today++; }
+      if (inWeek(r.published_at))  { overall.week++;  if (pb) pb.week++; }
+    } else if (r.status === "draft") {
+      overall.draft++;
+      if (pb) pb.draft++;
+    }
+  }
+  overall.ideas = ideaSet.size;
+
+  return c.json({ overall, perPlatform });
+});
+
 // ── PATCH /:slug/marketing/content-assets/:id ────────────────────────────────
 // Two mutually exclusive modes — provide exactly one of:
 //   { status: "approved" | "dismissed" }  — status transition (no body change)
