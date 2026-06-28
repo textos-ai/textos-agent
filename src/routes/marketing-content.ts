@@ -35,6 +35,7 @@ app.get("/:slug/marketing/content-assets", async (c) => {
       status,
       created_at,
       source_asset_id,
+      task_run_id,
       content_types (
         label,
         preview_component,
@@ -54,25 +55,96 @@ app.get("/:slug/marketing/content-assets", async (c) => {
     return c.json({ error: "Failed to load content" }, 500);
   }
 
-  const items = (data ?? []).map((row: any) => ({
-    id: row.id,
-    content_type: row.content_type,
-    target_platform: row.target_platform ?? null,
-    generated_body: row.generated_body,
-    status: row.status,
-    created_at: row.created_at,
-    source_asset_id: row.source_asset_id ?? null,
-    content_type_meta: row.content_types
-      ? {
-          label: (row.content_types as any).label,
-          preview_component: (row.content_types as any).preview_component,
-          suited_platforms: (row.content_types as any).suited_platforms,
-        }
-      : null,
-  }));
+  const rows = (data ?? []) as any[];
+
+  // Hashtag indicator ("3 of 5 tags"): selected = the keywords chosen at
+  // generation (task_runs.config.keywords); added = how many of those tags
+  // actually landed in the body (incremental fit, per platform). Derived from
+  // existing data — no extra column. One batched task_runs lookup for the page.
+  const runIds = Array.from(
+    new Set(rows.map((r) => r.task_run_id).filter((v): v is string => !!v)),
+  );
+  const keywordsByRun = new Map<string, string[]>();
+  if (runIds.length > 0) {
+    const { data: runs } = await supabase
+      .from("task_runs")
+      .select("id, config")
+      .in("id", runIds);
+    for (const run of (runs ?? []) as any[]) {
+      const kws = Array.isArray(run.config?.keywords)
+        ? (run.config.keywords as unknown[]).filter((k): k is string => typeof k === "string")
+        : [];
+      keywordsByRun.set(run.id, kws);
+    }
+  }
+
+  const tagForm = (kw: string) => "#" + kw.toLowerCase().replace(/[^a-z0-9]+/g, "");
+
+  const items = rows.map((row: any) => {
+    const kws = (row.task_run_id && keywordsByRun.get(row.task_run_id)) || [];
+    const selected = kws.length;
+    const body = String(row.generated_body ?? "");
+    const added = selected > 0
+      ? kws.filter((kw) => { const t = tagForm(kw); return t.length > 1 && body.includes(t); }).length
+      : 0;
+    return {
+      id: row.id,
+      content_type: row.content_type,
+      target_platform: row.target_platform ?? null,
+      generated_body: row.generated_body,
+      status: row.status,
+      created_at: row.created_at,
+      source_asset_id: row.source_asset_id ?? null,
+      hashtags: { added, selected },
+      content_type_meta: row.content_types
+        ? {
+            label: (row.content_types as any).label,
+            preview_component: (row.content_types as any).preview_component,
+            suited_platforms: (row.content_types as any).suited_platforms,
+          }
+        : null,
+    };
+  });
 
   return c.json({ items });
 });
+
+// Business timezone for day/week boundaries. America/Chicago (Central) for now;
+// IANA name = DST-correct. Future: read a per-business tz, defaulting to this.
+const BUSINESS_TZ = "America/Chicago";
+
+// The Central calendar Y/M/D containing a given UTC instant.
+function centralDateParts(utcMs: number): { y: number; m: number; d: number } {
+  const p = new Intl.DateTimeFormat("en-US", {
+    timeZone: BUSINESS_TZ, year: "numeric", month: "2-digit", day: "2-digit",
+  })
+    .formatToParts(new Date(utcMs))
+    .reduce<Record<string, string>>((a, x) => { a[x.type] = x.value; return a; }, {});
+  return { y: +p.year, m: +p.month, d: +p.day };
+}
+
+// Milliseconds that wall-clock time in BUSINESS_TZ is ahead of UTC at `utcMs`
+// (Central Standard = -6h → -21600000; Central Daylight = -5h → -18000000).
+function centralOffsetMs(utcMs: number): number {
+  const p = new Intl.DateTimeFormat("en-US", {
+    timeZone: BUSINESS_TZ, hourCycle: "h23",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+  })
+    .formatToParts(new Date(utcMs))
+    .reduce<Record<string, string>>((a, x) => { a[x.type] = x.value; return a; }, {});
+  const asUTC = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second);
+  return asUTC - utcMs;
+}
+
+// UTC epoch ms for the start (midnight Central) of the Central day containing
+// `utcMs`, shifted back `daysBack` Central days. Overflow-safe across months.
+function centralDayStartUTC(utcMs: number, daysBack: number): number {
+  const { y, m, d } = centralDateParts(utcMs);
+  const wallMidnightAsUTC = Date.UTC(y, m - 1, d - daysBack, 0, 0, 0);
+  // Correct the "as if UTC" guess by the real Central offset at that instant.
+  return wallMidnightAsUTC - centralOffsetMs(wallMidnightAsUTC);
+}
 
 // ── GET /:slug/marketing/metrics ─────────────────────────────────────────────
 // Two-tier counts from OUR content_assets (no Zernio reach data).
@@ -111,11 +183,15 @@ app.get("/:slug/marketing/metrics", async (c) => {
     published_at: string | null;
   }>;
 
-  // UTC day / week (Monday) boundaries for the momentum line.
-  const now = new Date();
-  const startOfToday = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-  const daysSinceMon = (now.getUTCDay() + 6) % 7;
-  const startOfWeek = startOfToday - daysSinceMon * 86_400_000;
+  // "Today" / "this week" use the business timezone (Central), so the day rolls
+  // over at midnight Central — not 6/7pm. IANA America/Chicago handles CST/CDT
+  // automatically (no hardcoded -6/-5 offset that would drift twice a year).
+  const nowMs = Date.now();
+  const tp = centralDateParts(nowMs);
+  const startOfToday = centralDayStartUTC(nowMs, 0);
+  const centralDow = new Date(Date.UTC(tp.y, tp.m - 1, tp.d)).getUTCDay(); // 0=Sun..6=Sat
+  const daysSinceMon = (centralDow + 6) % 7;
+  const startOfWeek = centralDayStartUTC(nowMs, daysSinceMon);
 
   const inToday = (ts: string | null) => !!ts && Date.parse(ts) >= startOfToday;
   const inWeek  = (ts: string | null) => !!ts && Date.parse(ts) >= startOfWeek;

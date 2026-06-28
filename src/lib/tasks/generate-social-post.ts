@@ -182,22 +182,30 @@ export async function runGenerateSocialPost(taskCtx: TaskCtx): Promise<TaskResul
       throw new Error(`generate_social_post_invalid_output[${plat.slug}]: ${lastErr}`);
     }
 
-    // Append hashtags post-generation; only if they fit within the platform's char_limit.
+    // Append hashtags INCREMENTALLY — add selected tags one at a time, in order,
+    // each only if the running total stays within the platform's char_limit.
+    // Stop at the first tag that won't fit; keep the ones that did. Never
+    // all-or-nothing. hashtag_limit (if set) caps how many we even consider.
+    // Tags are lowercased with all non-alphanumerics stripped ("AI co-founder"
+    // → "#aicofounder") so they link cleanly on every platform.
     let finalPost = result.post;
     if (selectedKws.length > 0) {
-      const limit = typeof plat.hashtag_limit === "number" ? plat.hashtag_limit : selectedKws.length;
-      // Lowercase, strip ALL non-alphanumerics (spaces, hyphens, punctuation) and
-      // run the words together so tags link cleanly on every platform.
-      // "AI co-founder" → "#aicofounder".
-      const hashtags = selectedKws
-        .slice(0, limit)
+      const cap = typeof plat.hashtag_limit === "number" ? plat.hashtag_limit : selectedKws.length;
+      const candidates = selectedKws
+        .slice(0, cap)
         .map((kw) => "#" + kw.toLowerCase().replace(/[^a-z0-9]+/g, ""))
-        .filter((tag) => tag.length > 1)
-        .join(" ");
-      const combined = result.post + "\n\n" + hashtags;
-      if (!plat.char_limit || combined.length <= plat.char_limit) {
-        finalPost = combined;
+        .filter((tag) => tag.length > 1);
+      let tagLine = "";
+      for (const tag of candidates) {
+        const nextLine = tagLine ? tagLine + " " + tag : tag;
+        const combined = result.post + "\n\n" + nextLine;
+        if (!plat.char_limit || combined.length <= plat.char_limit) {
+          tagLine = nextLine;
+        } else {
+          break; // first tag that doesn't fit ends the run (selection order preserved)
+        }
       }
+      if (tagLine) finalPost = result.post + "\n\n" + tagLine;
     }
 
     const { data: caRow, error: caErr } = await supabase
