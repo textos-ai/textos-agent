@@ -324,9 +324,11 @@ app.post("/:slug/tasks/:taskSlug/run", async (c) => {
   );
   const available = periodRemaining + (balance.topup_tokens_remaining as number);
 
-  // For generate-social-post, token cost scales by platform count (one charge per platform).
-  // Resolve connected publish-supported platforms here so the pre-check reflects true cost.
-  let preCheckCost = task.token_cost;
+  // Token model is PER-POST (per idea): one generate request = one token,
+  // regardless of how many platforms it casts to. NOT batch × platform_count.
+  // We still confirm at least one publishable platform is connected so the
+  // request fails fast with a friendly message instead of a generic task error.
+  const preCheckCost = task.token_cost;
   if (task.slug === "generate-social-post") {
     const { data: zInt } = await supabase
       .from("business_integrations")
@@ -356,7 +358,6 @@ app.post("/:slug/tasks/:taskSlug/run", async (c) => {
         422,
       );
     }
-    preCheckCost = task.token_cost * platformCount;
   }
 
   if (available < preCheckCost) {
@@ -958,12 +959,9 @@ export async function runTaskInBackground(
         return;
       }
       effectiveCost = mapped;
-    } else if (task.slug === "generate-social-post") {
-      // Multiply by the number of platforms actually generated for, as returned
-      // by the handler. Each platform = one token charge (task.token_cost = cost per platform).
-      const platformCount = Number(result.output_data.platform_count ?? 1);
-      effectiveCost = task.token_cost * platformCount;
     }
+    // generate-social-post stays at task.token_cost — one token PER POST (per idea),
+    // regardless of how many platforms the idea casts to. No platform-count multiplier.
 
     if (effectiveCost === 0) {
       log.info("[task-run] no_debit", {

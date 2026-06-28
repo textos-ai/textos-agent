@@ -186,9 +186,13 @@ export async function runGenerateSocialPost(taskCtx: TaskCtx): Promise<TaskResul
     let finalPost = result.post;
     if (selectedKws.length > 0) {
       const limit = typeof plat.hashtag_limit === "number" ? plat.hashtag_limit : selectedKws.length;
+      // Lowercase, strip ALL non-alphanumerics (spaces, hyphens, punctuation) and
+      // run the words together so tags link cleanly on every platform.
+      // "AI co-founder" → "#aicofounder".
       const hashtags = selectedKws
         .slice(0, limit)
-        .map((kw) => "#" + kw.split(/\s+/).map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(""))
+        .map((kw) => "#" + kw.toLowerCase().replace(/[^a-z0-9]+/g, ""))
+        .filter((tag) => tag.length > 1)
         .join(" ");
       const combined = result.post + "\n\n" + hashtags;
       if (!plat.char_limit || combined.length <= plat.char_limit) {
