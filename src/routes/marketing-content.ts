@@ -200,12 +200,12 @@ app.get("/:slug/marketing/metrics", async (c) => {
   const inToday = (ts: string | null) => !!ts && Date.parse(ts) >= startOfToday;
   const inWeek  = (ts: string | null) => !!ts && Date.parse(ts) >= startOfWeek;
 
-  const overall = { published: 0, today: 0, week: 0, ideas: 0, draft: 0, approved: 0 };
+  const overall = { published: 0, today: 0, week: 0, ideas: 0, draft: 0, approved: 0, scheduled: 0 };
   const ideaSet = new Set<string>();
-  const perPlatform: Record<string, { published: number; today: number; week: number; draft: number; approved: number }> = {};
+  const perPlatform: Record<string, { published: number; today: number; week: number; draft: number; approved: number; scheduled: number }> = {};
 
   const bucket = (slugKey: string) =>
-    (perPlatform[slugKey] ??= { published: 0, today: 0, week: 0, draft: 0, approved: 0 });
+    (perPlatform[slugKey] ??= { published: 0, today: 0, week: 0, draft: 0, approved: 0, scheduled: 0 });
 
   for (const r of rows) {
     if (r.task_run_id) ideaSet.add(r.task_run_id);
@@ -224,6 +224,10 @@ app.get("/:slug/marketing/metrics", async (c) => {
       // "Ready to send" — approved but not yet published.
       overall.approved++;
       if (pb) pb.approved++;
+    } else if (r.status === "scheduled") {
+      // Committed to a future time (firing delegated to Zernio).
+      overall.scheduled++;
+      if (pb) pb.scheduled++;
     }
   }
   overall.ideas = ideaSet.size;
