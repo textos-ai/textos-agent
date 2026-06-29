@@ -36,6 +36,8 @@ app.get("/:slug/marketing/content-assets", async (c) => {
       created_at,
       source_asset_id,
       task_run_id,
+      scheduled_for,
+      scheduled_timezone,
       content_types (
         label,
         preview_component,
@@ -43,7 +45,7 @@ app.get("/:slug/marketing/content-assets", async (c) => {
       )
     `)
     .eq("business_id", business.id)
-    .in("status", ["draft", "approved"])
+    .in("status", ["draft", "approved", "scheduled"])
     .is("deleted_at", null)
     .order("created_at", { ascending: false });
 
@@ -95,6 +97,8 @@ app.get("/:slug/marketing/content-assets", async (c) => {
       status: row.status,
       created_at: row.created_at,
       source_asset_id: row.source_asset_id ?? null,
+      scheduled_for: row.scheduled_for ?? null,
+      scheduled_timezone: row.scheduled_timezone ?? null,
       hashtags: { added, selected },
       content_type_meta: row.content_types
         ? {

@@ -226,6 +226,10 @@ export type PublishInput = {
   content: string;
   platform: string;    // e.g. "bluesky"
   accountId: string;   // Zernio account ID for this platform
+  // Scheduling (optional). When BOTH are present, Zernio schedules the post for
+  // the future instead of publishing immediately. Omit both = immediate (unchanged).
+  scheduledFor?: string;  // local wall-clock ISO in `timezone`, e.g. "2026-07-01T10:04:00"
+  timezone?: string;      // IANA tz, e.g. "America/Chicago"
 };
 
 export type PublishOutput = {
@@ -243,23 +247,33 @@ export type PostDetails = {
 };
 
 /**
- * Publish content immediately to a connected social account via Zernio.
- * Returns the Zernio post ID for later analytics retrieval.
+ * Publish content to a connected social account via Zernio.
+ *   • Immediate (default): no scheduledFor → publishNow:true (unchanged).
+ *   • Scheduled: scheduledFor + timezone → Zernio fires it at that future time.
+ * Returns the Zernio post _id (the same id used to cancel/reschedule).
  * On any failure returns a structured error — never throws.
  */
 export async function publishPost(
   apiKey: string,
   input: PublishInput,
 ): Promise<ZernioResult<PublishOutput>> {
+  const scheduling = input.scheduledFor && input.timezone;
+  const payload: Record<string, unknown> = {
+    content: input.content,
+    platforms: [{ platform: input.platform, accountId: input.accountId }],
+  };
+  if (scheduling) {
+    payload.scheduledFor = input.scheduledFor;
+    payload.timezone = input.timezone;
+  } else {
+    payload.publishNow = true;
+  }
+
   let res: Response;
   try {
     res = await zernioFetch(apiKey, "/posts", {
       method: "POST",
-      body: JSON.stringify({
-        content: input.content,
-        platforms: [{ platform: input.platform, accountId: input.accountId }],
-        publishNow: true,
-      }),
+      body: JSON.stringify(payload),
     });
   } catch (e) {
     return { ok: false, error: `Zernio publishPost network error: ${String(e)}` };
@@ -280,6 +294,30 @@ export async function publishPost(
   const errorMessage  = post.errorMessage  != null ? String(post.errorMessage)  : undefined;
   const errorCategory = post.errorCategory != null ? String(post.errorCategory) : undefined;
   return { ok: true, postId, status, errorMessage, errorCategory };
+}
+
+/**
+ * Cancel a scheduled Zernio post. Confirmed by live test: DELETE /posts/{id}
+ * removes the scheduled post (subsequent GET → 404), so it never fires.
+ * A 404 is treated as success (already gone). Never throws.
+ */
+export async function cancelScheduledPost(
+  apiKey: string,
+  postId: string,
+): Promise<ZernioResult<{ message: string }>> {
+  let res: Response;
+  try {
+    res = await zernioFetch(apiKey, `/posts/${encodeURIComponent(postId)}`, { method: "DELETE" });
+  } catch (e) {
+    return { ok: false, error: `Zernio cancelScheduledPost network error: ${String(e)}` };
+  }
+  if (!res.ok) {
+    if (res.status === 404) return { ok: true, message: "Already cancelled" };
+    const body = await res.text().catch(() => "(unreadable)");
+    return zernioErr("cancelScheduledPost", res.status, body);
+  }
+  const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  return { ok: true, message: String(data.message ?? "Post cancelled") };
 }
 
 /**

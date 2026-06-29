@@ -21,7 +21,8 @@ import type { Env } from "../env";
 import { requireAuth } from "../lib/jwt";
 import { log } from "../lib/logger";
 import { createSupabaseClient, getBusinessBySlug } from "../services/supabase";
-import { publishPost, getPost } from "../services/zernio";
+import { publishPost, getPost, cancelScheduledPost } from "../services/zernio";
+import { computeNextOptimalSlot } from "../lib/scheduling/next-optimal";
 import {
   friendlyPublishError,
   friendlyValidationError,
@@ -283,6 +284,170 @@ app.post("/:slug/marketing/content-assets/:id/publish", async (c) => {
   });
 
   return c.json({ ok: true, zernio_post_id: result.postId, status: "published" });
+});
+
+// ── POST /:slug/marketing/content-assets/:id/schedule ────────────────────────
+// Schedule at the next optimal time. Computes the slot, hands Zernio a future
+// scheduledFor (firing is delegated to Zernio), and records the schedule on the
+// asset. Additive — immediate publish is untouched.
+app.post("/:slug/marketing/content-assets/:id/schedule", async (c) => {
+  const auth = c.get("auth") as { user_id: string };
+  const slug = c.req.param("slug");
+  const id = c.req.param("id");
+  const supabase = createSupabaseClient(c.env);
+
+  const business = await getBusinessBySlug(supabase, auth.user_id, slug);
+  if (!business) return c.json({ error: "Business not found" }, 404);
+
+  const { data: asset, error: assetErr } = await supabase
+    .from("content_assets")
+    .select("id, generated_body, status, target_platform, content_type")
+    .eq("id", id)
+    .eq("business_id", business.id)
+    .maybeSingle();
+  if (assetErr) return c.json({ error: "Failed to load content asset" }, 500);
+  if (!asset) return c.json({ error: "Content asset not found" }, 404);
+  if ((asset as any).status === "published") return c.json({ error: "Already published" }, 409);
+  if ((asset as any).status === "dismissed") return c.json({ error: "Cannot schedule dismissed content" }, 409);
+
+  const apiKey = c.env.ZERNIO_API_KEY;
+  if (!apiKey) return c.json({ error: "Social publishing not configured" }, 503);
+
+  const targetPlatform = String((asset as any).target_platform ?? "bluesky").toLowerCase();
+  const content        = String((asset as any).generated_body ?? "");
+
+  // Connected account for this platform.
+  const { data: integration, error: integErr } = await supabase
+    .from("business_integrations")
+    .select("config")
+    .eq("business_id", business.id)
+    .eq("provider", "zernio")
+    .eq("is_active", true)
+    .maybeSingle();
+  if (integErr) return c.json({ error: "Failed to load social integration" }, 500);
+  if (!integration) {
+    return c.json({ error: "No Zernio integration configured — connect a social account first" }, 503);
+  }
+  const cfg = ((integration as any).config ?? {}) as ZernioConfig;
+  const platformAccount = (cfg.accounts ?? []).find((a) => a.platform === targetPlatform);
+  if (!platformAccount) {
+    const dn = targetPlatform.charAt(0).toUpperCase() + targetPlatform.slice(1);
+    return c.json({ error: `${dn} isn't connected yet — go to Platforms to connect it.` }, 503);
+  }
+
+  // publish_supported gate + char limit (same rules as immediate publish).
+  const { data: platformRow } = await supabase
+    .from("platforms")
+    .select("char_limit, publish_supported, display_name")
+    .eq("slug", targetPlatform)
+    .maybeSingle();
+  if (platformRow && (platformRow as any).publish_supported === false) {
+    const dn = String((platformRow as any).display_name ?? targetPlatform);
+    return c.json({ error: `${dn} publishing isn't available yet — it's coming soon.` }, 422);
+  }
+  const charLimit = typeof (platformRow as any)?.char_limit === "number" ? (platformRow as any).char_limit : 300;
+  if (content.length > charLimit) {
+    return c.json({ error: friendlyValidationError(targetPlatform, charLimit, content.length) }, 422);
+  }
+
+  // Next optimal slot (consistency-first + jitter), Central tz.
+  const slot = await computeNextOptimalSlot(
+    supabase, targetPlatform, String((asset as any).content_type ?? "social_post"), Date.now(),
+  );
+  if (!slot) {
+    return c.json({ error: `No posting schedule configured for ${targetPlatform} yet.` }, 422);
+  }
+
+  // Hand Zernio the future time — it fires it.
+  const result = await publishPost(apiKey, {
+    content,
+    platform: targetPlatform,
+    accountId: platformAccount.accountId,
+    scheduledFor: slot.scheduledForLocal,
+    timezone: slot.timezone,
+  });
+  if (!result.ok) {
+    log.error("[social-publish] schedule_failed", { business_id: business.id, asset_id: id, err: result.error });
+    const friendly = friendlyPublishError({
+      httpStatus: result.status, errorMessage: result.error, platform: targetPlatform,
+    });
+    const httpStatus = result.status === 429 ? 429 : result.status === 403 ? 403 : 502;
+    return c.json({ error: friendly }, httpStatus);
+  }
+
+  const { error: updateErr } = await supabase
+    .from("content_assets")
+    .update({
+      status: "scheduled",
+      scheduled_for: slot.scheduledForUTC,
+      scheduled_timezone: slot.timezone,
+      zernio_scheduled_id: result.postId,
+    })
+    .eq("id", id);
+  if (updateErr) {
+    log.error("[social-publish] schedule_db_update_failed", { asset_id: id, err: updateErr.message });
+    return c.json({ error: "Scheduled with Zernio but failed to record it — please refresh." }, 500);
+  }
+
+  log.info("[social-publish] scheduled_ok", {
+    business_id: business.id, asset_id: id, platform: targetPlatform,
+    scheduled_for: slot.scheduledForUTC, zernio_scheduled_id: result.postId,
+  });
+  return c.json({
+    ok: true,
+    status: "scheduled",
+    scheduled_for: slot.scheduledForUTC,
+    scheduled_timezone: slot.timezone,
+    label: slot.label,
+    zernio_scheduled_id: result.postId,
+  });
+});
+
+// ── POST /:slug/marketing/content-assets/:id/unschedule ──────────────────────
+// Cancel a scheduled post on Zernio (DELETE /posts/{id}) and revert to draft.
+app.post("/:slug/marketing/content-assets/:id/unschedule", async (c) => {
+  const auth = c.get("auth") as { user_id: string };
+  const slug = c.req.param("slug");
+  const id = c.req.param("id");
+  const supabase = createSupabaseClient(c.env);
+
+  const business = await getBusinessBySlug(supabase, auth.user_id, slug);
+  if (!business) return c.json({ error: "Business not found" }, 404);
+
+  const { data: asset, error: assetErr } = await supabase
+    .from("content_assets")
+    .select("id, status, zernio_scheduled_id")
+    .eq("id", id)
+    .eq("business_id", business.id)
+    .maybeSingle();
+  if (assetErr) return c.json({ error: "Failed to load content asset" }, 500);
+  if (!asset) return c.json({ error: "Content asset not found" }, 404);
+  if ((asset as any).status !== "scheduled") {
+    return c.json({ error: "This post isn't scheduled." }, 409);
+  }
+
+  const apiKey = c.env.ZERNIO_API_KEY;
+  if (!apiKey) return c.json({ error: "Social publishing not configured" }, 503);
+
+  const zid = (asset as any).zernio_scheduled_id as string | null;
+  if (zid) {
+    const cancel = await cancelScheduledPost(apiKey, zid);
+    if (!cancel.ok) {
+      log.error("[social-publish] unschedule_zernio_failed", { asset_id: id, zid, err: cancel.error });
+      return c.json({ error: "Couldn't cancel the scheduled post — please try again." }, 502);
+    }
+  }
+
+  const { error: updateErr } = await supabase
+    .from("content_assets")
+    .update({ status: "draft", scheduled_for: null, scheduled_timezone: null, zernio_scheduled_id: null })
+    .eq("id", id);
+  if (updateErr) {
+    return c.json({ error: "Cancelled on Zernio but failed to update — please refresh." }, 500);
+  }
+
+  log.info("[social-publish] unscheduled_ok", { business_id: business.id, asset_id: id });
+  return c.json({ ok: true, status: "draft" });
 });
 
 export default app;
