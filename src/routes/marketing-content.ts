@@ -235,6 +235,50 @@ app.get("/:slug/marketing/metrics", async (c) => {
   return c.json({ overall, perPlatform });
 });
 
+// ── GET /:slug/marketing/calendar ────────────────────────────────────────────
+// Calendar feed: future SCHEDULED posts (on scheduled_for) + past PUBLISHED
+// posts (on published_at). One business, soft-deleted excluded. The frontend
+// renders these on the Schedule calendar, color-coded by platform, with the two
+// states visually distinct. Times are UTC ISO; the client displays Central.
+app.get("/:slug/marketing/calendar", async (c) => {
+  const auth = c.get("auth") as { user_id: string };
+  const slug = c.req.param("slug");
+  const supabase = createSupabaseClient(c.env);
+
+  const business = await getBusinessBySlug(supabase, auth.user_id, slug);
+  if (!business) return c.json({ error: "Business not found" }, 404);
+
+  const { data, error } = await supabase
+    .from("content_assets")
+    .select("id, target_platform, status, generated_body, scheduled_for, published_at")
+    .eq("business_id", business.id)
+    .in("status", ["scheduled", "published"])
+    .is("deleted_at", null);
+
+  if (error) {
+    log.error("[marketing-content] calendar_failed", { business_id: business.id, err: error.message });
+    return c.json({ error: "Failed to load calendar" }, 500);
+  }
+
+  const posts = ((data ?? []) as any[])
+    .map((r) => {
+      const when = r.status === "scheduled" ? r.scheduled_for : r.published_at;
+      if (!when) return null;
+      const body = String(r.generated_body ?? "");
+      return {
+        id: r.id,
+        platform: (r.target_platform ?? "").toLowerCase(),
+        status: r.status,
+        when,                                   // UTC ISO
+        title: body.length > 80 ? body.slice(0, 80) + "…" : body,
+        body,
+      };
+    })
+    .filter(Boolean);
+
+  return c.json({ posts });
+});
+
 // ── PATCH /:slug/marketing/content-assets/:id ────────────────────────────────
 // Two mutually exclusive modes — provide exactly one of:
 //   { status: "approved" | "dismissed" }  — status transition (no body change)

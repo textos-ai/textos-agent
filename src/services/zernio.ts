@@ -297,6 +297,35 @@ export async function publishPost(
 }
 
 /**
+ * Reschedule a scheduled Zernio post to a new time. Confirmed by live test:
+ * PUT /posts/{id} with { scheduledFor, timezone } updates the fire time
+ * (PATCH is 405 — must be PUT). Never throws.
+ */
+export async function reschedulePost(
+  apiKey: string,
+  postId: string,
+  scheduledFor: string,
+  timezone: string,
+): Promise<ZernioResult<{ scheduledFor: string }>> {
+  let res: Response;
+  try {
+    res = await zernioFetch(apiKey, `/posts/${encodeURIComponent(postId)}`, {
+      method: "PUT",
+      body: JSON.stringify({ scheduledFor, timezone }),
+    });
+  } catch (e) {
+    return { ok: false, error: `Zernio reschedulePost network error: ${String(e)}` };
+  }
+  if (!res.ok) {
+    const body = await res.text().catch(() => "(unreadable)");
+    return zernioErr("reschedulePost", res.status, body);
+  }
+  const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  const post = ((data.post ?? data) as Record<string, unknown>);
+  return { ok: true, scheduledFor: String(post.scheduledFor ?? scheduledFor) };
+}
+
+/**
  * Cancel a scheduled Zernio post. Confirmed by live test: DELETE /posts/{id}
  * removes the scheduled post (subsequent GET → 404), so it never fires.
  * A 404 is treated as success (already gone). Never throws.

@@ -21,7 +21,7 @@ import type { Env } from "../env";
 import { requireAuth } from "../lib/jwt";
 import { log } from "../lib/logger";
 import { createSupabaseClient, getBusinessBySlug } from "../services/supabase";
-import { publishPost, getPost, cancelScheduledPost } from "../services/zernio";
+import { publishPost, getPost, cancelScheduledPost, reschedulePost } from "../services/zernio";
 import { computeNextOptimalSlot } from "../lib/scheduling/next-optimal";
 import {
   friendlyPublishError,
@@ -448,6 +448,57 @@ app.post("/:slug/marketing/content-assets/:id/unschedule", async (c) => {
 
   log.info("[social-publish] unscheduled_ok", { business_id: business.id, asset_id: id });
   return c.json({ ok: true, status: "draft" });
+});
+
+// ── POST /:slug/marketing/content-assets/:id/reschedule ──────────────────────
+// Move a scheduled post to a user-chosen time. Zernio PUT /posts/{id} (live-
+// tested) updates the fire time; we store the new UTC instant Zernio returns.
+app.post("/:slug/marketing/content-assets/:id/reschedule", async (c) => {
+  const auth = c.get("auth") as { user_id: string };
+  const slug = c.req.param("slug");
+  const id = c.req.param("id");
+  const supabase = createSupabaseClient(c.env);
+
+  const business = await getBusinessBySlug(supabase, auth.user_id, slug);
+  if (!business) return c.json({ error: "Business not found" }, 404);
+
+  const body = (await c.req.json().catch(() => ({}))) as { scheduled_for_local?: string; timezone?: string };
+  const localWhen = typeof body.scheduled_for_local === "string" ? body.scheduled_for_local.trim() : "";
+  const timezone = typeof body.timezone === "string" && body.timezone ? body.timezone : "America/Chicago";
+  if (!localWhen) return c.json({ error: "Pick a new time to reschedule to." }, 400);
+
+  const { data: asset, error: assetErr } = await supabase
+    .from("content_assets")
+    .select("id, status, zernio_scheduled_id")
+    .eq("id", id)
+    .eq("business_id", business.id)
+    .maybeSingle();
+  if (assetErr) return c.json({ error: "Failed to load content asset" }, 500);
+  if (!asset) return c.json({ error: "Content asset not found" }, 404);
+  if ((asset as any).status !== "scheduled") return c.json({ error: "This post isn't scheduled." }, 409);
+
+  const apiKey = c.env.ZERNIO_API_KEY;
+  if (!apiKey) return c.json({ error: "Social publishing not configured" }, 503);
+
+  const zid = (asset as any).zernio_scheduled_id as string | null;
+  if (!zid) return c.json({ error: "Missing the scheduled post reference — unschedule and reschedule." }, 409);
+
+  const res = await reschedulePost(apiKey, zid, localWhen, timezone);
+  if (!res.ok) {
+    log.error("[social-publish] reschedule_failed", { asset_id: id, zid, err: res.error });
+    return c.json({ error: "Couldn't move the scheduled post — please try again." }, 502);
+  }
+
+  // Zernio returns the new fire time in UTC; store that.
+  const newUtc = res.scheduledFor;
+  const { error: updateErr } = await supabase
+    .from("content_assets")
+    .update({ scheduled_for: newUtc, scheduled_timezone: timezone })
+    .eq("id", id);
+  if (updateErr) return c.json({ error: "Rescheduled on Zernio but failed to record it — please refresh." }, 500);
+
+  log.info("[social-publish] rescheduled_ok", { business_id: business.id, asset_id: id, scheduled_for: newUtc });
+  return c.json({ ok: true, status: "scheduled", scheduled_for: newUtc, scheduled_timezone: timezone });
 });
 
 export default app;
