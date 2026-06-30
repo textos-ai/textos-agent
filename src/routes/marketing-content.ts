@@ -696,4 +696,186 @@ app.post("/:slug/marketing/content-assets/:id/shorten", async (c) => {
   return c.json({ shortened });
 });
 
+// ── GET /:slug/marketing/schedule-overview ──────────────────────────────────
+// Real-data feed for the Schedule "Morning Briefing" page. Counts & rhythm only
+// — NO post content. Sections: momentum hero, effort pipeline, cadence health
+// (rolling 7-day published vs the platform's parsed weekly target), next prime
+// slot per platform (clean optimal time, NO jitter), and this-week scheduled
+// lanes (tappable markers + open prime slots). Central (America/Chicago) tz.
+app.get("/:slug/marketing/schedule-overview", async (c) => {
+  const auth = c.get("auth") as { user_id: string };
+  const slug = c.req.param("slug");
+  const supabase = createSupabaseClient(c.env);
+  const business = await getBusinessBySlug(supabase, auth.user_id, slug);
+  if (!business) return c.json({ error: "Business not found" }, 404);
+
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const f12 = (h: number, mn: number) => `${h % 12 === 0 ? 12 : h % 12}:${pad(mn)}${h >= 12 ? "pm" : "am"}`;
+  const f12short = (h: number, mn: number) => `${h % 12 === 0 ? 12 : h % 12}${mn ? ":" + pad(mn) : ""}${h >= 12 ? "p" : "a"}`;
+
+  // Full Central parts for an instant.
+  const cParts = (utcMs: number) => {
+    const p = new Intl.DateTimeFormat("en-US", {
+      timeZone: BUSINESS_TZ, hourCycle: "h23",
+      year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+    }).formatToParts(new Date(utcMs)).reduce<Record<string, string>>((a, x) => { a[x.type] = x.value; return a; }, {});
+    const y = +p.year, m = +p.month, d = +p.day;
+    return { y, m, d, hour: +p.hour, min: +p.minute, dow: new Date(Date.UTC(y, m - 1, d)).getUTCDay() };
+  };
+  const wallToUTC = (y: number, m: number, d: number, hh: number, mm: number) => {
+    const g = Date.UTC(y, m - 1, d, hh, mm, 0);
+    return g - centralOffsetMs(g);
+  };
+  // Parse messy recommended_cadence text → weekly min/max. Prefer an explicit
+  // "/week" clause; otherwise treat "/day" figures as ×7.
+  const parseWeekly = (text: string | null): { min: number; max: number } | null => {
+    if (!text) return null;
+    const t = text.toLowerCase();
+    const wk = t.match(/(\d+)\s*[–\-]?\s*(\d+)?\s*\/?\s*week/);
+    if (wk) { const a = +wk[1], b = wk[2] ? +wk[2] : +wk[1]; return { min: Math.min(a, b), max: Math.max(a, b) }; }
+    const dy = t.match(/(\d+)\s*[–\-]?\s*(\d+)?\s*\/?\s*day/);
+    if (dy) { const a = +dy[1], b = dy[2] ? +dy[2] : +dy[1]; return { min: Math.min(a, b) * 7, max: Math.max(a, b) * 7 }; }
+    return null;
+  };
+
+  // Connected publish targets — same source publishing uses.
+  const { data: integ } = await supabase
+    .from("business_integrations").select("config")
+    .eq("business_id", business.id).eq("provider", "zernio").eq("is_active", true).maybeSingle();
+  const accounts = (((integ as any)?.config?.accounts) ?? []) as Array<{ platform: string }>;
+  const connected = Array.from(new Set(accounts.map((a) => (a.platform || "").toLowerCase()).filter(Boolean)));
+  const inList = connected.length ? connected : ["__none__"];
+
+  const { data: platRows } = await supabase
+    .from("platforms").select("slug, display_name, recommended_cadence").in("slug", inList);
+  const platBySlug: Record<string, any> = {};
+  (platRows ?? []).forEach((p: any) => { platBySlug[p.slug] = p; });
+
+  const { data: slotRows } = await supabase
+    .from("optimal_slots").select("platform_slug, day_of_week, local_time, priority")
+    .in("platform_slug", inList).eq("content_type", "post").eq("is_active", true);
+  const slotsByPlat: Record<string, Array<{ dow: number; hh: number; mm: number; pr: number }>> = {};
+  (slotRows ?? []).forEach((s: any) => {
+    const dow = DOW.indexOf(s.day_of_week); if (dow < 0) return;
+    const [hh, mm] = String(s.local_time).split(":").map(Number);
+    (slotsByPlat[s.platform_slug] ||= []).push({ dow, hh, mm, pr: s.priority });
+  });
+
+  const { data: caRows } = await supabase
+    .from("content_assets").select("id, status, target_platform, published_at, scheduled_for")
+    .eq("business_id", business.id).is("deleted_at", null);
+  const rows = (caRows ?? []) as Array<any>;
+  const platOf = (r: any) => (r.target_platform ?? "").toLowerCase();
+
+  // Timezone-aware boundaries (Central).
+  const nowMs = Date.now();
+  const startOfToday = centralDayStartUTC(nowMs, 0);
+  const tp = centralDateParts(nowMs);
+  const cdow = new Date(Date.UTC(tp.y, tp.m - 1, tp.d)).getUTCDay();
+  const startOfWeek = centralDayStartUTC(nowMs, (cdow + 6) % 7);
+  const sevenAgo = nowMs - 7 * 86400000;
+  const now = cParts(nowMs);
+
+  // Hero + pipeline + rolling-7-day per-platform published.
+  let today = 0, week = 0, allTime = 0;
+  const pipeline = { draft: 0, approved: 0, scheduled: 0, published: 0 };
+  const pub7: Record<string, number> = {};
+  const draft7: Record<string, number> = {};
+  for (const r of rows) {
+    if (r.status === "published") {
+      pipeline.published++; allTime++;
+      const t = r.published_at ? Date.parse(r.published_at) : NaN;
+      if (!isNaN(t)) {
+        if (t >= startOfToday) today++;
+        if (t >= startOfWeek) week++;
+        if (t >= sevenAgo) pub7[platOf(r)] = (pub7[platOf(r)] || 0) + 1;
+      }
+    } else if (r.status === "draft") { pipeline.draft++; draft7[platOf(r)] = (draft7[platOf(r)] || 0) + 1; }
+    else if (r.status === "approved") pipeline.approved++;
+    else if (r.status === "scheduled") pipeline.scheduled++;
+  }
+
+  // Cadence health (rolling 7-day vs weekly target).
+  const cadence = connected.map((s) => {
+    const meta = platBySlug[s];
+    const wk = parseWeekly(meta?.recommended_cadence ?? null);
+    const count = pub7[s] || 0;
+    let status = "unknown", behindBy = 0;
+    if (wk) { if (count >= wk.min) status = "on"; else { status = "behind"; behindBy = wk.min - count; } }
+    return {
+      slug: s, name: meta?.display_name ?? s, count7d: count,
+      min: wk?.min ?? null, max: wk?.max ?? null,
+      rangeLabel: wk ? (wk.min === wk.max ? `${wk.min}` : `${wk.min}–${wk.max}`) : null,
+      status, behindBy,
+    };
+  });
+
+  // Next prime slot per platform (clean optimal time) + week-rhythm bars.
+  const barOrder = [1, 2, 3, 4, 5, 6, 0]; // Mon..Sun
+  const nextSlots = connected.map((s) => {
+    const slots = slotsByPlat[s] || [];
+    let best: any = null;
+    for (const sl of slots) {
+      let daysAhead = (sl.dow - now.dow + 7) % 7;
+      if (daysAhead === 0 && (sl.hh * 60 + sl.mm) <= now.hour * 60 + now.min + 2) daysAhead = 7;
+      const utc = wallToUTC(now.y, now.m, now.d + daysAhead, sl.hh, sl.mm);
+      if (!best || utc < best.utc || (utc === best.utc && sl.pr < best.pr)) best = { utc, pr: sl.pr };
+    }
+    const bars = barOrder.map((dow) => {
+      const day = slots.filter((x) => x.dow === dow);
+      if (!day.length) return { h: 0, pk: false };
+      return { h: Math.max(...day.map((x) => 4 - x.pr)), pk: day.some((x) => x.pr === 1) };
+    });
+    let dowLabel: string | null = null, dateLabel: string | null = null, timeLabel: string | null = null;
+    let isToday = false, nextBarIndex: number | null = null;
+    if (best) {
+      const f = cParts(best.utc);
+      isToday = f.y === now.y && f.m === now.m && f.d === now.d;
+      dowLabel = isToday ? "TODAY" : DOW[f.dow].toUpperCase();
+      dateLabel = `${MONTHS[f.m - 1]} ${f.d}`;
+      timeLabel = f12(f.hour, f.min);
+      nextBarIndex = barOrder.indexOf(f.dow);
+    }
+    const meta = platBySlug[s];
+    return {
+      slug: s, name: meta?.display_name ?? s, cadenceLabel: meta?.recommended_cadence ?? null,
+      dowLabel, dateLabel, timeLabel, isToday, bars, nextBarIndex, draftsReady: draft7[s] || 0,
+    };
+  });
+
+  // This-week scheduled lanes (Mon..Sun Central).
+  const dayHeaders: Array<{ dow: string; d: number; isToday: boolean; dowNum: number }> = [];
+  for (let i = 0; i < 7; i++) {
+    const dp = cParts(startOfWeek + i * 86400000 + 6 * 3600000); // noon-ish guards DST
+    dayHeaders.push({ dow: DOW[dp.dow], d: dp.d, dowNum: dp.dow, isToday: dp.y === now.y && dp.m === now.m && dp.d === now.d });
+  }
+  const sched = rows.filter((r) => r.status === "scheduled" && r.scheduled_for);
+  const laneDayIndex = (utcMs: number) => { const p = cParts(utcMs); return dayHeaders.findIndex((h) => h.d === p.d); };
+  const isPrimeAt = (s: string, utcMs: number) => {
+    const p = cParts(utcMs); const mins = p.hour * 60 + p.min;
+    return (slotsByPlat[s] || []).some((sl) => sl.dow === p.dow && Math.abs(sl.hh * 60 + sl.mm - mins) <= 90);
+  };
+  const lanes = connected.map((s) => {
+    const cells = dayHeaders.map((h, di) => {
+      const markers = sched
+        .filter((r) => platOf(r) === s && laneDayIndex(Date.parse(r.scheduled_for)) === di)
+        .map((r) => {
+          const ms = Date.parse(r.scheduled_for); const p = cParts(ms);
+          return {
+            id: r.id, time: f12short(p.hour, p.min), isPrime: isPrimeAt(s, ms),
+            scheduledForLocal: `${p.y}-${pad(p.m)}-${pad(p.d)}T${pad(p.hour)}:${pad(p.min)}`,
+            whenLabel: `${DOW[p.dow]}, ${MONTHS[p.m - 1]} ${p.d} · ${f12(p.hour, p.min)}`,
+          };
+        });
+      const hasPrime = (slotsByPlat[s] || []).some((sl) => sl.dow === h.dowNum);
+      return { markers, openPrime: hasPrime && markers.length === 0 };
+    });
+    return { slug: s, name: platBySlug[s]?.display_name ?? s, cells };
+  });
+
+  return c.json({ hero: { today, week, allTime }, pipeline, cadence, nextSlots, lanes, dayHeaders, connectedCount: connected.length });
+});
+
 export default app;
