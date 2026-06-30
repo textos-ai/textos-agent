@@ -5,9 +5,10 @@ compatibility_flags = ["nodejs_compat"]
 
 [triggers]
 # Every minute → runHeartbeatWatchdog (existing).
-# Every 10 minutes → runGenAppStaleSweep (new). Dispatched in index.ts
-#   scheduled() by event.cron.
-crons = ["* * * * *", "*/10 * * * *"]
+# Every 5 minutes → runScheduledReconcile (scheduled→published reconciliation).
+# Every 10 minutes → runGenAppStaleSweep. Dispatched in index.ts scheduled()
+#   by event.cron (Cloudflare fires one invocation per matching expression).
+crons = ["* * * * *", "*/5 * * * *", "*/10 * * * *"]
 
 [limits]
 # Raised 30000 → 300000 so executionCtx.waitUntil() can complete heavier

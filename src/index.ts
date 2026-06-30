@@ -44,6 +44,7 @@ import factoryCalculatorAppRoutes from "./routes/factory-calculator-app"; // TEM
 import appLogsRoutes from "./routes/app-logs";
 import { runHeartbeatWatchdog } from "./cron/heartbeatWatchdog";
 import { runGenAppStaleSweep } from "./cron/genAppStaleSweep";
+import { runScheduledReconcile } from "./cron/reconcileScheduledPosts";
 import { processAppGenHtmlBatch } from "./queues/app-gen-html-consumer";
 import type { HtmlJobMessage } from "./queues/types";
 import { createClient } from "@supabase/supabase-js";
@@ -149,6 +150,12 @@ export default {
     // both jobs on every minute tick.
     if (event.cron === "*/10 * * * *") {
       await runGenAppStaleSweep(supabase);
+      return;
+    }
+    // Every 5 minutes → reconcile scheduled posts that have fired on Zernio's
+    // clock so our DB learns they published (scheduled→published/failed).
+    if (event.cron === "*/5 * * * *") {
+      await runScheduledReconcile(supabase, env.ZERNIO_API_KEY);
       return;
     }
     // Default (covers "* * * * *" and any future schedule we forget to

@@ -9,6 +9,7 @@ import {
 import { errBody } from "../lib/errors";
 import { log } from "../lib/logger";
 import { runTaskInBackground } from "./business-task-run";
+import { runScheduledReconcile } from "../cron/reconcileScheduledPosts";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // /api/internal/* — worker→worker chain trigger routes.
@@ -26,6 +27,20 @@ import { runTaskInBackground } from "./business-task-run";
 // ─────────────────────────────────────────────────────────────────────────────
 
 const app = new Hono<{ Bindings: Env }>();
+
+// POST /api/internal/reconcile-scheduled — on-demand run of the scheduled-post
+// reconciler (same routine the */5 cron runs). Lets us trigger/verify it on
+// environments where cron is disabled (e.g. test). Secret-guarded.
+app.post("/reconcile-scheduled", async (c) => {
+  const expected = c.env.INTERNAL_TRIGGER_SECRET;
+  if (!expected) return c.json(errBody("not_configured", "INTERNAL_TRIGGER_SECRET unset"), 503);
+  if ((c.req.header("x-internal-secret") ?? "") !== expected) {
+    return c.json(errBody("unauthorized", "bad internal secret"), 401);
+  }
+  const supabase = createSupabaseClient(c.env);
+  const stats = await runScheduledReconcile(supabase, c.env.ZERNIO_API_KEY);
+  return c.json({ ok: true, ...stats });
+});
 
 const RunTaskBody = z.object({
   businessId: z.string().uuid(),
