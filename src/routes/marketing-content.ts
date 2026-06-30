@@ -878,4 +878,178 @@ app.get("/:slug/marketing/schedule-overview", async (c) => {
   return c.json({ hero: { today, week, allTime }, pipeline, cadence, nextSlots, lanes, dayHeaders, connectedCount: connected.length });
 });
 
+// ── GET /:slug/marketing/schedule-history?ym=YYYY-MM ────────────────────────
+// Feeds the Month + All-time Schedule tabs. Real data only, counts/rhythm — NO
+// post content. Month: per-day published/scheduled + per-platform split, hero
+// stats, per-platform weekly rhythm. All-time: auto early/full state by history
+// depth (weeks active), with real milestone progress for the early state.
+app.get("/:slug/marketing/schedule-history", async (c) => {
+  const auth = c.get("auth") as { user_id: string };
+  const slug = c.req.param("slug");
+  const supabase = createSupabaseClient(c.env);
+  const business = await getBusinessBySlug(supabase, auth.user_id, slug);
+  if (!business) return c.json({ error: "Business not found" }, 404);
+
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+  const cP = (ms: number) => {
+    const p = new Intl.DateTimeFormat("en-US", {
+      timeZone: BUSINESS_TZ, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+    }).formatToParts(new Date(ms)).reduce<Record<string, string>>((a, x) => { a[x.type] = x.value; return a; }, {});
+    return { y: +p.year, m: +p.month, d: +p.day, hour: +p.hour, min: +p.minute };
+  };
+  const dateKey = (ms: number) => { const p = cP(ms); return `${p.y}-${pad(p.m)}-${pad(p.d)}`; };
+  const dowOf = (y: number, m: number, d: number) => new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+  const weekKeyOf = (y: number, m: number, d: number) => {
+    const back = (dowOf(y, m, d) + 6) % 7;            // days since Monday
+    const ws = new Date(Date.UTC(y, m - 1, d - back));
+    return `${ws.getUTCFullYear()}-${pad(ws.getUTCMonth() + 1)}-${pad(ws.getUTCDate())}`;
+  };
+  const weekKeyOfKey = (key: string) => { const [yy, mm, dd] = key.split("-").map(Number); return weekKeyOf(yy, mm, dd); };
+  const f12 = (h: number, mn: number) => `${h % 12 === 0 ? 12 : h % 12}:${pad(mn)}${h >= 12 ? "pm" : "am"}`;
+
+  // Connected platforms + display names.
+  const { data: integ } = await supabase
+    .from("business_integrations").select("config")
+    .eq("business_id", business.id).eq("provider", "zernio").eq("is_active", true).maybeSingle();
+  const accounts = (((integ as any)?.config?.accounts) ?? []) as Array<{ platform: string }>;
+  const connected = Array.from(new Set(accounts.map((a) => (a.platform || "").toLowerCase()).filter(Boolean)));
+  const { data: platRows } = await supabase
+    .from("platforms").select("slug, display_name").in("slug", connected.length ? connected : ["__none__"]);
+  const nameOf: Record<string, string> = {};
+  (platRows ?? []).forEach((p: any) => { nameOf[p.slug] = p.display_name; });
+
+  const { data: caRows } = await supabase
+    .from("content_assets").select("status, target_platform, published_at, scheduled_for")
+    .eq("business_id", business.id).is("deleted_at", null);
+  const rows = (caRows ?? []) as Array<any>;
+  const platOf = (r: any) => (r.target_platform ?? "").toLowerCase();
+
+  const nowMs = Date.now();
+  const now = cP(nowMs);
+  const todayKey = dateKey(nowMs);
+
+  // Published / scheduled events with Central date keys.
+  type Ev = { key: string; plat: string; ms: number; status: string };
+  const events: Ev[] = [];
+  for (const r of rows) {
+    if (r.status === "published" && r.published_at) events.push({ key: dateKey(Date.parse(r.published_at)), plat: platOf(r), ms: Date.parse(r.published_at), status: "published" });
+    else if (r.status === "scheduled" && r.scheduled_for) events.push({ key: dateKey(Date.parse(r.scheduled_for)), plat: platOf(r), ms: Date.parse(r.scheduled_for), status: "scheduled" });
+  }
+
+  // ===== MONTH =====
+  const ym = c.req.query("ym");
+  let mY = now.y, mM = now.m;
+  if (ym && /^\d{4}-\d{2}$/.test(ym)) { mY = +ym.slice(0, 4); mM = +ym.slice(5, 7); }
+  const daysInMonth = new Date(Date.UTC(mY, mM, 0)).getUTCDate();
+  const firstDow = dowOf(mY, mM, 1);
+  const leadPad = (firstDow + 6) % 7;                 // Monday-first grid
+
+  const monthDays = [];
+  let monthPublished = 0, monthScheduled = 0;
+  const monthActiveDays = new Set<string>();
+  for (let d = 1; d <= daysInMonth; d++) {
+    const key = `${mY}-${pad(mM)}-${pad(d)}`;
+    const evs = events.filter((e) => e.key === key);
+    const published = evs.filter((e) => e.status === "published").length;
+    const scheduled = evs.filter((e) => e.status === "scheduled").length;
+    const byPlatform: Record<string, { published: number; scheduled: number }> = {};
+    for (const e of evs) {
+      (byPlatform[e.plat] ||= { published: 0, scheduled: 0 });
+      if (e.status === "published") byPlatform[e.plat].published++; else byPlatform[e.plat].scheduled++;
+    }
+    const times = evs.map((e) => { const p = cP(e.ms); return { plat: e.plat, name: nameOf[e.plat] ?? e.plat, time: f12(p.hour, p.min), status: e.status }; })
+      .sort((a, b) => a.time.localeCompare(b.time));
+    if (published > 0) { monthPublished += published; monthActiveDays.add(key); }
+    monthScheduled += scheduled;
+    monthDays.push({
+      date: key, dom: d, dow: dowOf(mY, mM, d), published, scheduled, byPlatform, times,
+      isToday: key === todayKey, isPast: key < todayKey, isFuture: key > todayKey,
+    });
+  }
+  const avgPerActiveDay = monthActiveDays.size ? +(monthPublished / monthActiveDays.size).toFixed(1) : 0;
+  // First active day this month (for "started …" note).
+  const monthActiveSorted = [...monthActiveDays].sort();
+  const startedNote = monthActiveSorted.length ? (() => { const [yy, mm, dd] = monthActiveSorted[0].split("-").map(Number); return `${MONTHS[mm - 1]} ${dd}`; })() : null;
+
+  // Per-platform month rhythm: published per week-of-month + this-month total.
+  const monthWeekStarts = Array.from(new Set(Array.from({ length: daysInMonth }, (_, i) => weekKeyOf(mY, mM, i + 1)))).sort();
+  const monthCadence = connected.map((s) => {
+    const buckets = monthWeekStarts.map((wk) => events.filter((e) => e.status === "published" && e.plat === s && weekKeyOfKey(e.key) === wk).length);
+    const total = events.filter((e) => e.status === "published" && e.plat === s && e.key.startsWith(`${mY}-${pad(mM)}`)).length;
+    return { slug: s, name: nameOf[s] ?? s, total, weeks: buckets };
+  });
+  // on-pace count (rolling 7-day vs target) — reuse the simple read for the hero.
+  const sevenAgo = nowMs - 7 * 86400000;
+  const pub7: Record<string, number> = {};
+  events.forEach((e) => { if (e.status === "published" && e.ms >= sevenAgo) pub7[e.plat] = (pub7[e.plat] || 0) + 1; });
+
+  // ===== ALL-TIME =====
+  const pubEvents = events.filter((e) => e.status === "published");
+  const perPlatform = connected.map((s) => ({ slug: s, name: nameOf[s] ?? s, count: pubEvents.filter((e) => e.plat === s).length }))
+    .sort((a, b) => b.count - a.count);
+  const activeDayKeys = [...new Set(pubEvents.map((e) => e.key))].sort();
+  const totalPublished = pubEvents.length;
+
+  // Weekly published buckets (chronological) for the growth view.
+  const weekCounts: Record<string, number> = {};
+  pubEvents.forEach((e) => { const [yy, mm, dd] = e.key.split("-").map(Number); const wk = weekKeyOf(yy, mm, dd); weekCounts[wk] = (weekCounts[wk] || 0) + 1; });
+  const weekKeys = Object.keys(weekCounts).sort();
+  const weekly = weekKeys.map((w) => ({ weekStart: w, count: weekCounts[w] }));
+  const weeksActive = weekKeys.length;
+
+  // Longest run of consecutive active weeks (week starts 7 days apart).
+  let longestWeekStreak = 0, run = 0; let prev: number | null = null;
+  for (const w of weekKeys) {
+    const [yy, mm, dd] = w.split("-").map(Number); const ms = Date.UTC(yy, mm - 1, dd);
+    if (prev !== null && ms - prev === 7 * 86400000) run++; else run = 1;
+    prev = ms; if (run > longestWeekStreak) longestWeekStreak = run;
+  }
+  // Current consecutive-day streak ending at the most recent active day.
+  let currentStreakDays = 0;
+  if (activeDayKeys.length) {
+    let cursor = activeDayKeys[activeDayKeys.length - 1];
+    const set = new Set(activeDayKeys);
+    while (set.has(cursor)) {
+      currentStreakDays++;
+      const [yy, mm, dd] = cursor.split("-").map(Number);
+      const prevMs = Date.UTC(yy, mm - 1, dd) - 86400000; const pp = new Date(prevMs);
+      cursor = `${pp.getUTCFullYear()}-${pad(pp.getUTCMonth() + 1)}-${pad(pp.getUTCDate())}`;
+    }
+  }
+  // Days since first publish (for "first full month" milestone).
+  let daysSinceFirst = 0;
+  if (activeDayKeys.length) {
+    const [yy, mm, dd] = activeDayKeys[0].split("-").map(Number);
+    daysSinceFirst = Math.max(1, Math.round((Date.UTC(now.y, now.m - 1, now.d) - Date.UTC(yy, mm - 1, dd)) / 86400000) + 1);
+  }
+  const state = weeksActive >= 4 ? "full" : "early";
+  const allTime = {
+    state,
+    totals: { published: totalPublished, daysActive: activeDayKeys.length, currentStreakDays, platformCount: perPlatform.filter((p) => p.count > 0).length || connected.length },
+    perPlatform, weekly, weeksActive, longestWeekStreak,
+    milestones: {
+      posts: { n: Math.min(totalPublished, 50), goal: 50 },
+      firstMonth: { n: Math.min(daysSinceFirst, 30), goal: 30 },
+      weekStreak: { n: Math.min(longestWeekStreak, 4), goal: 4 },
+    },
+  };
+
+  return c.json({
+    month: {
+      year: mY, month: mM, label: `${MONTHS[mM - 1]} ${mY}`, leadPad, daysInMonth,
+      hero: {
+        published: monthPublished, scheduled: monthScheduled, avgPerActiveDay,
+        onPaceCount: connected.filter((s) => (pub7[s] || 0) > 0).length, platformCount: connected.length,
+      },
+      days: monthDays, cadence: monthCadence, startedNote,
+      prevYm: mM === 1 ? `${mY - 1}-12` : `${mY}-${pad(mM - 1)}`,
+      nextYm: mM === 12 ? `${mY + 1}-01` : `${mY}-${pad(mM + 1)}`,
+    },
+    allTime,
+    connectedCount: connected.length,
+  });
+});
+
 export default app;
