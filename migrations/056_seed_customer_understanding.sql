@@ -143,7 +143,12 @@ Rules: Be concrete and specific to THIS business — no generic management-speak
   E'Business: {{business.name}}\nIndustry: {{ctx.industry}}\nBusiness model: {{ctx.business_model}}\nBusiness summary: {{ctx.business_summary}}\nValue proposition: {{ctx.value_proposition}}\nPositioning: {{ctx.positioning_statement}}\nBrand voice: {{ctx.brand_voice}}\nTarget customer: {{ctx.target_customer}}\nKey differentiators: {{ctx.key_differentiators}}\nCompetitors: {{ctx.competitors}}\nMarket trends: {{ctx.market_trends}}\nCustomer signals: {{ctx.customer_signals}}\n\nFOUNDER ANSWERS (may be empty — if empty, do not fabricate customer language; infer and flag, and ask sharp questions instead):\n{{config.founder_answers}}\n\nBuild the Value Proposition Canvas Customer Profile for this business''s ONE primary customer segment, following the six-section structure and the rules exactly.',
   true,
   'Initial version — VPC Customer Profile (Jobs/Pains/Gains + World/Language), synthesize-then-sharpen.'
-);
+)
+ON CONFLICT (task_slug, version) DO UPDATE
+  SET system_prompt        = EXCLUDED.system_prompt,
+      user_prompt_template = EXCLUDED.user_prompt_template,
+      is_active            = true,
+      change_note          = EXCLUDED.change_note;
 
 -- ── 5. prompt_variables: register {{config.founder_answers}} ──────────────────
 
