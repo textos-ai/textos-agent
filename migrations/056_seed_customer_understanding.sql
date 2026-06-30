@@ -87,6 +87,20 @@ FROM public.lifecycle_phases lp
 WHERE lp.slug = 'foundation'
   AND t.slug  = 'customer-understanding';
 
+-- ── 2b. Runnability gate: non-empty tasks.prompt_template ─────────────────────
+-- The run gate (business-task-run.ts isComingSoon) and the frontend
+-- (task-presentation.ts isTaskRunnableNow) treat a paid document task as
+-- runnable only when tasks.prompt_template is non-empty — otherwise it shows as
+-- "coming soon" and the run is rejected. The runner itself does NOT execute this
+-- column: it resolves the real prompt from prompt_definitions via resolvePrompt
+-- (see section 4). This column is therefore the legacy runnability gate only, so
+-- we set it to a pointer that keeps prompt_definitions the single source of truth.
+
+UPDATE public.tasks
+SET prompt_template = 'Managed in prompt_definitions (versioned); this column is the legacy runnability gate only — the runner resolves the active customer-understanding prompt from prompt_definitions.'
+WHERE slug = 'customer-understanding'
+  AND (prompt_template IS NULL OR trim(prompt_template) = '');
+
 -- ── 3. task_apis: bind to anthropic-claude-sonnet ────────────────────────────
 
 INSERT INTO public.task_apis (task_id, api_id, role)
@@ -149,6 +163,21 @@ ON CONFLICT (task_slug, version) DO UPDATE
       user_prompt_template = EXCLUDED.user_prompt_template,
       is_active            = true,
       change_note          = EXCLUDED.change_note;
+
+-- ── 4b. task_objectives: place under Playbook step "Get Customers" ────────────
+-- The 8 Playbook steps are the `objectives` table; tasks associate via the
+-- `task_objectives` join (same mechanism every task uses). Without a row here
+-- the task falls to the "Other" catch-all in both the Playbook and the
+-- documents view (which groups by the producing task's first objective).
+-- Customer Understanding's home is "Get Customers" (find/win the people who buy).
+
+INSERT INTO public.task_objectives (task_id, objective_id)
+SELECT t.id, o.id
+FROM public.tasks t
+CROSS JOIN public.objectives o
+WHERE t.slug = 'customer-understanding'
+  AND o.slug = 'get-customers'
+ON CONFLICT (task_id, objective_id) DO NOTHING;
 
 -- ── 5. prompt_variables: register {{config.founder_answers}} ──────────────────
 
