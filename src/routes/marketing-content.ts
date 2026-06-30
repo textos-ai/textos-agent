@@ -875,7 +875,29 @@ app.get("/:slug/marketing/schedule-overview", async (c) => {
     return { slug: s, name: platBySlug[s]?.display_name ?? s, cells };
   });
 
-  return c.json({ hero: { today, week, allTime }, pipeline, cadence, nextSlots, lanes, dayHeaders, connectedCount: connected.length });
+  // Lifecycle — SINGLE source of truth for empty/partial/full across all tabs.
+  // EMPTY: no output/timing to show (drafts may exist; they shift CTA not state).
+  // FULL: >= 4 distinct active weeks. PARTIAL: some data, below that bar.
+  const pubWeeks = new Set<string>();
+  for (const r of rows) {
+    if (r.status === "published" && r.published_at) {
+      const p = cParts(Date.parse(r.published_at));
+      const back = (new Date(Date.UTC(p.y, p.m - 1, p.d)).getUTCDay() + 6) % 7;
+      const ws = new Date(Date.UTC(p.y, p.m - 1, p.d - back));
+      pubWeeks.add(`${ws.getUTCFullYear()}-${ws.getUTCMonth() + 1}-${ws.getUTCDate()}`);
+    }
+  }
+  const weeksActive = pubWeeks.size;
+  const lifecycle = {
+    state: pipeline.published === 0 && pipeline.scheduled === 0 ? "empty" : weeksActive >= 4 ? "full" : "partial",
+    connectedCount: connected.length,
+    draftCount: pipeline.draft,
+    publishedCount: pipeline.published,
+    scheduledCount: pipeline.scheduled,
+    weeksActive,
+  };
+
+  return c.json({ hero: { today, week, allTime }, pipeline, cadence, nextSlots, lanes, dayHeaders, connectedCount: connected.length, lifecycle });
 });
 
 // ── GET /:slug/marketing/schedule-history?ym=YYYY-MM ────────────────────────
