@@ -188,7 +188,7 @@ export async function genericDocumentRunner(
   taskCtx: TaskCtx,
   task: TaskRow,
 ): Promise<TaskResult> {
-  const { business, ctx, user, anthropic, models, supabase, taskRunId, abortSignal, isHarness } = taskCtx;
+  const { business, ctx, user, anthropic, models, supabase, taskRunId, abortSignal, isHarness, config } = taskCtx;
 
   const promptDef = await resolvePrompt(supabase, task.slug);
   if (!promptDef.system_prompt || promptDef.system_prompt.trim() === '') {
@@ -196,10 +196,16 @@ export async function genericDocumentRunner(
   }
   const systemPrompt = promptDef.system_prompt;
 
+  // config is forwarded so document templates can reference {{config.*}} —
+  // e.g. customer-understanding folds the founder's sharpening answers in via
+  // {{config.founder_answers}}. Absent config renders to "" (no behaviour
+  // change for templates that don't reference it). Other doc tasks are
+  // unaffected since none reference {{config.*}}.
   const rendered = renderPrompt(promptDef.user_prompt_template, {
     business,
     ctx,
     user,
+    config: config ?? {},
   });
 
   // Pick the model from this task's primary task_apis binding. Admin can

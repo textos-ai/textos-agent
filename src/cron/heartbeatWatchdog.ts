@@ -30,13 +30,14 @@ export async function runHeartbeatWatchdog(supabase: SupabaseClient): Promise<vo
 
   // Two-tier task_run sweep:
   //   60s  — free-build and other short tasks (expected <30s in happy path)
-  //   300s — generate-business-app* + public-business-website (legitimately run 60-120s)
+  //   300s — generate-business-app* + public-business-website + customer-understanding
+  //          (legitimately run 60-120s — deep synthesis over full business context)
   // Long tasks are excluded from the 60s sweep to prevent killing healthy runs.
   // The per-business inline sweep in business-task-run.ts uses the same two-tier logic.
   const { data: longTaskRows } = await supabase
     .from("tasks")
     .select("id")
-    .or("slug.like.generate-business-app%,slug.eq.public-business-website");
+    .or("slug.like.generate-business-app%,slug.eq.public-business-website,slug.eq.customer-understanding");
   const longTaskIds = (longTaskRows ?? []).map((r: { id: string }) => r.id);
 
   const shortCutoff = new Date(Date.now() - 60_000).toISOString();

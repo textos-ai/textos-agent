@@ -617,13 +617,13 @@ app.get("/:slug/task_runs/:id", async (c) => {
   // Polls happen every 2s while a task is in flight, so a stuck row
   // clears within seconds instead of waiting for the next cron tick.
   // Two-tier: free-build tasks (expected <30s) swept at 60s; long tasks
-  // (generate-business-app* + public-business-website) kept at 300s —
-  // they legitimately run 60-120s and must not be swept early.
+  // (generate-business-app* + public-business-website + customer-understanding)
+  // kept at 300s — they legitimately run 60-120s and must not be swept early.
   {
     const { data: longTaskRows } = await supabase
       .from("tasks")
       .select("id")
-      .or("slug.like.generate-business-app%,slug.eq.public-business-website");
+      .or("slug.like.generate-business-app%,slug.eq.public-business-website,slug.eq.customer-understanding");
     const longTaskIds = (longTaskRows ?? []).map((r: { id: string }) => r.id);
 
     const shortCutoff = new Date(Date.now() - 60_000).toISOString();
