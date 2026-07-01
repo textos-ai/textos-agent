@@ -5,7 +5,7 @@
 -- because the business sat in the prompt as raw material. Fix: each pillar has a
 -- MODE. VALUE mode removes business/company context entirely and delivers a hard
 -- reader-truth with ZERO business mention; PROMOTIONAL keeps v5 behavior.
---   - pillar_templates.mode / business_pillars.mode (text, default 'value',
+--   - pillar_templates.pillar_mode / business_pillars.pillar_mode (default 'value',
 --     'value' | 'promotional'; copied on adopt; backfilled for existing rows).
 --   - Seed: VALUE = the 5 Wiebe moves + 6 Core (Customer Problems, Building in
 --     Public, Education/How-To, Behind the Scenes, Industry Takes, Founder Story);
@@ -29,7 +29,7 @@ ALTER TABLE public.business_pillars
   ADD COLUMN IF NOT EXISTS pillar_mode TEXT NOT NULL DEFAULT 'value'
     CHECK (pillar_mode IN ('value','promotional'));
 
--- ── Seed modes ───────────────────────────────────────────────────────────────
+-- -- Seed modes ---------------------------------------------------------------
 -- Default is 'value' (covers the 11 value pillars). Flip the 2 promotional Core
 -- pillars + the General default to 'promotional'.
 UPDATE public.pillar_templates t SET pillar_mode = 'promotional'
@@ -44,13 +44,19 @@ UPDATE public.business_pillars bp SET pillar_mode = t.pillar_mode
 FROM public.pillar_templates t
 WHERE bp.source_template_id = t.id AND bp.pillar_mode IS DISTINCT FROM t.pillar_mode;
 
--- ── prompt_variables ─────────────────────────────────────────────────────────
+-- -- prompt_variables ---------------------------------------------------------
 INSERT INTO public.prompt_variables (name, description, source) VALUES
   ('mode.directive', 'The VALUE vs PROMOTIONAL mode directive, composed by the handler from the pillar (or a one-off override).', 'mode.directive'),
-  ('context.block',  'The context block, composed by the handler by mode: the reader''s world only (value) or the full business raw material (promotional).', 'context.block')
+  ('context.block',  'The context block, composed by the handler per mode: the reader world only (value) or the full business raw material (promotional).', 'context.block')
 ON CONFLICT (name) DO NOTHING;
 
--- ── generate-social-post prompt v6 (mode-aware) ──────────────────────────────
+-- -- generate-social-post prompt v6 (mode-aware) ------------------------------
+-- v6 is the NEW mode-aware prompt (value vs promotional) - a distinct version,
+-- not a re-insert of 076's v5. Deactivate the current active row, then upsert v6
+-- and make it active. ON CONFLICT keeps this idempotent: re-pasting (or a stale
+-- state that already has v6) refreshes the text and re-activates it instead of
+-- colliding on the (task_slug, version) unique constraint. The deactivate-then-
+-- activate order keeps the "one active per task" partial index satisfied.
 UPDATE public.prompt_definitions SET is_active = false
   WHERE task_slug = 'generate-social-post' AND is_active = true;
 
@@ -83,9 +89,14 @@ Fields:
 - character_count: exact character count of the post value$tmpl$,
   true,
   'Stage 3.6: mode-aware (VALUE removes business + demands a hard reader-truth; PROMOTIONAL keeps v5). Method still leads.'
-);
+)
+ON CONFLICT (task_slug, version) DO UPDATE SET
+  system_prompt        = EXCLUDED.system_prompt,
+  user_prompt_template = EXCLUDED.user_prompt_template,
+  is_active            = true,
+  change_note          = EXCLUDED.change_note;
 
--- ── Verify (paste after applying) ─────────────────────────────────────────────
+-- -- Verify (paste after applying) ---------------------------------------------
 -- SELECT m.slug, t.name, t.pillar_mode FROM pillar_templates t JOIN pillar_methods m ON m.id=t.method_id ORDER BY m.display_order, t.display_order;
 --   Expect: joanna 5 = value; core Customer Problems/Building in Public/Education/Behind/Industry/Founder = value;
 --           core Social Proof/Announcements = promotional; General = promotional.
