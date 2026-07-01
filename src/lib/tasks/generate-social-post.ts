@@ -133,13 +133,50 @@ export async function runGenerateSocialPost(taskCtx: TaskCtx): Promise<TaskResul
     ? (config.keywords as unknown[]).filter((k): k is string => typeof k === "string")
     : [];
 
+  // 2b. Resolve the CONTENT PILLAR that steers this generation. config.pillar_id
+  // is a business_pillars id (adopted/custom) or 'general'/absent -> the General
+  // default. Always resolves a pillar (no "if no pillar" branch); General is the
+  // neutral, draws-from-everything default that reproduces today's output. The
+  // pillar's intent+register become prompt directives ({{pillar.*}}); the
+  // business_pillar id (null for General) is stamped on each content_assets row.
+  const rawPillarId = typeof config?.pillar_id === "string" ? config.pillar_id.trim() : "";
+  let pillar = { name: "General", intent: "", register: "" };
+  let stampPillarId: string | null = null;
+  let pillarResolved = false;
+  if (rawPillarId && rawPillarId !== "general") {
+    const { data: bp } = await supabase
+      .from("business_pillars")
+      .select("id, name, intent, register")
+      .eq("id", rawPillarId)
+      .eq("business_id", business.id)
+      .maybeSingle();
+    if (bp) {
+      const p = bp as { id: string; name: string; intent: string | null; register: string | null };
+      pillar = { name: p.name, intent: p.intent ?? "", register: p.register ?? "" };
+      stampPillarId = p.id;
+      pillarResolved = true;
+    }
+  }
+  if (!pillarResolved) {
+    const { data: gen } = await supabase
+      .from("pillar_templates")
+      .select("name, intent, register")
+      .eq("is_default", true)
+      .limit(1)
+      .maybeSingle();
+    if (gen) {
+      const g = gen as { name: string; intent: string | null; register: string | null };
+      pillar = { name: g.name, intent: g.intent ?? "", register: g.register ?? "" };
+    }
+  }
+
   // 3. Generate one post per platform; insert one content_assets row per platform.
   const contentAssetIds: string[] = [];
 
   for (const plat of platforms) {
     // Inject platform-specific vars so the prompt can write natively for each platform.
     const rendered = renderPrompt(promptDef.user_prompt_template, {
-      business, ctx, user, source, direction,
+      business, ctx, user, source, direction, pillar,
       platform: {
         name: plat.display_name,
         slug: plat.slug,
@@ -235,6 +272,7 @@ export async function runGenerateSocialPost(taskCtx: TaskCtx): Promise<TaskResul
         target_platform: plat.slug,
         generated_body: finalPost,
         status: "draft",
+        pillar_id: stampPillarId, // which pillar produced this (null = General default)
       })
       .select("id")
       .single();

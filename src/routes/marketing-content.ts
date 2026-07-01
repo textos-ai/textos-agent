@@ -1088,7 +1088,7 @@ async function loadPillarPayload(
   supabase: ReturnType<typeof createSupabaseClient>,
   businessId: string,
 ) {
-  const [methodsRes, tplRes, bpRes, dsRes] = await Promise.all([
+  const [methodsRes, tplRes, bpRes, dsRes, genRes] = await Promise.all([
     supabase
       .from("pillar_methods")
       .select("id, slug, name, attributed_to, credential, premise, portrait_url, status, is_core, display_order")
@@ -1097,6 +1097,7 @@ async function loadPillarPayload(
     supabase
       .from("pillar_templates")
       .select("id, method_id, name, intent, register, data_source, display_order")
+      .eq("is_default", false) // the General default is not a browsable pillar
       .order("display_order", { ascending: true }),
     supabase
       .from("business_pillars")
@@ -1105,8 +1106,15 @@ async function loadPillarPayload(
       .order("display_order", { ascending: true }),
     supabase
       .from("pillar_data_sources")
-      .select("slug, label, description, display_order")
+      .select("slug, label, description, source_doc_slug, display_order")
       .order("display_order", { ascending: true }),
+    // The General default pillar (is_default) — always the pre-selected picker option.
+    supabase
+      .from("pillar_templates")
+      .select("id, name, intent, register, data_source")
+      .eq("is_default", true)
+      .limit(1)
+      .maybeSingle(),
   ]);
   const byMethod: Record<string, unknown[]> = {};
   for (const t of tplRes.data ?? []) (byMethod[(t as { method_id: string }).method_id] ||= []).push(t);
@@ -1114,7 +1122,46 @@ async function loadPillarPayload(
     ...m,
     pillars: byMethod[(m as { id: string }).id] ?? [],
   }));
-  return { methods, businessPillars: bpRes.data ?? [], dataSources: dsRes.data ?? [] };
+
+  // Resolve, per data_source, THIS business's current document run_id for its
+  // source_doc_slug — so the picker can auto-fill the source control from the
+  // chosen pillar (customer_understanding -> the Customer Understanding doc, etc).
+  const wantedSlugs = Array.from(
+    new Set((dsRes.data ?? []).map((d) => (d as { source_doc_slug: string | null }).source_doc_slug).filter(Boolean)),
+  ) as string[];
+  const docRunBySlug: Record<string, { source_run_id: string; title: string }> = {};
+  if (wantedSlugs.length) {
+    const { data: taskRows } = await supabase.from("tasks").select("id, slug").in("slug", wantedSlugs);
+    const idBySlug: Record<string, string> = {};
+    for (const t of taskRows ?? []) idBySlug[(t as { slug: string }).slug] = (t as { id: string }).id;
+    const taskIds = Object.values(idBySlug);
+    if (taskIds.length) {
+      const { data: runs } = await supabase
+        .from("task_runs")
+        .select("id, task_id, output_data, completed_at")
+        .eq("business_id", businessId)
+        .eq("is_current", true)
+        .eq("status", "completed")
+        .in("task_id", taskIds)
+        .order("completed_at", { ascending: false });
+      const slugByTaskId: Record<string, string> = {};
+      for (const [slug, id] of Object.entries(idBySlug)) slugByTaskId[id] = slug;
+      for (const r of runs ?? []) {
+        const slug = slugByTaskId[(r as { task_id: string }).task_id];
+        if (slug && !docRunBySlug[slug]) {
+          const od = (r as { output_data: { title?: string } }).output_data;
+          docRunBySlug[slug] = { source_run_id: (r as { id: string }).id, title: (od?.title ?? "").trim() };
+        }
+      }
+    }
+  }
+  const dataSources = (dsRes.data ?? []).map((d) => {
+    const slug = (d as { source_doc_slug: string | null }).source_doc_slug;
+    const hit = slug ? docRunBySlug[slug] : undefined;
+    return { ...d, source_run_id: hit?.source_run_id ?? null, source_doc_title: hit?.title ?? null };
+  });
+
+  return { methods, businessPillars: bpRes.data ?? [], dataSources, defaultPillar: genRes.data ?? null };
 }
 
 async function nextPillarOrder(

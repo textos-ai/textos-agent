@@ -1662,6 +1662,7 @@ admin.get("/pillar-methods", async (c) => {
     supabase
       .from("pillar_templates")
       .select("id, method_id, name, intent, register, data_source, display_order")
+      .eq("is_default", false) // hide the General generation default from authoring
       .order("display_order", { ascending: true }),
   ]);
   if (methodsRes.error || tplRes.error) {
