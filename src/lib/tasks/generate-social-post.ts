@@ -102,16 +102,15 @@ export async function runGenerateSocialPost(taskCtx: TaskCtx): Promise<TaskResul
   // to the (rich) business context, which stays as voice/background only.
   const sourceBlock = sourceAsset
     ? [
-        `## SOURCE DOCUMENT — THIS IS WHAT THE POST IS ABOUT`,
+        `# SOURCE MATERIAL FOR THE TECHNIQUE`,
         ``,
         sourceAsset.text,
         ``,
-        `INSTRUCTION: Write the post ABOUT the document above. Its specifics — the real ` +
-          `figures, findings, claims, names, and details — are the SUBJECT of this post. Pull ` +
-          `concrete specifics from it (e.g. exact numbers, facts, conclusions) and build the post ` +
-          `around them so the document's content is clearly recognizable. Use the business profile ` +
-          `above ONLY for voice, tone, and framing — never as the subject. Do NOT write a generic ` +
-          `post about the business; the post must be grounded in and about THIS document.`,
+        `INSTRUCTION: The document above is the richest raw material for the technique — pull the ` +
+          `reader's REAL language, specific pains, jobs, phrases, figures, and details from it and ` +
+          `feed them into the technique's steps so the post is concrete and recognizably grounded ` +
+          `in this material. The technique above still governs the angle, structure, and voice — ` +
+          `this document supplies the specifics it runs on, not a different agenda.`,
         ``,
       ].join("\n")
     : "";
@@ -137,22 +136,24 @@ export async function runGenerateSocialPost(taskCtx: TaskCtx): Promise<TaskResul
   // is a business_pillars id (adopted/custom) or 'general'/absent -> the General
   // default. Always resolves a pillar (no "if no pillar" branch); General is the
   // neutral, draws-from-everything default that reproduces today's output. The
-  // pillar's intent+register become prompt directives ({{pillar.*}}); the
-  // business_pillar id (null for General) is stamped on each content_assets row.
+  // pillar's METHOD BODY (executable technique) leads the v5 prompt as
+  // {{pillar.method_body}}; register/name follow. The business_pillar id (null
+  // for General) is stamped on each content_assets row. method_body falls back
+  // to intent for custom pillars that have none.
   const rawPillarId = typeof config?.pillar_id === "string" ? config.pillar_id.trim() : "";
-  let pillar = { name: "General", intent: "", register: "" };
+  let pillar = { name: "General", intent: "", register: "", method_body: "" };
   let stampPillarId: string | null = null;
   let pillarResolved = false;
   if (rawPillarId && rawPillarId !== "general") {
     const { data: bp } = await supabase
       .from("business_pillars")
-      .select("id, name, intent, register")
+      .select("id, name, intent, register, method_body")
       .eq("id", rawPillarId)
       .eq("business_id", business.id)
       .maybeSingle();
     if (bp) {
-      const p = bp as { id: string; name: string; intent: string | null; register: string | null };
-      pillar = { name: p.name, intent: p.intent ?? "", register: p.register ?? "" };
+      const p = bp as { id: string; name: string; intent: string | null; register: string | null; method_body: string | null };
+      pillar = { name: p.name, intent: p.intent ?? "", register: p.register ?? "", method_body: (p.method_body ?? "").trim() || (p.intent ?? "") };
       stampPillarId = p.id;
       pillarResolved = true;
     }
@@ -160,13 +161,13 @@ export async function runGenerateSocialPost(taskCtx: TaskCtx): Promise<TaskResul
   if (!pillarResolved) {
     const { data: gen } = await supabase
       .from("pillar_templates")
-      .select("name, intent, register")
+      .select("name, intent, register, method_body")
       .eq("is_default", true)
       .limit(1)
       .maybeSingle();
     if (gen) {
-      const g = gen as { name: string; intent: string | null; register: string | null };
-      pillar = { name: g.name, intent: g.intent ?? "", register: g.register ?? "" };
+      const g = gen as { name: string; intent: string | null; register: string | null; method_body: string | null };
+      pillar = { name: g.name, intent: g.intent ?? "", register: g.register ?? "", method_body: (g.method_body ?? "").trim() || (g.intent ?? "") };
     }
   }
 
