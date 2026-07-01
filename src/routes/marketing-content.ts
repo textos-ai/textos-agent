@@ -206,7 +206,7 @@ app.get("/:slug/marketing/metrics", async (c) => {
 
   const { data, error } = await supabase
     .from("content_assets")
-    .select("status, target_platform, task_run_id, published_at")
+    .select("status, target_platform, task_run_id, published_at, pillar_id")
     .eq("business_id", business.id)
     .is("deleted_at", null);
 
@@ -223,6 +223,7 @@ app.get("/:slug/marketing/metrics", async (c) => {
     target_platform: string | null;
     task_run_id: string | null;
     published_at: string | null;
+    pillar_id: string | null;
   }>;
 
   // "Today" / "this week" use the business timezone (Central), so the day rolls
@@ -270,7 +271,52 @@ app.get("/:slug/marketing/metrics", async (c) => {
   }
   overall.ideas = ideaSet.size;
 
-  return c.json({ overall, perPlatform });
+  // ── Pillar mix (Stage 4) ──────────────────────────────────────────────────
+  // Real distribution of GENERATED content by the pillar it was made under
+  // (content_assets.pillar_id, stamped in Stage 3), plus the value/promotional
+  // split from each pillar's mode. Counts are true row counts — no estimates.
+  // Null pillar_id = pre-pillar content, bucketed as "untagged" (not fabricated).
+  const pillarCounts = new Map<string, number>();
+  let untagged = 0;
+  for (const r of rows) {
+    if (r.pillar_id) pillarCounts.set(r.pillar_id, (pillarCounts.get(r.pillar_id) ?? 0) + 1);
+    else untagged++;
+  }
+
+  let byPillar: Array<{ pillar_id: string; name: string; mode: string | null; count: number }> = [];
+  let modeSplit = { value: 0, promotional: 0 };
+  if (pillarCounts.size > 0) {
+    const ids = Array.from(pillarCounts.keys());
+    // pillar_mode aliased "mode" (needs migration 077); degrade to name-only if absent.
+    const primary = await supabase
+      .from("business_pillars")
+      .select("id, name, mode:pillar_mode")
+      .in("id", ids);
+    let pil: any[] | null = primary.data;
+    if (primary.error) {
+      const fb = await supabase.from("business_pillars").select("id, name").in("id", ids);
+      pil = fb.data;
+    }
+    const meta = new Map<string, { name: string; mode: string | null }>();
+    for (const p of (pil ?? []) as any[]) meta.set(p.id, { name: p.name, mode: p.mode ?? null });
+    byPillar = ids
+      .map((id) => ({
+        pillar_id: id,
+        name: meta.get(id)?.name ?? "",
+        mode: meta.get(id)?.mode ?? null,
+        count: pillarCounts.get(id) ?? 0,
+      }))
+      .filter((x) => x.name) // a deleted pillar sets pillar_id NULL, so this is defensive
+      .sort((a, b) => b.count - a.count);
+    for (const x of byPillar) {
+      if (x.mode === "value") modeSplit.value += x.count;
+      else if (x.mode === "promotional") modeSplit.promotional += x.count;
+    }
+  }
+  const stamped = byPillar.reduce((s, x) => s + x.count, 0);
+  const pillarMix = { total: rows.length, stamped, untagged, byPillar, modeSplit };
+
+  return c.json({ overall, perPlatform, pillarMix });
 });
 
 // ── GET /:slug/marketing/calendar ────────────────────────────────────────────
@@ -1226,7 +1272,25 @@ async function loadPillarPayload(
     return { ...d, source_run_id: hit?.source_run_id ?? null, source_doc_title: hit?.title ?? null };
   });
 
-  return { methods, businessPillars: bpData ?? [], dataSources, defaultPillar: genData ?? null };
+  // Usage counts (Stage 4): how many generated posts each adopted pillar has
+  // actually produced (content_assets.pillar_id). Surfaces adopted-but-unused
+  // pillars as count 0. Real counts — no estimates.
+  const usageByPillar = new Map<string, number>();
+  const { data: caRows } = await supabase
+    .from("content_assets")
+    .select("pillar_id")
+    .eq("business_id", businessId)
+    .is("deleted_at", null)
+    .not("pillar_id", "is", null);
+  for (const r of (caRows ?? []) as any[]) {
+    if (r.pillar_id) usageByPillar.set(r.pillar_id, (usageByPillar.get(r.pillar_id) ?? 0) + 1);
+  }
+  const businessPillars = (bpData ?? []).map((p: any) => ({
+    ...p,
+    usage_count: usageByPillar.get(p.id) ?? 0,
+  }));
+
+  return { methods, businessPillars, dataSources, defaultPillar: genData ?? null };
 }
 
 async function nextPillarOrder(
