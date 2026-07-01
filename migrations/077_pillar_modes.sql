@@ -17,27 +17,32 @@
 -- Apply via: https://supabase.com/dashboard/project/gnpohaxkwbvoscqhdezu/sql/new
 -- =====================================================================
 
+-- NOTE: the column is named pillar_mode, NOT mode. A bare column called "mode"
+-- collides with Postgres's mode() ordered-set aggregate and makes PostgREST /
+-- supabase-js reject any select or filter that names it (HTTP 400
+-- "WITHIN GROUP is required for ordered-set aggregate mode"). pillar_mode is
+-- exposed to the app as "mode" via a select alias (mode:pillar_mode).
 ALTER TABLE public.pillar_templates
-  ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'value'
-    CHECK (mode IN ('value','promotional'));
+  ADD COLUMN IF NOT EXISTS pillar_mode TEXT NOT NULL DEFAULT 'value'
+    CHECK (pillar_mode IN ('value','promotional'));
 ALTER TABLE public.business_pillars
-  ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'value'
-    CHECK (mode IN ('value','promotional'));
+  ADD COLUMN IF NOT EXISTS pillar_mode TEXT NOT NULL DEFAULT 'value'
+    CHECK (pillar_mode IN ('value','promotional'));
 
 -- ── Seed modes ───────────────────────────────────────────────────────────────
 -- Default is 'value' (covers the 11 value pillars). Flip the 2 promotional Core
 -- pillars + the General default to 'promotional'.
-UPDATE public.pillar_templates t SET mode = 'promotional'
+UPDATE public.pillar_templates t SET pillar_mode = 'promotional'
 FROM public.pillar_methods m
 WHERE t.method_id = m.id AND m.slug = 'victora-core'
   AND t.name IN ('Social Proof','Announcements');
 
-UPDATE public.pillar_templates SET mode = 'promotional' WHERE is_default = true;
+UPDATE public.pillar_templates SET pillar_mode = 'promotional' WHERE is_default = true;
 
 -- Backfill existing adopted business_pillars from their source template.
-UPDATE public.business_pillars bp SET mode = t.mode
+UPDATE public.business_pillars bp SET pillar_mode = t.pillar_mode
 FROM public.pillar_templates t
-WHERE bp.source_template_id = t.id AND bp.mode IS DISTINCT FROM t.mode;
+WHERE bp.source_template_id = t.id AND bp.pillar_mode IS DISTINCT FROM t.pillar_mode;
 
 -- ── prompt_variables ─────────────────────────────────────────────────────────
 INSERT INTO public.prompt_variables (name, description, source) VALUES
@@ -81,7 +86,7 @@ Fields:
 );
 
 -- ── Verify (paste after applying) ─────────────────────────────────────────────
--- SELECT m.slug, t.name, t.mode FROM pillar_templates t JOIN pillar_methods m ON m.id=t.method_id ORDER BY m.display_order, t.display_order;
+-- SELECT m.slug, t.name, t.pillar_mode FROM pillar_templates t JOIN pillar_methods m ON m.id=t.method_id ORDER BY m.display_order, t.display_order;
 --   Expect: joanna 5 = value; core Customer Problems/Building in Public/Education/Behind/Industry/Founder = value;
 --           core Social Proof/Announcements = promotional; General = promotional.
 -- SELECT version, is_active FROM prompt_definitions WHERE task_slug='generate-social-post' ORDER BY version;

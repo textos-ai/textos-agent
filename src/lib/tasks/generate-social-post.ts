@@ -148,14 +148,14 @@ export async function runGenerateSocialPost(taskCtx: TaskCtx): Promise<TaskResul
   if (rawPillarId && rawPillarId !== "general") {
     const { data: bp } = await supabase
       .from("business_pillars")
-      .select("id, name, intent, register, method_body, mode")
+      .select("id, name, intent, register, method_body, pillar_mode")
       .eq("id", rawPillarId)
       .eq("business_id", business.id)
       .maybeSingle();
     if (bp) {
-      const p = bp as { id: string; name: string; intent: string | null; register: string | null; method_body: string | null; mode: string | null };
+      const p = bp as { id: string; name: string; intent: string | null; register: string | null; method_body: string | null; pillar_mode: string | null };
       pillar = { name: p.name, intent: p.intent ?? "", register: p.register ?? "", method_body: (p.method_body ?? "").trim() || (p.intent ?? "") };
-      pillarMode = p.mode === "promotional" ? "promotional" : "value";
+      pillarMode = p.pillar_mode === "promotional" ? "promotional" : "value";
       stampPillarId = p.id;
       pillarResolved = true;
     }
@@ -163,14 +163,14 @@ export async function runGenerateSocialPost(taskCtx: TaskCtx): Promise<TaskResul
   if (!pillarResolved) {
     const { data: gen } = await supabase
       .from("pillar_templates")
-      .select("name, intent, register, method_body, mode")
+      .select("name, intent, register, method_body, pillar_mode")
       .eq("is_default", true)
       .limit(1)
       .maybeSingle();
     if (gen) {
-      const g = gen as { name: string; intent: string | null; register: string | null; method_body: string | null; mode: string | null };
+      const g = gen as { name: string; intent: string | null; register: string | null; method_body: string | null; pillar_mode: string | null };
       pillar = { name: g.name, intent: g.intent ?? "", register: g.register ?? "", method_body: (g.method_body ?? "").trim() || (g.intent ?? "") };
-      pillarMode = g.mode === "promotional" ? "promotional" : "value";
+      pillarMode = g.pillar_mode === "promotional" ? "promotional" : "value";
     }
   }
 

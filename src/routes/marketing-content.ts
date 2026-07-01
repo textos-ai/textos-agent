@@ -38,6 +38,7 @@ app.get("/:slug/marketing/content-assets", async (c) => {
       task_run_id,
       scheduled_for,
       scheduled_timezone,
+      pillar_id,
       content_types (
         label,
         preview_component,
@@ -82,8 +83,43 @@ app.get("/:slug/marketing/content-assets", async (c) => {
 
   const tagForm = (kw: string) => "#" + kw.toLowerCase().replace(/[^a-z0-9]+/g, "");
 
+  // Pillar identity for the editor modal: which pillar produced each post +
+  // its voice/register + value/promotional mode. Stamped as content_assets.
+  // pillar_id (→ business_pillars). Batched lookup, same pattern as keywords.
+  const pillarIds = Array.from(
+    new Set(rows.map((r) => r.pillar_id).filter((v): v is string => !!v)),
+  );
+  const pillarById = new Map<
+    string,
+    { name: string; register: string | null; mode: string | null }
+  >();
+  if (pillarIds.length > 0) {
+    // pillar_mode (aliased to "mode") only exists once migration 077 is applied.
+    // Degrade gracefully before then: fall back to name/register so the modal
+    // still shows the pillar + voice, just without the mode chip.
+    const primary = await supabase
+      .from("business_pillars")
+      .select("id, name, register, mode:pillar_mode")
+      .in("id", pillarIds);
+    let pillars: any[] | null = primary.data;
+    if (primary.error) {
+      const fb = await supabase
+        .from("business_pillars")
+        .select("id, name, register")
+        .in("id", pillarIds);
+      pillars = fb.data;
+    }
+    for (const p of (pillars ?? []) as any[]) {
+      pillarById.set(p.id, {
+        name: p.name,
+        register: p.register ?? null,
+        mode: p.mode ?? null,
+      });
+    }
+  }
+
   const items = rows.map((row: any) => {
-    const kws = (row.task_run_id && keywordsByRun.get(row.task_run_id)) || [];
+    const kws: string[] = (row.task_run_id && keywordsByRun.get(row.task_run_id)) || [];
     const selected = kws.length;
     const body = String(row.generated_body ?? "");
     const added = selected > 0
@@ -99,6 +135,8 @@ app.get("/:slug/marketing/content-assets", async (c) => {
       source_asset_id: row.source_asset_id ?? null,
       scheduled_for: row.scheduled_for ?? null,
       scheduled_timezone: row.scheduled_timezone ?? null,
+      pillar_id: row.pillar_id ?? null,
+      pillar: (row.pillar_id && pillarById.get(row.pillar_id)) || null,
       hashtags: { added, selected },
       content_type_meta: row.content_types
         ? {
@@ -1096,12 +1134,12 @@ async function loadPillarPayload(
       .order("display_order", { ascending: true }),
     supabase
       .from("pillar_templates")
-      .select("id, method_id, name, intent, register, data_source, method_body, mode, display_order")
+      .select("id, method_id, name, intent, register, data_source, method_body, mode:pillar_mode, display_order")
       .eq("is_default", false) // the General default is not a browsable pillar
       .order("display_order", { ascending: true }),
     supabase
       .from("business_pillars")
-      .select("id, name, intent, register, data_source, method_body, mode, source_template_id, is_custom, display_order, created_at")
+      .select("id, name, intent, register, data_source, method_body, mode:pillar_mode, source_template_id, is_custom, display_order, created_at")
       .eq("business_id", businessId)
       .order("display_order", { ascending: true }),
     supabase
@@ -1111,13 +1149,40 @@ async function loadPillarPayload(
     // The General default pillar (is_default) — always the pre-selected picker option.
     supabase
       .from("pillar_templates")
-      .select("id, name, intent, register, data_source, method_body, mode")
+      .select("id, name, intent, register, data_source, method_body, mode:pillar_mode")
       .eq("is_default", true)
       .limit(1)
       .maybeSingle(),
   ]);
+
+  // pillar_mode (aliased "mode") only exists once migration 077 is applied. If a
+  // mode-bearing select errored (pre-077), refetch those three without it so the
+  // picker still works — pillars just carry no mode until the migration lands.
+  let tplData: any = tplRes.data, bpData: any = bpRes.data, genData: any = genRes.data;
+  if (tplRes.error || bpRes.error || genRes.error) {
+    const [t2, b2, g2] = await Promise.all([
+      supabase
+        .from("pillar_templates")
+        .select("id, method_id, name, intent, register, data_source, method_body, display_order")
+        .eq("is_default", false)
+        .order("display_order", { ascending: true }),
+      supabase
+        .from("business_pillars")
+        .select("id, name, intent, register, data_source, method_body, source_template_id, is_custom, display_order, created_at")
+        .eq("business_id", businessId)
+        .order("display_order", { ascending: true }),
+      supabase
+        .from("pillar_templates")
+        .select("id, name, intent, register, data_source, method_body")
+        .eq("is_default", true)
+        .limit(1)
+        .maybeSingle(),
+    ]);
+    tplData = t2.data; bpData = b2.data; genData = g2.data;
+  }
+
   const byMethod: Record<string, unknown[]> = {};
-  for (const t of tplRes.data ?? []) (byMethod[(t as { method_id: string }).method_id] ||= []).push(t);
+  for (const t of tplData ?? []) (byMethod[(t as { method_id: string }).method_id] ||= []).push(t);
   const methods = (methodsRes.data ?? []).map((m) => ({
     ...m,
     pillars: byMethod[(m as { id: string }).id] ?? [],
@@ -1161,7 +1226,7 @@ async function loadPillarPayload(
     return { ...d, source_run_id: hit?.source_run_id ?? null, source_doc_title: hit?.title ?? null };
   });
 
-  return { methods, businessPillars: bpRes.data ?? [], dataSources, defaultPillar: genRes.data ?? null };
+  return { methods, businessPillars: bpData ?? [], dataSources, defaultPillar: genData ?? null };
 }
 
 async function nextPillarOrder(
@@ -1199,7 +1264,7 @@ app.post("/:slug/marketing/pillars/adopt-method", async (c) => {
 
   const { data: templates } = await supabase
     .from("pillar_templates")
-    .select("id, name, intent, register, data_source, method_body, mode, display_order")
+    .select("id, name, intent, register, data_source, method_body, mode:pillar_mode, display_order")
     .eq("method_id", methodId)
     .order("display_order", { ascending: true });
   if (!templates?.length) return c.json({ error: "method has no pillars" }, 400);
@@ -1217,7 +1282,7 @@ app.post("/:slug/marketing/pillars/adopt-method", async (c) => {
     let order = await nextPillarOrder(supabase, business.id);
     const rows = toAdd.map((t) => ({
       business_id: business.id, name: t.name, intent: t.intent, register: t.register,
-      data_source: t.data_source, method_body: t.method_body, mode: t.mode, source_template_id: t.id, is_custom: false, display_order: order++,
+      data_source: t.data_source, method_body: t.method_body, pillar_mode: t.mode, source_template_id: t.id, is_custom: false, display_order: order++,
     }));
     const { error } = await supabase.from("business_pillars").insert(rows);
     if (error) { log.error("[pillars] adopt_method_failed", { err: error.message }); return c.json({ error: error.message }, 500); }
@@ -1237,7 +1302,7 @@ app.post("/:slug/marketing/pillars/adopt-pillar", async (c) => {
 
   const { data: tpl } = await supabase
     .from("pillar_templates")
-    .select("id, name, intent, register, data_source, method_body, mode")
+    .select("id, name, intent, register, data_source, method_body, mode:pillar_mode")
     .eq("id", templateId)
     .maybeSingle();
   if (!tpl) return c.json({ error: "pillar not found" }, 404);
@@ -1253,7 +1318,7 @@ app.post("/:slug/marketing/pillars/adopt-pillar", async (c) => {
     const order = await nextPillarOrder(supabase, business.id);
     const { error } = await supabase.from("business_pillars").insert({
       business_id: business.id, name: t.name, intent: t.intent, register: t.register,
-      data_source: t.data_source, method_body: t.method_body, mode: t.mode, source_template_id: t.id, is_custom: false, display_order: order,
+      data_source: t.data_source, method_body: t.method_body, pillar_mode: t.mode, source_template_id: t.id, is_custom: false, display_order: order,
     });
     if (error) { log.error("[pillars] adopt_pillar_failed", { err: error.message }); return c.json({ error: error.message }, 500); }
   }
