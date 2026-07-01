@@ -1074,4 +1074,204 @@ app.get("/:slug/marketing/schedule-history", async (c) => {
   });
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// CONTENT PILLARS (Stage 2) — founder-facing read + adoption/edit.
+//
+// Platform methods (published + coming_soon) with their pillars, plus this
+// business's working set (business_pillars). ADOPT copies pillar_templates rows
+// into business_pillars (source_template_id set) so a business edit never
+// mutates the platform template. All writes are owner-scoped by business_id.
+// Register is free text; data_source is the constrained vocab (FK-checked).
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function loadPillarPayload(
+  supabase: ReturnType<typeof createSupabaseClient>,
+  businessId: string,
+) {
+  const [methodsRes, tplRes, bpRes, dsRes] = await Promise.all([
+    supabase
+      .from("pillar_methods")
+      .select("id, slug, name, attributed_to, credential, premise, portrait_url, status, is_core, display_order")
+      .in("status", ["published", "coming_soon"])
+      .order("display_order", { ascending: true }),
+    supabase
+      .from("pillar_templates")
+      .select("id, method_id, name, intent, register, data_source, display_order")
+      .order("display_order", { ascending: true }),
+    supabase
+      .from("business_pillars")
+      .select("id, name, intent, register, data_source, source_template_id, is_custom, display_order, created_at")
+      .eq("business_id", businessId)
+      .order("display_order", { ascending: true }),
+    supabase
+      .from("pillar_data_sources")
+      .select("slug, label, description, display_order")
+      .order("display_order", { ascending: true }),
+  ]);
+  const byMethod: Record<string, unknown[]> = {};
+  for (const t of tplRes.data ?? []) (byMethod[(t as { method_id: string }).method_id] ||= []).push(t);
+  const methods = (methodsRes.data ?? []).map((m) => ({
+    ...m,
+    pillars: byMethod[(m as { id: string }).id] ?? [],
+  }));
+  return { methods, businessPillars: bpRes.data ?? [], dataSources: dsRes.data ?? [] };
+}
+
+async function nextPillarOrder(
+  supabase: ReturnType<typeof createSupabaseClient>,
+  businessId: string,
+): Promise<number> {
+  const { data } = await supabase
+    .from("business_pillars")
+    .select("display_order")
+    .eq("business_id", businessId)
+    .order("display_order", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  return ((data?.display_order as number) ?? 0) + 1;
+}
+
+// GET — everything the Reading Room needs.
+app.get("/:slug/marketing/pillars", async (c) => {
+  const auth = c.get("auth");
+  const supabase = createSupabaseClient(c.env);
+  const business = await getBusinessBySlug(supabase, auth.user_id, c.req.param("slug"));
+  if (!business) return c.json({ error: "Business not found" }, 404);
+  return c.json(await loadPillarPayload(supabase, business.id));
+});
+
+// Adopt a whole method — copy every not-yet-adopted template into the set.
+app.post("/:slug/marketing/pillars/adopt-method", async (c) => {
+  const auth = c.get("auth");
+  const supabase = createSupabaseClient(c.env);
+  const business = await getBusinessBySlug(supabase, auth.user_id, c.req.param("slug"));
+  if (!business) return c.json({ error: "Business not found" }, 404);
+  const body = (await c.req.json().catch(() => ({}))) as { method_id?: string };
+  const methodId = typeof body.method_id === "string" ? body.method_id : "";
+  if (!methodId) return c.json({ error: "method_id required" }, 400);
+
+  const { data: templates } = await supabase
+    .from("pillar_templates")
+    .select("id, name, intent, register, data_source, display_order")
+    .eq("method_id", methodId)
+    .order("display_order", { ascending: true });
+  if (!templates?.length) return c.json({ error: "method has no pillars" }, 400);
+
+  const { data: existing } = await supabase
+    .from("business_pillars")
+    .select("source_template_id")
+    .eq("business_id", business.id)
+    .not("source_template_id", "is", null);
+  const adopted = new Set((existing ?? []).map((r) => (r as { source_template_id: string }).source_template_id));
+  const toAdd = (templates as Array<{ id: string; name: string; intent: string; register: string; data_source: string }>)
+    .filter((t) => !adopted.has(t.id));
+
+  if (toAdd.length) {
+    let order = await nextPillarOrder(supabase, business.id);
+    const rows = toAdd.map((t) => ({
+      business_id: business.id, name: t.name, intent: t.intent, register: t.register,
+      data_source: t.data_source, source_template_id: t.id, is_custom: false, display_order: order++,
+    }));
+    const { error } = await supabase.from("business_pillars").insert(rows);
+    if (error) { log.error("[pillars] adopt_method_failed", { err: error.message }); return c.json({ error: error.message }, 500); }
+  }
+  return c.json(await loadPillarPayload(supabase, business.id));
+});
+
+// Adopt a single pillar template (idempotent — no-op if already in the set).
+app.post("/:slug/marketing/pillars/adopt-pillar", async (c) => {
+  const auth = c.get("auth");
+  const supabase = createSupabaseClient(c.env);
+  const business = await getBusinessBySlug(supabase, auth.user_id, c.req.param("slug"));
+  if (!business) return c.json({ error: "Business not found" }, 404);
+  const body = (await c.req.json().catch(() => ({}))) as { template_id?: string };
+  const templateId = typeof body.template_id === "string" ? body.template_id : "";
+  if (!templateId) return c.json({ error: "template_id required" }, 400);
+
+  const { data: tpl } = await supabase
+    .from("pillar_templates")
+    .select("id, name, intent, register, data_source")
+    .eq("id", templateId)
+    .maybeSingle();
+  if (!tpl) return c.json({ error: "pillar not found" }, 404);
+
+  const { data: already } = await supabase
+    .from("business_pillars")
+    .select("id")
+    .eq("business_id", business.id)
+    .eq("source_template_id", templateId)
+    .maybeSingle();
+  if (!already) {
+    const t = tpl as { id: string; name: string; intent: string; register: string; data_source: string };
+    const order = await nextPillarOrder(supabase, business.id);
+    const { error } = await supabase.from("business_pillars").insert({
+      business_id: business.id, name: t.name, intent: t.intent, register: t.register,
+      data_source: t.data_source, source_template_id: t.id, is_custom: false, display_order: order,
+    });
+    if (error) { log.error("[pillars] adopt_pillar_failed", { err: error.message }); return c.json({ error: error.message }, 500); }
+  }
+  return c.json(await loadPillarPayload(supabase, business.id));
+});
+
+// Create a custom pillar (is_custom=true, no source template).
+app.post("/:slug/marketing/pillars", async (c) => {
+  const auth = c.get("auth");
+  const supabase = createSupabaseClient(c.env);
+  const business = await getBusinessBySlug(supabase, auth.user_id, c.req.param("slug"));
+  if (!business) return c.json({ error: "Business not found" }, 404);
+  const body = (await c.req.json().catch(() => ({}))) as { name?: string; intent?: string; register?: string; data_source?: string };
+  const name = (body.name ?? "").trim();
+  const dataSource = (body.data_source ?? "").trim();
+  if (!name) return c.json({ error: "name required" }, 400);
+  if (!dataSource) return c.json({ error: "data_source required" }, 400);
+  const order = await nextPillarOrder(supabase, business.id);
+  const { error } = await supabase.from("business_pillars").insert({
+    business_id: business.id, name, intent: (body.intent ?? "").trim() || null,
+    register: (body.register ?? "").trim() || null, data_source: dataSource,
+    source_template_id: null, is_custom: true, display_order: order,
+  });
+  if (error) { log.error("[pillars] create_custom_failed", { err: error.message }); return c.json({ error: error.message }, 400); }
+  return c.json(await loadPillarPayload(supabase, business.id));
+});
+
+// Edit a business pillar (adopted copy or custom) — scoped to this business.
+// Never touches the platform pillar_templates row.
+app.patch("/:slug/marketing/pillars/:id", async (c) => {
+  const auth = c.get("auth");
+  const supabase = createSupabaseClient(c.env);
+  const business = await getBusinessBySlug(supabase, auth.user_id, c.req.param("slug"));
+  if (!business) return c.json({ error: "Business not found" }, 404);
+  const id = c.req.param("id");
+  const body = (await c.req.json().catch(() => ({}))) as { name?: string; intent?: string; register?: string; data_source?: string };
+  const updates: Record<string, unknown> = {};
+  if (typeof body.name === "string") { const n = body.name.trim(); if (!n) return c.json({ error: "name cannot be empty" }, 400); updates.name = n; }
+  if (typeof body.intent === "string") updates.intent = body.intent.trim() || null;
+  if (typeof body.register === "string") updates.register = body.register.trim() || null;
+  if (typeof body.data_source === "string" && body.data_source.trim()) updates.data_source = body.data_source.trim();
+  if (!Object.keys(updates).length) return c.json({ error: "no fields to update" }, 400);
+
+  const { error } = await supabase
+    .from("business_pillars")
+    .update(updates)
+    .eq("id", id)
+    .eq("business_id", business.id);
+  if (error) { log.error("[pillars] edit_failed", { id, err: error.message }); return c.json({ error: error.message }, 400); }
+  return c.json(await loadPillarPayload(supabase, business.id));
+});
+
+// Remove a business pillar from the set (the "..." overflow action).
+app.delete("/:slug/marketing/pillars/:id", async (c) => {
+  const auth = c.get("auth");
+  const supabase = createSupabaseClient(c.env);
+  const business = await getBusinessBySlug(supabase, auth.user_id, c.req.param("slug"));
+  if (!business) return c.json({ error: "Business not found" }, 404);
+  const { error } = await supabase
+    .from("business_pillars")
+    .delete()
+    .eq("id", c.req.param("id"))
+    .eq("business_id", business.id);
+  if (error) { log.error("[pillars] delete_failed", { err: error.message }); return c.json({ error: error.message }, 400); }
+  return c.json(await loadPillarPayload(supabase, business.id));
+});
+
 export default app;
