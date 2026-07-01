@@ -69,6 +69,9 @@ admin.use("/harness", requireAdmin);
 admin.use("/harness/*", requireAdmin);
 admin.use("/platforms", requireAdmin);
 admin.use("/platforms/*", requireAdmin);
+admin.use("/pillar-methods", requireAdmin);
+admin.use("/pillar-methods/*", requireAdmin);
+admin.use("/pillar-data-sources", requireAdmin);
 
 // ── GET /admin/email-queue ─────────────────────────────────────────────────
 // Returns pending and recent emails in the queue (latest 100).
@@ -1601,6 +1604,185 @@ admin.get("/prompt-variables", async (c) => {
     return c.json(errBody("internal", "prompt_variables_list_failed"), 500);
   }
   return c.json({ variables: data ?? [] });
+});
+
+// ── Content Pillars (Stage 1) — platform methods + their pillars ─────────────
+// Platform tier: pillar_methods + pillar_templates (shared to all businesses).
+// business_pillars (per-business adoption) is Stage 2. Writes go through the
+// service-role Worker here; data_source is validated against the DB vocab.
+
+function pillarSlugify(s: string): string {
+  return s.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60);
+}
+
+const PillarInput = z.object({
+  name: z.string().min(1),
+  intent: z.string().nullable().optional(),
+  register: z.string().nullable().optional(),
+  data_source: z.string().min(1),
+  display_order: z.number().optional(),
+});
+const PostMethodBody = z.object({
+  name: z.string().min(1),
+  slug: z.string().optional(),
+  attributed_to: z.string().nullable().optional(),
+  credential: z.string().nullable().optional(),
+  premise: z.string().nullable().optional(),
+  portrait_url: z.string().nullable().optional(),
+  is_core: z.boolean().optional(),
+  status: z.enum(["draft", "published", "coming_soon"]).optional(),
+  display_order: z.number().optional(),
+  pillars: z.array(PillarInput).optional(),
+});
+const PatchMethodBody = PostMethodBody.partial();
+
+// GET /admin/pillar-data-sources — controlled data_source vocabulary (for the
+// authoring <select>; DB-driven, not hardcoded in the frontend).
+admin.get("/pillar-data-sources", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const { data, error } = await supabase
+    .from("pillar_data_sources")
+    .select("slug, label, description, display_order")
+    .order("display_order", { ascending: true });
+  if (error) {
+    log.error("[admin] pillar_data_sources_list_failed", { err: error.message });
+    return c.json(errBody("internal", "pillar_data_sources_list_failed"), 500);
+  }
+  return c.json({ data_sources: data ?? [] });
+});
+
+// GET /admin/pillar-methods — all methods with their pillars nested.
+admin.get("/pillar-methods", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const [methodsRes, tplRes] = await Promise.all([
+    supabase
+      .from("pillar_methods")
+      .select("id, slug, name, attributed_to, credential, premise, portrait_url, status, is_core, display_order, updated_at")
+      .order("display_order", { ascending: true }),
+    supabase
+      .from("pillar_templates")
+      .select("id, method_id, name, intent, register, data_source, display_order")
+      .order("display_order", { ascending: true }),
+  ]);
+  if (methodsRes.error || tplRes.error) {
+    log.error("[admin] pillar_methods_list_failed", { err: String(methodsRes.error ?? tplRes.error) });
+    return c.json(errBody("internal", "pillar_methods_list_failed"), 500);
+  }
+  const byMethod: Record<string, unknown[]> = {};
+  for (const t of tplRes.data ?? []) (byMethod[(t as { method_id: string }).method_id] ||= []).push(t);
+  const methods = (methodsRes.data ?? []).map((m) => ({
+    ...m,
+    pillars: byMethod[(m as { id: string }).id] ?? [],
+  }));
+  return c.json({ methods });
+});
+
+// POST /admin/pillar-methods — create a method + its pillars (draft by default).
+admin.post("/pillar-methods", async (c) => {
+  let parsed: z.infer<typeof PostMethodBody>;
+  try {
+    parsed = PostMethodBody.parse(await c.req.json());
+  } catch (err) {
+    return c.json(errBody("bad_request", "invalid body", String(err)), 400);
+  }
+  const supabase = createSupabaseClient(c.env);
+  const slug = parsed.slug?.trim() ? pillarSlugify(parsed.slug) : pillarSlugify(parsed.name);
+  if (!slug) return c.json(errBody("bad_request", "could not derive slug from name"), 400);
+
+  let order = parsed.display_order;
+  if (order === undefined) {
+    const { data: maxRow } = await supabase
+      .from("pillar_methods")
+      .select("display_order")
+      .order("display_order", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    order = ((maxRow?.display_order as number) ?? 0) + 1;
+  }
+
+  const { data: method, error: mErr } = await supabase
+    .from("pillar_methods")
+    .insert({
+      slug,
+      name: parsed.name,
+      attributed_to: parsed.attributed_to ?? null,
+      credential: parsed.credential ?? null,
+      premise: parsed.premise ?? null,
+      portrait_url: parsed.portrait_url ?? null,
+      is_core: parsed.is_core ?? false,
+      status: parsed.status ?? "draft",
+      display_order: order,
+    })
+    .select("id")
+    .single();
+  if (mErr || !method) {
+    log.error("[admin] pillar_method_insert_failed", { err: mErr?.message });
+    return c.json(errBody("internal", `pillar_method_insert_failed: ${mErr?.message}`), 500);
+  }
+  const methodId = (method as { id: string }).id;
+
+  const pillars = parsed.pillars ?? [];
+  if (pillars.length) {
+    const rows = pillars.map((p, i) => ({
+      method_id: methodId,
+      name: p.name,
+      intent: p.intent ?? null,
+      register: p.register ?? null,
+      data_source: p.data_source,
+      display_order: p.display_order ?? i + 1,
+    }));
+    const { error: pErr } = await supabase.from("pillar_templates").insert(rows);
+    if (pErr) {
+      log.error("[admin] pillar_templates_insert_failed", { err: pErr.message });
+      return c.json(errBody("internal", `pillar_templates_insert_failed: ${pErr.message}`), 500);
+    }
+  }
+  return c.json({ ok: true, id: methodId, slug }, 201);
+});
+
+// PATCH /admin/pillar-methods/:id — update method fields; if `pillars` is
+// present, replace the method's pillar set. Publish = { status: 'published' }.
+admin.patch("/pillar-methods/:id", async (c) => {
+  const id = c.req.param("id");
+  let parsed: z.infer<typeof PatchMethodBody>;
+  try {
+    parsed = PatchMethodBody.parse(await c.req.json());
+  } catch (err) {
+    return c.json(errBody("bad_request", "invalid body", String(err)), 400);
+  }
+  const supabase = createSupabaseClient(c.env);
+
+  const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  for (const k of ["name", "attributed_to", "credential", "premise", "portrait_url", "is_core", "status", "display_order"] as const) {
+    if (parsed[k] !== undefined) updates[k] = parsed[k];
+  }
+  if (parsed.slug !== undefined && parsed.slug) updates.slug = pillarSlugify(parsed.slug);
+
+  const { error: uErr } = await supabase.from("pillar_methods").update(updates).eq("id", id);
+  if (uErr) {
+    log.error("[admin] pillar_method_update_failed", { id, err: uErr.message });
+    return c.json(errBody("internal", `pillar_method_update_failed: ${uErr.message}`), 500);
+  }
+
+  if (parsed.pillars !== undefined) {
+    await supabase.from("pillar_templates").delete().eq("method_id", id);
+    const rows = (parsed.pillars ?? []).map((p, i) => ({
+      method_id: id,
+      name: p.name,
+      intent: p.intent ?? null,
+      register: p.register ?? null,
+      data_source: p.data_source,
+      display_order: p.display_order ?? i + 1,
+    }));
+    if (rows.length) {
+      const { error: pErr } = await supabase.from("pillar_templates").insert(rows);
+      if (pErr) {
+        log.error("[admin] pillar_templates_replace_failed", { id, err: pErr.message });
+        return c.json(errBody("internal", `pillar_templates_replace_failed: ${pErr.message}`), 500);
+      }
+    }
+  }
+  return c.json({ ok: true, id });
 });
 
 // ── POST /admin/task-trigger-blocks/clear ────────────────────────────────────
