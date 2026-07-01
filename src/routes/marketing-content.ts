@@ -1096,12 +1096,12 @@ async function loadPillarPayload(
       .order("display_order", { ascending: true }),
     supabase
       .from("pillar_templates")
-      .select("id, method_id, name, intent, register, data_source, method_body, display_order")
+      .select("id, method_id, name, intent, register, data_source, method_body, mode, display_order")
       .eq("is_default", false) // the General default is not a browsable pillar
       .order("display_order", { ascending: true }),
     supabase
       .from("business_pillars")
-      .select("id, name, intent, register, data_source, method_body, source_template_id, is_custom, display_order, created_at")
+      .select("id, name, intent, register, data_source, method_body, mode, source_template_id, is_custom, display_order, created_at")
       .eq("business_id", businessId)
       .order("display_order", { ascending: true }),
     supabase
@@ -1111,7 +1111,7 @@ async function loadPillarPayload(
     // The General default pillar (is_default) — always the pre-selected picker option.
     supabase
       .from("pillar_templates")
-      .select("id, name, intent, register, data_source, method_body")
+      .select("id, name, intent, register, data_source, method_body, mode")
       .eq("is_default", true)
       .limit(1)
       .maybeSingle(),
@@ -1199,7 +1199,7 @@ app.post("/:slug/marketing/pillars/adopt-method", async (c) => {
 
   const { data: templates } = await supabase
     .from("pillar_templates")
-    .select("id, name, intent, register, data_source, method_body, display_order")
+    .select("id, name, intent, register, data_source, method_body, mode, display_order")
     .eq("method_id", methodId)
     .order("display_order", { ascending: true });
   if (!templates?.length) return c.json({ error: "method has no pillars" }, 400);
@@ -1210,14 +1210,14 @@ app.post("/:slug/marketing/pillars/adopt-method", async (c) => {
     .eq("business_id", business.id)
     .not("source_template_id", "is", null);
   const adopted = new Set((existing ?? []).map((r) => (r as { source_template_id: string }).source_template_id));
-  const toAdd = (templates as Array<{ id: string; name: string; intent: string; register: string; data_source: string; method_body: string | null }>)
+  const toAdd = (templates as Array<{ id: string; name: string; intent: string; register: string; data_source: string; method_body: string | null; mode: string }>)
     .filter((t) => !adopted.has(t.id));
 
   if (toAdd.length) {
     let order = await nextPillarOrder(supabase, business.id);
     const rows = toAdd.map((t) => ({
       business_id: business.id, name: t.name, intent: t.intent, register: t.register,
-      data_source: t.data_source, method_body: t.method_body, source_template_id: t.id, is_custom: false, display_order: order++,
+      data_source: t.data_source, method_body: t.method_body, mode: t.mode, source_template_id: t.id, is_custom: false, display_order: order++,
     }));
     const { error } = await supabase.from("business_pillars").insert(rows);
     if (error) { log.error("[pillars] adopt_method_failed", { err: error.message }); return c.json({ error: error.message }, 500); }
@@ -1237,7 +1237,7 @@ app.post("/:slug/marketing/pillars/adopt-pillar", async (c) => {
 
   const { data: tpl } = await supabase
     .from("pillar_templates")
-    .select("id, name, intent, register, data_source, method_body")
+    .select("id, name, intent, register, data_source, method_body, mode")
     .eq("id", templateId)
     .maybeSingle();
   if (!tpl) return c.json({ error: "pillar not found" }, 404);
@@ -1249,11 +1249,11 @@ app.post("/:slug/marketing/pillars/adopt-pillar", async (c) => {
     .eq("source_template_id", templateId)
     .maybeSingle();
   if (!already) {
-    const t = tpl as { id: string; name: string; intent: string; register: string; data_source: string; method_body: string | null };
+    const t = tpl as { id: string; name: string; intent: string; register: string; data_source: string; method_body: string | null; mode: string };
     const order = await nextPillarOrder(supabase, business.id);
     const { error } = await supabase.from("business_pillars").insert({
       business_id: business.id, name: t.name, intent: t.intent, register: t.register,
-      data_source: t.data_source, method_body: t.method_body, source_template_id: t.id, is_custom: false, display_order: order,
+      data_source: t.data_source, method_body: t.method_body, mode: t.mode, source_template_id: t.id, is_custom: false, display_order: order,
     });
     if (error) { log.error("[pillars] adopt_pillar_failed", { err: error.message }); return c.json({ error: error.message }, 500); }
   }

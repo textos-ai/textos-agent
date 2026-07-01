@@ -142,18 +142,20 @@ export async function runGenerateSocialPost(taskCtx: TaskCtx): Promise<TaskResul
   // to intent for custom pillars that have none.
   const rawPillarId = typeof config?.pillar_id === "string" ? config.pillar_id.trim() : "";
   let pillar = { name: "General", intent: "", register: "", method_body: "" };
+  let pillarMode = "value";
   let stampPillarId: string | null = null;
   let pillarResolved = false;
   if (rawPillarId && rawPillarId !== "general") {
     const { data: bp } = await supabase
       .from("business_pillars")
-      .select("id, name, intent, register, method_body")
+      .select("id, name, intent, register, method_body, mode")
       .eq("id", rawPillarId)
       .eq("business_id", business.id)
       .maybeSingle();
     if (bp) {
-      const p = bp as { id: string; name: string; intent: string | null; register: string | null; method_body: string | null };
+      const p = bp as { id: string; name: string; intent: string | null; register: string | null; method_body: string | null; mode: string | null };
       pillar = { name: p.name, intent: p.intent ?? "", register: p.register ?? "", method_body: (p.method_body ?? "").trim() || (p.intent ?? "") };
+      pillarMode = p.mode === "promotional" ? "promotional" : "value";
       stampPillarId = p.id;
       pillarResolved = true;
     }
@@ -161,15 +163,41 @@ export async function runGenerateSocialPost(taskCtx: TaskCtx): Promise<TaskResul
   if (!pillarResolved) {
     const { data: gen } = await supabase
       .from("pillar_templates")
-      .select("name, intent, register, method_body")
+      .select("name, intent, register, method_body, mode")
       .eq("is_default", true)
       .limit(1)
       .maybeSingle();
     if (gen) {
-      const g = gen as { name: string; intent: string | null; register: string | null; method_body: string | null };
+      const g = gen as { name: string; intent: string | null; register: string | null; method_body: string | null; mode: string | null };
       pillar = { name: g.name, intent: g.intent ?? "", register: g.register ?? "", method_body: (g.method_body ?? "").trim() || (g.intent ?? "") };
+      pillarMode = g.mode === "promotional" ? "promotional" : "value";
     }
   }
+
+  // Mode: the pillar's own mode, overridable for a single run via config.pillar_mode.
+  const override = typeof config?.pillar_mode === "string" ? config.pillar_mode.trim() : "";
+  const effectiveMode = override === "value" || override === "promotional" ? override : pillarMode;
+
+  // Compose the MODE directive + CONTEXT block (v6 references {{mode.directive}}
+  // and {{context.block}}). VALUE mode strips the business entirely and demands a
+  // hard, unsaid truth about the reader; PROMOTIONAL keeps the business as
+  // subordinate raw material (v5 behavior).
+  const modeDirective = effectiveMode === "value"
+    ? [
+        `## MODE: VALUE - pure reader insight, ZERO business mention`,
+        `This is a VALUE post. Do NOT mention any business, company, product, brand, tool, service, or "why you need it" - not once, not even implied. There is no business in this post. The technique operates ONLY on the READER and their world.`,
+        `Your job: deliver a HARD, UNSAID TRUTH about the reader's own situation - the uncomfortable thing nobody says out loud - and make them feel it. This is the "would post it 5x a week" bar: a genuine insight the reader would screenshot, not an ad. No pitch, no product, no call-to-action to any business, no competitor names, no "and that's why...". If you drift toward selling anything, stop and return to the reader's truth. The reader should think "nobody says this" - never "this is an ad".`,
+      ].join("\n")
+    : [
+        `## MODE: PROMOTIONAL`,
+        `The business context below is subordinate raw material the technique operates on. The business may appear, but the technique still governs the angle, structure, and voice - do not write a generic pitch or feature list. Lead with reader value.`,
+      ].join("\n");
+
+  const contextBlock = effectiveMode === "value"
+    ? `# THE READER'S WORLD (write for and about THIS reader - nobody else)\n${JSON.stringify(ctx.target_customer ?? {})}\n\n(There is deliberately NO business, company, or product information here. Do not reference or invent one.)\n\n`
+    : `# RAW MATERIAL - the business and its customer\nBusiness name: ${business.name}\nWhat it does: ${ctx.business_summary ?? ""}\nWho it serves: ${JSON.stringify(ctx.target_customer ?? {})}\nWhat makes it distinct: ${JSON.stringify(ctx.key_differentiators ?? [])}\nWhat it offers: ${ctx.value_proposition ?? ""}\n\n`;
+  const mode = { directive: modeDirective };
+  const context = { block: contextBlock };
 
   // 3. Generate one post per platform; insert one content_assets row per platform.
   const contentAssetIds: string[] = [];
@@ -177,7 +205,7 @@ export async function runGenerateSocialPost(taskCtx: TaskCtx): Promise<TaskResul
   for (const plat of platforms) {
     // Inject platform-specific vars so the prompt can write natively for each platform.
     const rendered = renderPrompt(promptDef.user_prompt_template, {
-      business, ctx, user, source, direction, pillar,
+      business, ctx, user, source, direction, pillar, mode, context,
       platform: {
         name: plat.display_name,
         slug: plat.slug,
