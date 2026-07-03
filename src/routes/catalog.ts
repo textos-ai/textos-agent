@@ -196,6 +196,38 @@ app.get("/platforms", async (c) => {
   return c.json({ platforms: data ?? [] });
 });
 
+// ── GET /methods/:slug ───────────────────────────────────────────────────────
+// PUBLIC (no auth): an expert method + its moves, for the unlisted partner
+// outreach pages. pillar_methods/pillar_templates are RLS-restricted to
+// authenticated, so this reads via the service client. Returns the real,
+// live method content (name, attribution, premise/spine, and each move's
+// technique body) — so a partner sees the actual thing, not a mock.
+app.get("/methods/:slug", async (c) => {
+  const slug = c.req.param("slug");
+  const supabase = createSupabaseClient(c.env);
+
+  const { data: method, error } = await supabase
+    .from("pillar_methods")
+    .select("id, slug, name, attributed_to, credential, premise, portrait_url, source_video_url, is_core, status")
+    .eq("slug", slug)
+    .maybeSingle();
+
+  if (error) {
+    log.error("catalog_method_fetch_failed", { slug, err: String(error) });
+    return c.json({ error: "method unavailable" }, 500);
+  }
+  if (!method) return c.json({ error: "method not found" }, 404);
+
+  const { data: moves } = await supabase
+    .from("pillar_templates")
+    .select("name, intent, register, data_source, method_body, display_order")
+    .eq("method_id", (method as { id: string }).id)
+    .order("display_order", { ascending: true });
+
+  c.header("Cache-Control", "public, max-age=300");
+  return c.json({ method, moves: moves ?? [] });
+});
+
 function deriveCategory(task: any): string {
   const s: string = task.slug || "";
 
