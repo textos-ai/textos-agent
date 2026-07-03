@@ -10,7 +10,6 @@ import {
   getAllActiveTasks,
   getTaskRunsForBusiness,
   countUserBusinesses,
-  getUserSubscriptionPlan,
   createBusiness,
   createEmptyBusinessContext,
   setAgentName,
@@ -34,6 +33,53 @@ app.get("/", async (c) => {
     return c.json({ businesses });
   } catch (err) {
     log.error("get_businesses_failed", { err: String(err) });
+    return c.json(errBody("upstream_error", String(err)), 502);
+  }
+});
+
+// ── Add-business gate ────────────────────────────────────────────────────────
+// ONE rule, shared by GET /can-add (client UX) and POST / (enforcement):
+//   admin (users.is_admin)        → unlimited
+//   else 1st business (count 0)   → free
+//   else active/trialing sub      → allowed
+//   else                          → needs a subscription
+// Subscriptions are per-business; "is a subscriber" = has ≥1 active/trialing
+// business_subscriptions row. Nothing hardcoded — reads users + subs live.
+async function evaluateAddBusiness(
+  supabase: ReturnType<typeof createSupabaseClient>,
+  userId: string,
+): Promise<{ allowed: boolean; reason: "admin" | "first_free" | "subscribed" | "needs_subscription"; isAdmin: boolean; isSubscriber: boolean; businessCount: number }> {
+  const [userRes, businessCount, subRes] = await Promise.all([
+    supabase.from("users").select("is_admin").eq("id", userId).maybeSingle(),
+    countUserBusinesses(supabase, userId),
+    supabase
+      .from("business_subscriptions")
+      .select("status")
+      .eq("user_id", userId)
+      .in("status", ["active", "trialing"])
+      .limit(1),
+  ]);
+  const isAdmin = !!(userRes.data as { is_admin?: boolean } | null)?.is_admin;
+  const isSubscriber = Array.isArray(subRes.data) && subRes.data.length > 0;
+  let allowed: boolean;
+  let reason: "admin" | "first_free" | "subscribed" | "needs_subscription";
+  if (isAdmin) { allowed = true; reason = "admin"; }
+  else if (businessCount === 0) { allowed = true; reason = "first_free"; }
+  else if (isSubscriber) { allowed = true; reason = "subscribed"; }
+  else { allowed = false; reason = "needs_subscription"; }
+  return { allowed, reason, isAdmin, isSubscriber, businessCount };
+}
+
+// ── GET /can-add ─────────────────────────────────────────────────────────────
+// Frontend uses this to decide: route to /start (allowed) vs show the paywall
+// modal (needs_subscription). Registered before /:slug so it isn't read as a slug.
+app.get("/can-add", async (c) => {
+  const auth = c.get("auth");
+  const supabase = createSupabaseClient(c.env);
+  try {
+    return c.json(await evaluateAddBusiness(supabase, auth.user_id));
+  } catch (err) {
+    log.error("can_add_business_check_failed", { err: String(err) });
     return c.json(errBody("upstream_error", String(err)), 502);
   }
 });
@@ -329,26 +375,22 @@ app.post("/", async (c) => {
   const auth = c.get("auth");
   const supabase = createSupabaseClient(c.env);
 
-  let plan: { business_quota: number } | null = null;
-  let businessCount = 0;
+  // Gate: 1st business free, admins unlimited, otherwise a subscription is
+  // required to add more than one. Same rule as GET /can-add.
+  let gate;
   try {
-    [plan, businessCount] = await Promise.all([
-      getUserSubscriptionPlan(supabase, auth.user_id),
-      countUserBusinesses(supabase, auth.user_id),
-    ]);
+    gate = await evaluateAddBusiness(supabase, auth.user_id);
   } catch (err) {
     log.error("quota_check_failed", { err: String(err) });
     return c.json(errBody("upstream_error", String(err)), 502);
   }
-
-  const quota = plan?.business_quota ?? 1;
-  if (businessCount >= quota) {
+  if (!gate.allowed) {
     return c.json(
       errBody(
-        "bad_request",
-        `business quota reached (${quota} allowed on your current plan)`,
+        "subscription_required",
+        "Adding more than one business requires a monthly subscription.",
       ),
-      400,
+      402,
     );
   }
 

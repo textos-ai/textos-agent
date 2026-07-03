@@ -7,7 +7,8 @@ export type ErrorCode =
   | "unauthorized"
   | "forbidden"
   | "rate_limited"
-  | "not_configured";
+  | "not_configured"
+  | "subscription_required";
 
 export interface ErrorBody {
   error: ErrorCode;
