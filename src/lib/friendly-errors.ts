@@ -66,25 +66,37 @@ export function friendlyPublishError(opts: FriendlyPublishOpts): string {
     return `You've hit a posting limit — try again in a few minutes.`;
   }
 
-  // ── Plan / quota limit ────────────────────────────────────────────────────
+  // ── Account not connected / ownership-linkage ─────────────────────────────
+  // Includes the Zernio 403 "one or more accounts do not belong to this user":
+  // the stored account is stale/unlinked — an AUTH/LINKAGE problem, NOT a quota.
+  // The fix is to RECONNECT. Checked BEFORE the quota block so an ownership 403
+  // is never mislabeled as a posting-limit ("upgrade / wait until it resets").
   if (
-    httpStatus === 403          ||
-    cat.includes("plan")        ||
-    cat.includes("quota")       ||
-    msg.includes("plan limit")  ||
+    msg.includes("belong")              ||  // "...accounts do not belong to this user"
+    msg.includes("account not found")   ||
+    msg.includes("no account")          ||
+    msg.includes("not connected")       ||
+    cat.includes("account")
+  ) {
+    return `Your ${pname} account needs to be reconnected — reconnect ${pname} in the Publish Channels section, then try again.`;
+  }
+
+  // ── Plan / quota limit ────────────────────────────────────────────────────
+  // ONLY when Zernio genuinely signals a quota. We do NOT blanket-map
+  // httpStatus 403 here: a 403 is almost always an auth/ownership problem
+  // (handled above), not a plan cap. Requiring explicit quota wording stops
+  // account errors from being mislabeled as "you've hit your posting limit".
+  if (
+    cat.includes("plan")          ||
+    cat.includes("quota")         ||
+    msg.includes("plan limit")    ||
+    msg.includes("posting limit") ||
+    msg.includes("quota")         ||
+    msg.includes("exceeded your") ||
+    msg.includes("upgrade your")  ||
     msg.includes("subscription")
   ) {
     return `You've reached your plan's posting limit. Check your account to upgrade or wait until it resets.`;
-  }
-
-  // ── Account not connected ─────────────────────────────────────────────────
-  if (
-    cat.includes("account")             ||
-    msg.includes("account not found")   ||
-    msg.includes("no account")          ||
-    msg.includes("not connected")
-  ) {
-    return `Your ${pname} account isn't connected — use the Publish Channels section to connect it.`;
   }
 
   // ── Network / timeout ─────────────────────────────────────────────────────

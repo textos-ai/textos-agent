@@ -182,7 +182,11 @@ app.post("/:slug/marketing/content-assets/:id/publish", async (c) => {
       errorMessage: result.error,
       platform: targetPlatform,
     });
-    const reconnect = result.status === 401;
+    // Surface a reconnect CTA for auth (401) AND ownership/linkage errors — a
+    // stale-account 403 ("accounts do not belong to this user") is fixed by
+    // reconnecting, not by upgrading a plan.
+    const reconnect = result.status === 401 ||
+      /belong|not connected|account not found|no account/i.test(result.error ?? "");
     const httpStatus = result.status === 429 ? 429 : result.status === 403 ? 403 : 502;
     return c.json({ error: friendly, ...(reconnect ? { reconnect: true } : {}) }, httpStatus);
   }
