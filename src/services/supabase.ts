@@ -91,14 +91,22 @@ export interface UserRow {
 /** Insert-or-no-op. Email is updated on conflict so renamed addresses sync. */
 export async function upsertUser(
   client: SupabaseClient,
-  user: { id: string; email: string },
+  // email is null for anonymous users (they have none until they convert on
+  // register); migration 078 makes users.email nullable. onConflict keeps an
+  // existing email if a later anon-provision passes null (COALESCE guard below).
+  user: { id: string; email: string | null },
 ): Promise<void> {
+  const row: { id: string; email?: string | null } = { id: user.id };
+  // Only write email when we actually have one, so provisioning an anon user
+  // never clobbers a real email set by a prior /auth/callback. Anonymous JWTs
+  // carry email as "" (empty string), NOT null — treat that as "no email" so
+  // anon rows land with email:null (multiple NULLs coexist; multiple ""s would
+  // collide on the users_email_key unique index).
+  const email = user.email?.trim() || null;
+  if (email != null) row.email = email;
   const { error } = await client
     .from("users")
-    .upsert(
-      { id: user.id, email: user.email },
-      { onConflict: "id", ignoreDuplicates: false },
-    );
+    .upsert(row, { onConflict: "id", ignoreDuplicates: false });
   if (error) throw error;
 }
 

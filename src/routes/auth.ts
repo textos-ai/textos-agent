@@ -8,6 +8,7 @@ import {
   getUserById,
   createBusiness,
   upsertBusinessContext,
+  countUserBusinesses,
   isHandleAvailable,
   setUserHandle,
 } from "../services/supabase";
@@ -16,6 +17,7 @@ import { errBody } from "../lib/errors";
 import { log } from "../lib/logger";
 import { pickAgentName } from "../lib/agentNames";
 import { createCnameRecord } from "../services/cloudflare";
+import { checkAnonIpLimit } from "../lib/anon-guards";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -215,8 +217,18 @@ app.post("/callback", async (c) => {
   }
 
   // ── C-Lite snapshot claim ─────────────────────────────────────────
+  // CONVERT-IN-PLACE: if this user already owns a business (the pre-signup /
+  // anonymous full-build path — the anon session created a real business, then
+  // converted to permanent keeping the SAME uuid), the business already exists
+  // and is already theirs. The snapshot-claim is a NO-OP here — never create a
+  // duplicate. It still runs for the light path (user has no business yet).
   let claimed_business_slug: string | null = null;
-  if (parsed.snapshot_token) {
+  let existingBusinessCount = 0;
+  try { existingBusinessCount = await countUserBusinesses(supabase, auth.user_id); } catch { /* treat as 0 */ }
+
+  if (parsed.snapshot_token && existingBusinessCount > 0) {
+    log.info("snapshot_claim_noop_convert_in_place", { user_id: auth.user_id, businesses: existingBusinessCount });
+  } else if (parsed.snapshot_token) {
     const raw = await c.env.SNAPSHOT_KV.get(`snapshot:${parsed.snapshot_token}`);
     if (raw) {
       try {
@@ -299,6 +311,65 @@ app.post("/callback", async (c) => {
     suggested_handle: user?.handle ?? suggestHandleFromEmail(auth.email),
     claimed_business_slug,
   });
+});
+
+// ── POST /anon-init ───────────────────────────────────────────────────────────
+// Provision the public.users row for a freshly-minted ANONYMOUS session so it can
+// own a real business and run the full pre-signup build (the FKs need the row).
+// Public (no requireAuth): the caller presents its anon access_token in the body;
+// we verify it. Per-IP rate-limited (a full anon build is ~$1). email is null for
+// an anon user — set for real on register (convert-in-place keeps the same uuid).
+const AnonInitBody = z.object({ access_token: z.string().min(1) });
+
+app.post("/anon-init", async (c) => {
+  const ip =
+    c.req.header("cf-connecting-ip") ??
+    c.req.header("x-forwarded-for")?.split(",")[0].trim() ??
+    "unknown";
+
+  let parsed;
+  try {
+    parsed = AnonInitBody.parse(await c.req.json());
+  } catch (err) {
+    return c.json(errBody("bad_request", "invalid body", err instanceof Error ? err.message : err), 400);
+  }
+
+  let auth;
+  try {
+    auth = await verifySupabaseJwt(parsed.access_token, c.env);
+  } catch (err) {
+    return c.json(errBody("unauthorized", "invalid access_token", err instanceof Error ? err.message : err), 401);
+  }
+
+  // Per-IP guard: cap how many anon sessions one IP can spin up per window.
+  // Same env-gated ?letmein test bypass as the snapshot limiter.
+  const bypass =
+    new URL(c.req.url).searchParams.has("letmein") &&
+    c.env.LETMEIN_BYPASS_ENABLED === "true";
+  if (!bypass) {
+    const ipGate = await checkAnonIpLimit(c.env, ip);
+    if (!ipGate.allowed) {
+      return c.json(errBody("rate_limited", "Too many anonymous sessions — try again later"), 429);
+    }
+  }
+
+  const supabase = createSupabaseClient(c.env);
+  try {
+    // email is null for anon; migration 078 permits it. Idempotent.
+    await upsertUser(supabase, { id: auth.user_id, email: auth.email ?? null });
+  } catch (err) {
+    // Log full detail server-side; return a generic message so DB internals
+    // (constraint names, etc.) don't leak to the public caller.
+    const detail =
+      err && typeof err === "object"
+        ? JSON.stringify(err, Object.getOwnPropertyNames(err))
+        : String(err);
+    log.error("anon_init_upsert_failed", { user_id: auth.user_id, err: detail });
+    return c.json(errBody("upstream_error", "could not provision anonymous session"), 502);
+  }
+
+  log.info("anon_init_provisioned", { user_id: auth.user_id, has_email: Boolean(auth.email) });
+  return c.json({ ok: true, user_id: auth.user_id, is_anonymous: !auth.email });
 });
 
 export default app;

@@ -13,6 +13,7 @@ import {
 import { errBody } from "../lib/errors";
 import { sseEvent, type StreamEvent } from "../lib/stream-events";
 import { runFreeBuild } from "../lib/free-build-orchestrator";
+import { checkAnonSessionLimit, ANON_SESSION_BUILD_LIMIT } from "../lib/anon-guards";
 
 const app = new Hono<{ Bindings: Env }>();
 app.use("*", requireAuth);
@@ -98,6 +99,23 @@ app.get("/business/:slug", async (c) => {
     if (!user) {
       await send({ type: "error", message: "User not found", ts: Date.now() });
       return;
+    }
+
+    // Per-anon-session build cap: an anonymous session (no email until it
+    // converts on register) can only start a bounded number of full builds
+    // (~$1 each). Real accounts are unaffected. Only reached for genuinely new
+    // builds — the already-complete / already-running short-circuits above
+    // return first, so reloads on an in-progress build don't consume the cap.
+    if (!user.email) {
+      const gate = await checkAnonSessionLimit(c.env, auth.user_id);
+      if (!gate.allowed) {
+        await send({
+          type: "error",
+          message: `anon_build_limit_reached: this preview session can start up to ${ANON_SESSION_BUILD_LIMIT} builds — sign up to keep building`,
+          ts: Date.now(),
+        });
+        return;
+      }
     }
 
     // Extract Cloudflare IP geolocation headers for tasks that need location
