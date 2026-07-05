@@ -11,6 +11,7 @@ import {
   TASK_SELECT_COLUMNS,
 } from "../services/supabase";
 import { runTaskInBackground } from "./business-task-run";
+import { FREE_BUILD_TASK_HANDLERS } from "../lib/free-build-orchestrator";
 import { errBody } from "../lib/errors";
 import { log } from "../lib/logger";
 import Anthropic from "@anthropic-ai/sdk";
@@ -404,7 +405,28 @@ admin.get("/tasks", async (c) => {
     log.error("[admin] tasks_lookup_failed", { err: error.message });
     return c.json(errBody("internal", "tasks_lookup_failed"), 500);
   }
-  return c.json({ tasks: data ?? [] });
+
+  // Flag tasks that can't run: no active prompt_definitions row AND no dedicated
+  // handler AND not a tool/retrieval task. Turns the silent catalog-drop into a
+  // loud admin signal so a prompt-less task can never vanish unnoticed again.
+  const { data: promptRows } = await supabase
+    .from("prompt_definitions")
+    .select("task_slug")
+    .eq("is_active", true);
+  const activePromptSlugs = new Set(
+    ((promptRows as Array<{ task_slug: string }> | null) ?? []).map((r) => r.task_slug),
+  );
+  const tasks = ((data as any[]) ?? []).map((t) => {
+    const has_active_prompt = activePromptSlugs.has(t.slug);
+    const hasHandler = t.slug in FREE_BUILD_TASK_HANDLERS;
+    const isToolOrRetrieval = t.output_type === "configured" || t.output_type === "retrieval";
+    return {
+      ...t,
+      has_active_prompt,
+      will_not_run: !has_active_prompt && !hasHandler && !isToolOrRetrieval,
+    };
+  });
+  return c.json({ tasks });
 });
 
 // ── POST /admin/tasks ────────────────────────────────────────────────────

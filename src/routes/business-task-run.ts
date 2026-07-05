@@ -250,16 +250,24 @@ app.post("/:slug/tasks/:taskSlug/run", async (c) => {
     }
   }
 
-  // Coming soon check — but exclude free build tasks that have dedicated handlers
+  // Coming-soon check. Runnable = a tool (configured) or retrieval task, OR a
+  // dedicated handler, OR an ACTIVE prompt_definitions row (the real gate —
+  // genericDocumentRunner reads prompt_definitions). No token_cost gating; the
+  // legacy prompt_template column is NOT consulted. Mirrors the web display gate
+  // (task-presentation.ts isTaskRunnableNow) so run + display never disagree.
   const hasDedicatedHandler = task.slug in FREE_BUILD_TASK_HANDLERS;
-  // Retrieval tasks are runnable via the generic engine (no per-slug handler,
-  // no prompt_template) — exempt them from the coming-soon gate.
-  const isComingSoon = !hasDedicatedHandler && task.output_type !== "retrieval" && (
-    !task.token_cost ||
-    task.token_cost === 0 ||
-    !task.prompt_template ||
-    task.prompt_template.trim() === ""
-  );
+  const isToolOrRetrieval = task.output_type === "configured" || task.output_type === "retrieval";
+  let hasActivePrompt = false;
+  if (!hasDedicatedHandler && !isToolOrRetrieval) {
+    const { data: activePrompt } = await supabase
+      .from("prompt_definitions")
+      .select("id")
+      .eq("task_slug", task.slug)
+      .eq("is_active", true)
+      .maybeSingle();
+    hasActivePrompt = !!activePrompt;
+  }
+  const isComingSoon = !hasDedicatedHandler && !isToolOrRetrieval && !hasActivePrompt;
 
   if (isComingSoon) {
     return c.json(

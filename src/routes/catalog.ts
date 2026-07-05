@@ -54,6 +54,16 @@ app.get("/tasks", async (c) => {
     return c.json({ error: "catalog unavailable" }, 500);
   }
 
+  // Active prompt_definitions row = the real "has a prompt / runnable" signal
+  // (execution reads prompt_definitions, not the legacy prompt_template column).
+  const { data: promptRows } = await supabase
+    .from("prompt_definitions")
+    .select("task_slug")
+    .eq("is_active", true);
+  const activePromptSlugs = new Set(
+    ((promptRows as Array<{ task_slug: string }> | null) ?? []).map((r) => r.task_slug),
+  );
+
   // Redact prompt_template from public payload — admins author these in the
   // admin panel; frontend only needs to know if one exists (for Coming Soon
   // detection at the tile level).
@@ -63,6 +73,7 @@ app.get("/tasks", async (c) => {
       ...rest,
       has_prompt_template:
         typeof prompt_template === "string" && prompt_template.trim() !== "",
+      has_active_prompt: activePromptSlugs.has(t.slug),
       creator: { id: null, name: "Victora" },
       category: deriveCategory(t),
     };
@@ -112,12 +123,13 @@ app.get("/lifecycle-phases", async (c) => {
 app.get("/objectives", async (c) => {
   const supabase = createSupabaseClient(c.env);
 
-  const [objsRes, linksRes] = await Promise.all([
+  const [objsRes, linksRes, promptsRes] = await Promise.all([
     supabase
       .from("objectives")
       .select("id, slug, name, tagline, display_order, is_utility")
       .order("display_order", { ascending: true }),
     supabase.from("task_objectives").select("task_id, objective_id"),
+    supabase.from("prompt_definitions").select("task_slug").eq("is_active", true),
   ]);
 
   if (objsRes.error || linksRes.error) {
@@ -126,6 +138,10 @@ app.get("/objectives", async (c) => {
     });
     return c.json({ error: "objectives unavailable" }, 500);
   }
+  // Active prompt_definitions row = the real "has a prompt / runnable" signal.
+  const activePromptSlugs = new Set(
+    ((promptsRes.data as Array<{ task_slug: string }> | null) ?? []).map((r) => r.task_slug),
+  );
 
   const links = linksRes.data ?? [];
   const taskIds = Array.from(new Set(links.map((l) => l.task_id)));
@@ -151,6 +167,7 @@ app.get("/objectives", async (c) => {
       ...rest,
       has_prompt_template:
         typeof prompt_template === "string" && prompt_template.trim() !== "",
+      has_active_prompt: activePromptSlugs.has(t.slug),
     };
   }
 
