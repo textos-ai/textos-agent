@@ -429,6 +429,87 @@ admin.get("/tasks", async (c) => {
   return c.json({ tasks });
 });
 
+// ── POST /admin/tasks/:slug/generate-prompt ──────────────────────────────────
+// Generate a system_prompt + user_prompt_template from the task's name + brief,
+// grounded in the prompt_variables catalog. Returns the text only (NO write) —
+// the client persists it via the existing POST /admin/prompt-definitions/:slug
+// flow. Manual, admin-triggered; nothing goes active until the client writes it.
+admin.post("/tasks/:slug/generate-prompt", async (c) => {
+  const slug = c.req.param("slug");
+  const supabase = createSupabaseClient(c.env);
+
+  const { data: task, error: tErr } = await supabase
+    .from("tasks")
+    .select("slug, name, description_short, description_long, output_type")
+    .eq("slug", slug)
+    .maybeSingle();
+  if (tErr) return c.json(errBody("internal", "task_lookup_failed"), 500);
+  if (!task) return c.json(errBody("not_found", `task '${slug}' not found`), 404);
+
+  const { data: vars } = await supabase
+    .from("prompt_variables")
+    .select("name, description")
+    .order("name");
+  const varCatalog = ((vars as Array<{ name: string; description: string | null }> | null) ?? [])
+    .map((v) => `- {{${v.name}}}: ${v.description ?? ""}`)
+    .join("\n");
+
+  const t = task as { name: string; description_short: string | null; description_long: string | null; output_type: string };
+  const brief = t.description_long || t.description_short || t.name;
+  const anthropic = createAnthropicClient(c.env);
+  const models = await loadModelConfig(supabase);
+
+  const system =
+    "You author production prompts for an internal AI task system. Given a task's " +
+    "name and brief, write a system_prompt (the agent's role, rules, output " +
+    "discipline) and a user_prompt_template (the rendered instruction). The " +
+    "user_prompt_template MUST reference ONLY variables from the provided catalog " +
+    "using {{double.brace}} syntax -- never invent variables. It must instruct the " +
+    "model to produce the task's output and state the exact output shape. Return " +
+    'ONLY a JSON object {"system_prompt": string, "user_prompt_template": string} ' +
+    "-- no markdown fences, no commentary.";
+  const userMsg =
+    `Task name: ${t.name}\n` +
+    `Output type: ${t.output_type}\n` +
+    `Brief (the seed -- purpose / audience / content / inputs / constraints):\n${brief}\n\n` +
+    `Available variables (use ONLY these):\n${varCatalog}\n\n` +
+    "Write the system_prompt and user_prompt_template. Return ONLY the JSON object.";
+
+  let msg;
+  try {
+    msg = await anthropic.messages.create({
+      model: models.sonnet,
+      max_tokens: 2000,
+      system,
+      messages: [{ role: "user", content: userMsg }],
+    });
+  } catch (err) {
+    log.error("[admin] generate_prompt_llm_failed", { slug, err: String(err) });
+    return c.json(errBody("upstream_error", "prompt generation failed"), 502);
+  }
+
+  const blocks = (msg as { content?: Array<{ type: string; text?: string }> }).content ?? [];
+  let raw = blocks.filter((b) => b.type === "text").map((b) => b.text ?? "").join("").trim();
+  raw = raw.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/i, "");
+  const open = raw.indexOf("{");
+  const close = raw.lastIndexOf("}");
+  if (open >= 0 && close > open) raw = raw.slice(open, close + 1);
+  let parsed: { system_prompt?: string; user_prompt_template?: string };
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return c.json(errBody("upstream_error", "prompt generation returned unparseable output"), 502);
+  }
+  if (!parsed.user_prompt_template || !parsed.user_prompt_template.trim()) {
+    return c.json(errBody("upstream_error", "prompt generation produced no user_prompt_template"), 502);
+  }
+  log.info("[admin] prompt_generated", { slug });
+  return c.json({
+    system_prompt: parsed.system_prompt ?? null,
+    user_prompt_template: parsed.user_prompt_template,
+  });
+});
+
 // ── POST /admin/tasks ────────────────────────────────────────────────────
 // Create a new task with slug + name. All other fields use safe defaults.
 // Automatically binds anthropic-claude-sonnet as the primary API.
