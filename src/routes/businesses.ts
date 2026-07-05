@@ -7,6 +7,7 @@ import {
   getBusinessesByUser,
   getBusinessBySlug,
   getBusinessContext,
+  upsertBusinessContext,
   getAllActiveTasks,
   getTaskRunsForBusiness,
   countUserBusinesses,
@@ -19,6 +20,15 @@ import {
 import { errBody } from "../lib/errors";
 import { log } from "../lib/logger";
 import { pickAgentName } from "../lib/agentNames";
+import { createAnthropicClient } from "../services/anthropic";
+import { loadModelConfig } from "../lib/model-config";
+import {
+  CONTEXT_FIELD_SHAPES,
+  validateField,
+  extractFromText,
+  flattenAssetData,
+  pickStructured,
+} from "../lib/context-rebuild";
 
 const app = new Hono<{ Bindings: Env }>();
 app.use("*", requireAuth);
@@ -825,5 +835,187 @@ function extractOutputSummary(
       return null;
   }
 }
+
+// ── POST /:slug/context/rebuild ──────────────────────────────────────────────
+// Refresh business_context from the business's documents. Source docs are chosen
+// by tasks.is_context_source (+ tasks.context_fields = the fields that doc may
+// own). Extract from EDITED prose (asset_text) first, falling back to the frozen
+// asset_data only when a doc was never edited. Gate TIER-1 fields; merge with
+// most-specific-source-wins; write a PARTIAL patch (fields no doc covers stay).
+const RebuildContextBody = z.object({ source: z.enum(["get-started", "locked"]) });
+const MAX_SOURCE_DOCS = 12;
+
+interface RebuildTask {
+  slug: string;
+  is_context_source: boolean;
+  context_fields: string[];
+  execution_order: number | null;
+}
+interface RebuildDoc {
+  id: string;
+  asset_subtype: string | null;
+  asset_text: string | null;
+  asset_data: unknown;
+  metadata: Record<string, unknown> | null;
+  task_runs?: { task_id: string; tasks?: RebuildTask | null } | null;
+}
+
+// PostgREST types to-one embeds as arrays; at runtime a single-FK embed is an
+// object. Coerce either shape to one value so the code is robust to both.
+function toOne<T>(x: unknown): T | null {
+  if (Array.isArray(x)) return (x[0] as T) ?? null;
+  return (x as T) ?? null;
+}
+
+app.post("/:slug/context/rebuild", async (c) => {
+  const auth = c.get("auth");
+  const slug = c.req.param("slug");
+  const supabase = createSupabaseClient(c.env);
+
+  let parsed: z.infer<typeof RebuildContextBody>;
+  try {
+    parsed = RebuildContextBody.parse(await c.req.json());
+  } catch (err) {
+    return c.json(errBody("bad_request", "invalid body", err instanceof Error ? err.message : String(err)), 400);
+  }
+
+  const business = await getBusinessBySlug(supabase, auth.user_id, slug).catch(() => null);
+  if (!business) return c.json(errBody("not_found", `business '${slug}' not found`), 404);
+
+  const ctx = await getBusinessContext(supabase, business.id).catch(() => null);
+  if (!ctx) return c.json(errBody("not_found", "no business_context to rebuild"), 404);
+
+  // Candidate docs with their producing task (via task_run -> task).
+  const { data: assetRows, error: aErr } = await supabase
+    .from("business_assets")
+    .select("id, asset_subtype, asset_text, asset_data, metadata, task_runs(task_id, tasks(slug, is_context_source, context_fields, execution_order))")
+    .eq("business_id", business.id)
+    .eq("asset_type", "document")
+    .eq("is_current", true);
+  if (aErr) return c.json(errBody("upstream_error", aErr.message), 502);
+
+  // For the get-started choice, resolve the objective's task ids.
+  let getStartedTaskIds: Set<string> | null = null;
+  if (parsed.source === "get-started") {
+    const obj = await supabase.from("objectives").select("id").eq("slug", "get-started").maybeSingle();
+    const oid = (obj.data as { id?: string } | null)?.id ?? null;
+    const links = oid
+      ? await supabase.from("task_objectives").select("task_id").eq("objective_id", oid)
+      : { data: [] as { task_id: string }[] };
+    getStartedTaskIds = new Set(((links.data as { task_id: string }[]) ?? []).map((r) => r.task_id));
+  }
+
+  const docs: RebuildDoc[] = ((assetRows as Record<string, unknown>[]) ?? []).map((r) => {
+    const tr = toOne<{ task_id: string; tasks: unknown }>(r.task_runs);
+    const tk = tr ? toOne<RebuildTask>(tr.tasks) : null;
+    return {
+      id: r.id as string,
+      asset_subtype: (r.asset_subtype as string | null) ?? null,
+      asset_text: (r.asset_text as string | null) ?? null,
+      asset_data: r.asset_data,
+      metadata: (r.metadata as Record<string, unknown> | null) ?? null,
+      task_runs: tr ? { task_id: tr.task_id, tasks: tk } : null,
+    };
+  });
+
+  const sources = docs.filter((d) => {
+    const t = d.task_runs?.tasks;
+    if (!t || t.is_context_source !== true) return false;
+    if (!Array.isArray(t.context_fields) || t.context_fields.length === 0) return false;
+    if (parsed.source === "locked") return d.metadata?.is_locked === true;
+    return getStartedTaskIds!.has(d.task_runs!.task_id);
+  });
+
+  const truncated = sources.length > MAX_SOURCE_DOCS;
+  const chosenDocs = sources.slice(0, MAX_SOURCE_DOCS);
+
+  if (chosenDocs.length === 0) {
+    return c.json({
+      written: [], skipped: [], tier1_skipped: [], sources: [], conflicts: [], truncated,
+      message: "No context-source documents matched this choice.",
+    });
+  }
+
+  const anthropic = createAnthropicClient(c.env);
+  const models = await loadModelConfig(supabase);
+
+  interface Candidate { field: string; value: unknown; from: string; specificity: number; exec: number }
+  const candidates: Candidate[] = [];
+  const usedSources: { subtype: string | null; from: string; fields: string[] }[] = [];
+
+  for (const d of chosenDocs) {
+    const t = d.task_runs!.tasks!;
+    const fields = t.context_fields;
+    let extracted: Record<string, unknown> = {};
+    let from = "";
+    if (d.asset_text && d.asset_text.trim()) {
+      extracted = await extractFromText(anthropic, models.sonnet, business.name, d.asset_subtype, d.asset_text, fields);
+      from = "asset_text (edited prose)";
+    } else {
+      const structured = pickStructured(d.asset_data, fields);
+      if (Object.keys(structured).length > 0) {
+        extracted = structured;
+        from = "asset_data (structured, unedited)";
+      } else {
+        extracted = await extractFromText(anthropic, models.sonnet, business.name, d.asset_subtype, flattenAssetData(d.asset_data), fields);
+        from = "asset_data (text, unedited)";
+      }
+    }
+    usedSources.push({ subtype: d.asset_subtype, from, fields: Object.keys(extracted) });
+    for (const [field, value] of Object.entries(extracted)) {
+      candidates.push({ field, value, from: d.asset_subtype ?? "?", specificity: fields.length, exec: t.execution_order ?? 999 });
+    }
+  }
+
+  // Per field: most-specific source (smallest context_fields) wins; tie -> execution_order.
+  const byField = new Map<string, Candidate[]>();
+  for (const cnd of candidates) {
+    const arr = byField.get(cnd.field) ?? [];
+    arr.push(cnd);
+    byField.set(cnd.field, arr);
+  }
+
+  const patch: Record<string, unknown> = {};
+  const written: { field: string; from: string }[] = [];
+  const skipped: { field: string; reason: string; from: string; tier: number }[] = [];
+  const conflicts: { field: string; chosen: string; over: string[] }[] = [];
+
+  for (const [field, cands] of byField.entries()) {
+    cands.sort((x, y) => x.specificity - y.specificity || x.exec - y.exec);
+    const chosen = cands[0];
+    if (cands.length > 1) conflicts.push({ field, chosen: chosen.from, over: cands.slice(1).map((c2) => c2.from) });
+    const verdict = validateField(field, chosen.value);
+    const tier = CONTEXT_FIELD_SHAPES[field]?.tier ?? 3;
+    if (verdict.ok) {
+      patch[field] = chosen.value;
+      written.push({ field, from: chosen.from });
+    } else {
+      skipped.push({ field, reason: verdict.reason ?? "invalid", from: chosen.from, tier });
+    }
+  }
+
+  if (Object.keys(patch).length > 0) {
+    try {
+      await upsertBusinessContext(supabase, { business_id: business.id, user_id: ctx.user_id, ...patch });
+    } catch (err) {
+      return c.json(errBody("upstream_error", `context write failed: ${String(err)}`), 502);
+    }
+  }
+
+  log.info("[businesses] context_rebuilt", {
+    business_id: business.id, source: parsed.source,
+    written: written.map((w) => w.field), skipped_count: skipped.length,
+  });
+
+  return c.json({
+    written: written.map((w) => w.field),
+    written_detail: written,
+    skipped,
+    tier1_skipped: skipped.filter((s) => s.tier === 1), // surfaced separately for prominent display
+    sources: usedSources,
+    conflicts,
+    truncated,
+  });
+});
 
 export default app;
