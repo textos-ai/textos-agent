@@ -46,7 +46,7 @@ INSERT INTO public.tasks
    output_type, token_cost, kind, status, surface, progress_verb)
 VALUES
   ('bluesky-find-conversations', 'Find Conversations (Bluesky)',
-   'Search Bluesky for public conversations from this business''s potential customers.',
+   'Search Bluesky for public conversations from potential customers of this business.',
    'marketing', false, 'free', 'always_visible',
    'retrieval', 0, 'manual', 'active', 'silent', 'Finding conversations'),
   ('match-verify-leads', 'Verify and Score Leads',

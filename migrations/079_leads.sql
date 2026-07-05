@@ -1,17 +1,22 @@
 -- =====================================================================
--- Migration 079: leads (external-retrieval lead-finding)
+-- Migration 079: connection_leads (external-retrieval lead-finding)
 -- =====================================================================
--- Shared table the lead tasks write/read, and the store a future Connection
--- Report renders. The external-retrieval engine inserts candidates (status
--- 'found'); match-verify-leads verifies + scores (status 'verified'/'rejected');
--- draft-reply fills drafted_message (status 'drafted'). Source-agnostic: every
--- platform normalizes to this one shape.
+-- Store for the Connection Report: the external-retrieval engine inserts
+-- candidates (status 'found'); match-verify-leads verifies + scores
+-- ('verified'/'rejected'); draft-reply fills drafted_message ('drafted').
+-- Source-agnostic: every platform normalizes to this one shape.
 --
--- Additive + idempotent. Pure ASCII. Apply via the Supabase SQL editor:
---   https://supabase.com/dashboard/project/gnpohaxkwbvoscqhdezu/sql/new
+-- NOTE the name: the table is connection_leads, NOT leads. `leads` already
+-- exists (the voice-receptionist call-capture feature). Pre-flight collision
+-- probe run before handoff: GET /rest/v1/connection_leads?limit=0 -> 404 (free).
+--
+-- Uses a BARE CREATE TABLE on purpose: if the name is ever taken, this must
+-- fail LOUDLY, not silently no-op (which is exactly how the first 079 hid a
+-- collision and then failed on the index). Pure ASCII, no doubled-quote escapes.
+-- Apply via the Supabase SQL editor.
 -- =====================================================================
 
-CREATE TABLE IF NOT EXISTS public.leads (
+CREATE TABLE public.connection_leads (
   id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   business_id      uuid NOT NULL REFERENCES public.businesses(id) ON DELETE CASCADE,
   source           text NOT NULL,                 -- provider slug, e.g. 'bluesky'
@@ -31,12 +36,13 @@ CREATE TABLE IF NOT EXISTS public.leads (
 );
 
 -- Idempotent upsert / dedup: same post never double-inserted per business.
-CREATE UNIQUE INDEX IF NOT EXISTS leads_business_source_external
-  ON public.leads (business_id, source, external_id);
+CREATE UNIQUE INDEX connection_leads_business_source_external
+  ON public.connection_leads (business_id, source, external_id);
 
-CREATE INDEX IF NOT EXISTS leads_business_status
-  ON public.leads (business_id, status);
+CREATE INDEX connection_leads_business_status
+  ON public.connection_leads (business_id, status);
 
 -- == Verify (paste after applying) =============================================
 -- SELECT column_name, data_type FROM information_schema.columns
---   WHERE table_schema='public' AND table_name='leads' ORDER BY ordinal_position;
+--   WHERE table_schema='public' AND table_name='connection_leads'
+--   ORDER BY ordinal_position;

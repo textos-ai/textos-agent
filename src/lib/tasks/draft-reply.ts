@@ -23,7 +23,7 @@ export async function runDraftReply(tc: TaskCtx): Promise<TaskResult> {
   const { supabase, business, ctx, user, anthropic, models, emit } = tc;
 
   const { data: leads, error } = await supabase
-    .from("leads")
+    .from("connection_leads")
     .select("id, url, title, snippet")
     .eq("business_id", business.id)
     .eq("status", "verified");
@@ -45,7 +45,7 @@ export async function runDraftReply(tc: TaskCtx): Promise<TaskResult> {
     });
     const reply = messageText(msg);
     if (!reply) continue;
-    await supabase.from("leads").update({ status: "drafted", drafted_message: reply }).eq("id", lead.id);
+    await supabase.from("connection_leads").update({ status: "drafted", drafted_message: reply }).eq("id", lead.id);
     drafted++;
   }
 

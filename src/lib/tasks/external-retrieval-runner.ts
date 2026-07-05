@@ -166,7 +166,7 @@ export async function runExternalRetrieval(
   let inserted = 0;
   for (const it of items) {
     if (!it.url || !it.external_id) continue;
-    const up = await supabase.from("leads").upsert(
+    const up = await supabase.from("connection_leads").upsert(
       {
         business_id: business.id,
         source: it.source,

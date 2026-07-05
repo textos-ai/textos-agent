@@ -51,7 +51,7 @@ export async function runMatchVerifyLeads(tc: TaskCtx): Promise<TaskResult> {
   const { supabase, business, ctx, user, anthropic, models, emit } = tc;
 
   const { data: leads, error } = await supabase
-    .from("leads")
+    .from("connection_leads")
     .select("id, url, title, snippet, published_at")
     .eq("business_id", business.id)
     .eq("status", "found");
@@ -68,7 +68,7 @@ export async function runMatchVerifyLeads(tc: TaskCtx): Promise<TaskResult> {
     // (1) freshness gate — exact, from published_at
     const pub = lead.published_at ? Date.parse(lead.published_at) : NaN;
     if (!isFinite(pub) || now - pub > MAX_AGE_MS) {
-      await supabase.from("leads").update({ status: "rejected", match_reason: "stale (>90d)" }).eq("id", lead.id);
+      await supabase.from("connection_leads").update({ status: "rejected", match_reason: "stale (>90d)" }).eq("id", lead.id);
       rejected++;
       continue;
     }
@@ -81,7 +81,7 @@ export async function runMatchVerifyLeads(tc: TaskCtx): Promise<TaskResult> {
       } catch { resolves = false; }
     }
     if (!resolves) {
-      await supabase.from("leads").update({ status: "rejected", match_reason: "dead_link" }).eq("id", lead.id);
+      await supabase.from("connection_leads").update({ status: "rejected", match_reason: "dead_link" }).eq("id", lead.id);
       dropped++;
       continue;
     }
@@ -100,7 +100,7 @@ export async function runMatchVerifyLeads(tc: TaskCtx): Promise<TaskResult> {
       score = { match_score: 0, match_reason: "unparseable_score" };
     }
     if (score.match_score >= MATCH_THRESHOLD) {
-      await supabase.from("leads").update({
+      await supabase.from("connection_leads").update({
         status: "verified",
         match_score: score.match_score,
         match_reason: score.match_reason,
@@ -108,7 +108,7 @@ export async function runMatchVerifyLeads(tc: TaskCtx): Promise<TaskResult> {
       }).eq("id", lead.id);
       verified++;
     } else {
-      await supabase.from("leads").update({
+      await supabase.from("connection_leads").update({
         status: "rejected",
         match_score: score.match_score,
         match_reason: score.match_reason,
