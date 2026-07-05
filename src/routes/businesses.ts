@@ -836,6 +836,18 @@ function extractOutputSummary(
   }
 }
 
+// ── GET /:slug/context ───────────────────────────────────────────────────────
+// Read-only: the saved business_context for the "Victora Context" page.
+app.get("/:slug/context", async (c) => {
+  const auth = c.get("auth");
+  const slug = c.req.param("slug");
+  const supabase = createSupabaseClient(c.env);
+  const business = await getBusinessBySlug(supabase, auth.user_id, slug).catch(() => null);
+  if (!business) return c.json(errBody("not_found", `business '${slug}' not found`), 404);
+  const context = await getBusinessContext(supabase, business.id).catch(() => null);
+  return c.json({ business: { slug: business.slug, name: business.name }, context });
+});
+
 // ── POST /:slug/context/rebuild ──────────────────────────────────────────────
 // Refresh business_context from the business's documents. Source docs are chosen
 // by tasks.is_context_source (+ tasks.context_fields = the fields that doc may
