@@ -59,6 +59,12 @@ export interface Env {
   /** Zernio social publishing API key — set via `wrangler secret put ZERNIO_API_KEY --env <env>`.
    *  Format: sk_ + 64 hex chars. Required for social account connect and post publish flows. */
   ZERNIO_API_KEY: string;
+  /** Retrieval-engine secrets are intentionally NOT declared as named fields.
+   *  Each external_apis row names the env vars it needs (metadata.auth.env) and
+   *  the auth adapter reads them dynamically by that name (see resolveSecrets),
+   *  so adding a platform never edits this interface or any code. Set the
+   *  secrets with `wrangler secret put <NAME> --env <env>`; values never live in
+   *  the DB. (The per-platform secret NAMES live in the seed migration.) */
   /** R2 bucket for generated assets (logos, hero images, exports). */
   ASSETS: R2Bucket;
   /** Shared secret for internal worker→worker calls (chain-pattern task triggers).

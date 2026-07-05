@@ -36,7 +36,8 @@ export interface TaskRow {
     | "structured_data"
     | "image"
     | "image_set"
-    | "video";
+    | "video"
+    | "retrieval";
   inputs_required: Record<string, unknown> | null;
   status: "draft" | "active" | "deprecated";
   kind: "manual" | "system" | "scheduled";

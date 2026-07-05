@@ -45,6 +45,9 @@ import { runGenerateBusinessAppDesign } from "./tasks/generate-business-app-desi
 import { runGenerateBusinessAppHtml } from "./tasks/generate-business-app-html";
 import { runGenerateBusinessAppV2 } from "./tasks/generate-business-app-v2";
 import { runGenerateSocialPost } from "./tasks/generate-social-post";
+import { runMatchVerifyLeads } from "./tasks/match-verify-leads";
+import { runDraftReply } from "./tasks/draft-reply";
+import { runExternalRetrieval } from "./tasks/external-retrieval-runner";
 
 // Slug → TaskFn dispatch map. Acceptable code constant per CLAUDE.md:
 // it maps slug → handler function, which is execution logic, not DB data.
@@ -75,6 +78,11 @@ export const FREE_BUILD_TASK_HANDLERS: Record<string, TaskFn> = {
   "generate-business-app-v2":       runGenerateBusinessAppV2,
   // Marketing: social post (context-only or document+context via sourceAsset)
   "generate-social-post":           runGenerateSocialPost,
+  // Lead-finding: source-agnostic verify/score + draft. find-conversations has
+  // NO handler here — it runs through the generic external-retrieval engine
+  // (output_type='retrieval'), driven entirely by its external_apis config.
+  "match-verify-leads":             runMatchVerifyLeads,
+  "draft-reply":                    runDraftReply,
 };
 
 /**
@@ -101,7 +109,7 @@ export async function runFreeBuild(
   // No hardcoded slug list — adding/removing a free build task is a DB write.
   const { data: pipelineRows, error: pipelineErr } = await supabase
     .from("tasks")
-    .select("slug, name, execution_order")
+    .select("slug, name, execution_order, output_type")
     .eq("is_default", true)
     .eq("status", "active")
     .order("execution_order", { ascending: true });
@@ -337,7 +345,10 @@ export async function runFreeBuild(
   try {
   for (const row of pipeline) {
     const handler = FREE_BUILD_TASK_HANDLERS[row.slug];
-    if (!handler) {
+    // output_type='retrieval' tasks have no per-slug handler by design — they
+    // run through the generic external-retrieval engine, driven by config.
+    const isRetrieval = (row as { output_type?: string }).output_type === "retrieval";
+    if (!handler && !isRetrieval) {
       // DB lists this task as a default but the Worker has no dedicated
       // handler for it. Emit a warning event and skip gracefully — do NOT
       // crash the orchestrator. Fix: add a handler to FREE_BUILD_TASK_HANDLERS
@@ -356,11 +367,11 @@ export async function runFreeBuild(
     const step: { slug: string; name: string; fn: TaskFn } = {
       slug: row.slug,
       name: row.name,
-      fn: handler,
+      fn: handler ?? ((tcx: TaskCtx) => runExternalRetrieval(tcx, taskDef!)),
     };
 
     console.log(`[orchestrator] starting task: ${step.slug} at ${new Date().toISOString()}`);
-    let taskDef;
+    let taskDef: Awaited<ReturnType<typeof getTaskBySlug>>;
     try {
       taskDef = await getTaskBySlug(supabase, step.slug);
     } catch (lookupErr: unknown) {

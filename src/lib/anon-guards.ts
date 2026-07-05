@@ -49,6 +49,20 @@ export function checkAnonSessionLimit(env: Env, anonUserId: string, bump = true)
   return counter(env, `rate:anon-sess:${anonUserId}`, ANON_SESSION_BUILD_LIMIT, ANON_TTL, bump);
 }
 
+// Per-task external-call cap: how many retrieval calls one business may make
+// through a given task per window. Guards against a task hammering an external
+// API. Reused by the external-retrieval runner for any platform.
+export const TASK_RETRIEVAL_LIMIT = 20;
+
+export function checkTaskRetrievalLimit(
+  env: Env,
+  businessId: string,
+  taskSlug: string,
+  bump = true,
+): Promise<LimitResult> {
+  return counter(env, `rate:task:${businessId}:${taskSlug}`, TASK_RETRIEVAL_LIMIT, ANON_TTL, bump);
+}
+
 // ── Per-domain build cache ───────────────────────────────────────────────────
 
 /** Normalize a URL/host to a bare, lowercased registrable-ish domain key. */

@@ -31,6 +31,7 @@ import {
 } from "../services/supabase";
 import { buildBundleSuggestions } from "../lib/withTokenDeduction";
 import { genericDocumentRunner } from "../lib/tasks/generic-document-runner";
+import { runExternalRetrieval } from "../lib/tasks/external-retrieval-runner";
 import type { TaskCtx, SourceAsset } from "../lib/tasks/types";
 import { loadModelConfig } from "../lib/model-config";
 import { loadFeatureConfig, type FeatureConfig } from "../lib/non-task-model-config";
@@ -251,7 +252,9 @@ app.post("/:slug/tasks/:taskSlug/run", async (c) => {
 
   // Coming soon check — but exclude free build tasks that have dedicated handlers
   const hasDedicatedHandler = task.slug in FREE_BUILD_TASK_HANDLERS;
-  const isComingSoon = !hasDedicatedHandler && (
+  // Retrieval tasks are runnable via the generic engine (no per-slug handler,
+  // no prompt_template) — exempt them from the coming-soon gate.
+  const isComingSoon = !hasDedicatedHandler && task.output_type !== "retrieval" && (
     !task.token_cost ||
     task.token_cost === 0 ||
     !task.prompt_template ||
@@ -1003,7 +1006,9 @@ export async function runTaskInBackground(
         task_slug: task.slug,
       });
     }
-    const result = dedicatedHandler
+    const result = task.output_type === "retrieval"
+      ? await runExternalRetrieval(taskCtx, task)
+      : dedicatedHandler
       ? await dedicatedHandler(taskCtx)
       : await genericDocumentRunner(taskCtx, task);
     if (isGenAppTask) {
