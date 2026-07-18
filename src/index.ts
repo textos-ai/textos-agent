@@ -31,6 +31,7 @@ import socialPublishRoutes from "./routes/social-publish";
 import billingRoutes from "./routes/billing";
 import businessTaskRunRoutes from "./routes/business-task-run";
 import customerUnderstandingRoutes from "./routes/customer-understanding";
+import leadsRoutes from "./routes/leads";
 import appsCatalogRoutes from "./routes/apps-catalog";
 import appsBusinessesRoutes from "./routes/apps-businesses";
 import appsInstancesRoutes from "./routes/apps-instances";
@@ -47,7 +48,8 @@ import { runHeartbeatWatchdog } from "./cron/heartbeatWatchdog";
 import { runGenAppStaleSweep } from "./cron/genAppStaleSweep";
 import { runScheduledReconcile } from "./cron/reconcileScheduledPosts";
 import { processAppGenHtmlBatch } from "./queues/app-gen-html-consumer";
-import type { HtmlJobMessage } from "./queues/types";
+import { processTaskQueueBatch } from "./queues/task-queue-consumer";
+import type { HtmlJobMessage, TaskQueueMessage } from "./queues/types";
 import { createClient } from "@supabase/supabase-js";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -109,6 +111,7 @@ app.route("/api/businesses", socialPublishRoutes);
 app.route("/api/businesses", billingRoutes);
 app.route("/api/businesses", businessTaskRunRoutes);
 app.route("/api/businesses", customerUnderstandingRoutes);
+app.route("/api/businesses", leadsRoutes);
 app.route("/api/apps", appsCatalogRoutes);
 app.route("/api/businesses", appsBusinessesRoutes);
 app.route("/api/business-apps", appsInstancesRoutes);
@@ -185,6 +188,13 @@ export default {
       batch.queue === "textos-app-gen-html-test"
     ) {
       await processAppGenHtmlBatch(batch as MessageBatch<HtmlJobMessage>, env);
+      return;
+    }
+    if (
+      batch.queue === "textos-task-queue-prod" ||
+      batch.queue === "textos-task-queue-test"
+    ) {
+      await processTaskQueueBatch(batch as MessageBatch<TaskQueueMessage>, env);
       return;
     }
     // Unknown queue — log and ack all (don't loop). New queues need an

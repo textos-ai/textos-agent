@@ -23,6 +23,12 @@ export interface RetrievalItem {
   published_at: string | null; // ISO-8601
   external_id: string | null;
   source: string;
+  // Optional author identity — only populated when the platform's response_map
+  // declares an `author` (and optionally `author_url`) field. Lets the finder
+  // capture the reachable person at find-time (e.g. a Reddit username), which
+  // downstream reach-packaging turns into a "DM @handle" with strong reach.
+  author: string | null;
+  author_url: string | null;
 }
 
 export interface ResponseMapSpec {
@@ -137,5 +143,11 @@ export function applyResponseMap(
       map.transforms?.external_id,
     ),
     source,
+    author: map.fields.author
+      ? resolveField(raw, map.fields.author, map.transforms?.author)
+      : null,
+    author_url: map.fields.author_url
+      ? resolveField(raw, map.fields.author_url, map.transforms?.author_url)
+      : null,
   }));
 }

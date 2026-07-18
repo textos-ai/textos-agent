@@ -47,6 +47,11 @@ import { runGenerateBusinessAppV2 } from "./tasks/generate-business-app-v2";
 import { runGenerateSocialPost } from "./tasks/generate-social-post";
 import { runMatchVerifyLeads } from "./tasks/match-verify-leads";
 import { runDraftReply } from "./tasks/draft-reply";
+import { runUnderstandLead } from "./tasks/understand-lead";
+import { runReachPackageLead } from "./tasks/reach-package-lead";
+import { runDeriveSearchQueries } from "./tasks/derive-search-queries";
+import { runLeadSearch } from "./tasks/run-lead-search";
+import { runFindMyCustomers } from "./tasks/find-my-customers";
 import { runExternalRetrieval } from "./tasks/external-retrieval-runner";
 
 // Slug → TaskFn dispatch map. Acceptable code constant per CLAUDE.md:
@@ -83,6 +88,16 @@ export const FREE_BUILD_TASK_HANDLERS: Record<string, TaskFn> = {
   // (output_type='retrieval'), driven entirely by its external_apis config.
   "match-verify-leads":             runMatchVerifyLeads,
   "draft-reply":                    runDraftReply,
+  // Per-lead enrichment on the connection_leads pool (write to metadata jsonb).
+  "understand-lead":                runUnderstandLead,
+  "reach-package-lead":             runReachPackageLead,
+  // ICP->query derivation + automatic search. Queries originate from stored
+  // customer context, never a human. derive persists phrases; run-lead-search
+  // runs the finder once per phrase (auto-derives if missing).
+  "derive-search-queries":          runDeriveSearchQueries,
+  "run-lead-search":                runLeadSearch,
+  // One-click empty-state pipeline: derive+search → verify → draft → understand → reach.
+  "find-my-customers":              runFindMyCustomers,
 };
 
 /**

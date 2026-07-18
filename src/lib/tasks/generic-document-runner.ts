@@ -214,6 +214,13 @@ export async function genericDocumentRunner(
   // quality matters more than speed.
   const model = await resolveModelForTask(supabase, models, task.id);
 
+  // Per-prompt output cap (migration 084). NULL → legacy 3000. This is the
+  // backstop that keeps a runaway prompt from generating longer than the worker
+  // survives — a capped generation returns (or truncates loudly) instead of
+  // hanging. The primary control is the bounded prompt itself (the Generate
+  // Prompt meta-prompt). See docs/task-execution-architecture.md.
+  const maxTokens = promptDef.max_output_tokens ?? 3000;
+
   let parsed: GenericDoc | null = null;
   let lastErr = "";
 
@@ -230,7 +237,7 @@ export async function genericDocumentRunner(
     const msg = await anthropic.messages.create(
       {
         model,
-        max_tokens: 3000,
+        max_tokens: maxTokens,
         system: systemPrompt,
         messages: [{ role: "user", content: rendered + retryNote }],
       },
@@ -247,7 +254,7 @@ export async function genericDocumentRunner(
     // (malformed JSON, prose output) where a fresh attempt can succeed.
     if (msg.stop_reason === "max_tokens") {
       throw new Error(
-        `task_output_truncated:${task.slug} stop_reason=max_tokens (max_tokens=3000)`
+        `task_output_truncated:${task.slug} stop_reason=max_tokens (max_tokens=${maxTokens})`
       );
     }
 

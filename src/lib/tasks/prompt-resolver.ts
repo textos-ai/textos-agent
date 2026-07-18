@@ -6,6 +6,9 @@ export interface ActivePrompt {
   version: number;
   system_prompt: string | null;
   user_prompt_template: string;
+  // Per-prompt output cap (migration 084). NULL → runtime falls back to the
+  // legacy 3000 default. See docs/task-execution-architecture.md.
+  max_output_tokens: number | null;
 }
 
 /**
@@ -21,7 +24,7 @@ export async function resolvePrompt(
 ): Promise<ActivePrompt> {
   const { data, error } = await supabase
     .from("prompt_definitions")
-    .select("id, task_slug, version, system_prompt, user_prompt_template")
+    .select("id, task_slug, version, system_prompt, user_prompt_template, max_output_tokens")
     .eq("task_slug", taskSlug)
     .eq("is_active", true)
     .maybeSingle();

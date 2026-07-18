@@ -501,6 +501,63 @@ app.post("/:slug/tasks/:taskSlug/run", async (c) => {
     );
   }
 
+  // 6c. Long-running tasks route to the generic Queue instead of the inline
+  // waitUntil path. The consumer gets a ~15-min wall-clock budget, so loop
+  // stages (retrieval + per-lead enrichment) process the FULL pool rather than
+  // dying at the ~60s waitUntil ceiling (the 5/7 plateau). Pre-create the row
+  // as 'queued' with the same config, enqueue, return 202 — the consumer runs
+  // the SHARED runTaskInBackground. If the queue binding is absent (e.g. a
+  // rollout gap) we fall through to the inline path below.
+  if (task.is_long_running && c.env.TASK_QUEUE) {
+    const { data: qRow, error: qErr } = await supabase
+      .from("task_runs")
+      .insert({
+        user_id: auth.user_id,
+        business_id: business.id,
+        task_id: task.id,
+        status: "queued",
+        // started_at intentionally null — the consumer sets it on the atomic
+        // queued→running claim so dashboards reflect actual run start.
+        config: bodyConfig,
+      })
+      .select("id")
+      .single();
+    if (qErr || !qRow) {
+      log.error("[task-run] queued_row_insert_failed", {
+        business_id: business.id,
+        task_slug: task.slug,
+        err: qErr?.message,
+      });
+      return c.json(errBody("internal", "queued_row_insert_failed"), 500);
+    }
+    const qId = (qRow as { id: string }).id;
+    try {
+      await c.env.TASK_QUEUE.send({
+        taskRunId: qId,
+        businessId: business.id,
+        userId: auth.user_id,
+        taskSlug: task.slug,
+      });
+    } catch (sendErr) {
+      // Queue send failed — flip the pre-created row to failed so it doesn't
+      // sit in 'queued' forever, then surface the error.
+      await supabase
+        .from("task_runs")
+        .update({ status: "failed", error: "queue_send_failed", completed_at: new Date().toISOString() })
+        .eq("id", qId);
+      log.error("[task-run] queue_send_failed", {
+        task_run_id: qId,
+        task_slug: task.slug,
+        err: sendErr instanceof Error ? sendErr.message : String(sendErr),
+      });
+      return c.json(errBody("internal", "queue_send_failed"), 500);
+    }
+    return c.json(
+      { accepted: true, task_run_id: qId, poll_url: `/api/businesses/${slug}/task_runs/${qId}` },
+      202,
+    );
+  }
+
   // 7. Create task_run row — status=running, no tokens debited yet.
   // config is jsonb; null when no body was sent or it had no config field.
   const { data: taskRunRow, error: insertErr } = await supabase
@@ -634,7 +691,7 @@ app.get("/:slug/task_runs/:id", async (c) => {
     const { data: longTaskRows } = await supabase
       .from("tasks")
       .select("id")
-      .or("slug.like.generate-business-app%,slug.eq.public-business-website,slug.eq.customer-understanding");
+      .or("slug.like.generate-business-app%,slug.eq.public-business-website,slug.eq.customer-understanding,is_long_running.eq.true");
     const longTaskIds = (longTaskRows ?? []).map((r: { id: string }) => r.id);
 
     const shortCutoff = new Date(Date.now() - 60_000).toISOString();
@@ -649,10 +706,13 @@ app.get("/:slug/task_runs/:id", async (c) => {
       : shortQ);
 
     if (longTaskIds.length > 0) {
-      const longCutoff = new Date(Date.now() - 300_000).toISOString();
+      // 15 min — matches the queue consumer's wall-clock budget. Sweeping at
+      // 5 min false-failed healthy whole-pool enrichment runs and provoked the
+      // redelivery + concurrent-rerun metadata race. See heartbeatWatchdog.ts.
+      const longCutoff = new Date(Date.now() - 900_000).toISOString();
       await supabase
         .from("task_runs")
-        .update({ status: "failed", error: "timeout_5min", completed_at: new Date().toISOString() })
+        .update({ status: "failed", error: "timeout_15min", completed_at: new Date().toISOString() })
         .eq("business_id", business.id)
         .eq("status", "running")
         .lt("started_at", longCutoff)
@@ -1215,7 +1275,12 @@ export async function runTaskInBackground(
   } catch (err) {
     const message =
       err instanceof Error && err.name === "AbortError"
-        ? "timeout_60s"
+        // An aborted in-flight call — overwhelmingly the Anthropic client's 90s
+        // per-call timeout (services/anthropic.ts). NOT a 60s watchdog sweep and
+        // NOT a user cancel (cancels are handled by the status checks above, and
+        // the runner can't abort a running call via signal). Label it for what it
+        // is so the log doesn't send diagnosis chasing the watchdog.
+        ? "llm_call_timeout"
         : err instanceof Error ? err.message : String(err) || "unknown_error";
     log.error("[task-run] background_failed", {
       business_id: business.id,

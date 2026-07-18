@@ -54,6 +54,9 @@ export interface TaskRow {
   // doesn't require a code change. Nullable for tasks that don't surface
   // a custom verb (frontend falls back to task.name).
   progress_verb: string | null;
+  // Routes the task to the generic TASK_QUEUE (15-min consumer budget) instead
+  // of the inline waitUntil path, and exempts it from the 60s sweep tier.
+  is_long_running: boolean;
 }
 
 // Columns selected for any task row read. Kept as a constant so the
@@ -64,7 +67,7 @@ export const TASK_SELECT_COLUMNS =
   "plan_required, visibility, price_cents, token_cost, prompt_template, " +
   "output_type, inputs_required, status, kind, config_page_path, " +
   "lifecycle_phase_id, is_regeneratable, asset_user_editable, text_controllable, " +
-  "progress_verb";
+  "progress_verb, is_long_running";
 
 export async function getTaskBySlug(
   client: SupabaseClient,
@@ -450,7 +453,7 @@ export async function getAllActiveTasks(
     .eq("status", "active");
 
   if (error) throw error;
-  return (data as TaskRow[]) ?? [];
+  return (data as unknown as TaskRow[]) ?? [];
 }
 
 // ── playbook + playbook_runs (generalize the retired free_build_runs) ───

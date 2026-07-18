@@ -51,6 +51,11 @@ const RunTaskBody = z.object({
   // task_run (e.g. llm_tier so the chained step bills by tier).
   // Stored verbatim on task_runs.config (jsonb).
   config: z.record(z.unknown()).optional(),
+  // Optional: route a long-running task through the generic Queue (15-min
+  // consumer budget) instead of the inline ~60s waitUntil path. Chain-pattern
+  // callers omit it (unchanged behaviour); an operator sets it when a
+  // whole-pool loop stage (enrichment) must process every row in one run.
+  queue: z.boolean().optional(),
 });
 
 app.post("/run-task", async (c) => {
@@ -72,7 +77,7 @@ app.post("/run-task", async (c) => {
   } catch (err) {
     return c.json(errBody("bad_request", "invalid body", String(err)), 400);
   }
-  const { businessId, userId, taskSlug, config } = body;
+  const { businessId, userId, taskSlug, config, queue } = body;
 
   const supabase = createSupabaseClient(c.env);
 
@@ -156,6 +161,44 @@ app.post("/run-task", async (c) => {
       },
       429,
     );
+  }
+
+  // Optional queue routing: a long-running task with `queue:true` goes through
+  // the generic Queue (15-min consumer budget) so whole-pool loop stages finish
+  // in one run instead of plateauing at the ~60s waitUntil ceiling. Mirrors the
+  // user endpoint's long-running path. Chain callers omit `queue` → inline path.
+  if (queue && task.is_long_running && c.env.TASK_QUEUE) {
+    const { data: qRow, error: qErr } = await supabase
+      .from("task_runs")
+      .insert({
+        user_id: userId,
+        business_id: business.id,
+        task_id: task.id,
+        status: "queued",
+        config: config ?? null,
+      })
+      .select("id")
+      .single();
+    if (qErr || !qRow) {
+      log.error("internal.run_task.queued_insert_failed", {
+        business_id: business.id, taskSlug, err: qErr?.message,
+      });
+      return c.json(errBody("internal", "queued_row_insert_failed"), 500);
+    }
+    const qId = (qRow as { id: string }).id;
+    try {
+      await c.env.TASK_QUEUE.send({ taskRunId: qId, businessId: business.id, userId, taskSlug });
+    } catch (sendErr) {
+      await supabase
+        .from("task_runs")
+        .update({ status: "failed", error: "queue_send_failed", completed_at: new Date().toISOString() })
+        .eq("id", qId);
+      log.error("internal.run_task.queue_send_failed", {
+        task_run_id: qId, taskSlug, err: sendErr instanceof Error ? sendErr.message : String(sendErr),
+      });
+      return c.json(errBody("internal", "queue_send_failed"), 500);
+    }
+    return c.json({ accepted: true, task_run_id: qId, queued: true }, 202);
   }
 
   // Create the task_run row. No ownership / subscription / balance gates here —

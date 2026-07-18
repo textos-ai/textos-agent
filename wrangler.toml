@@ -72,6 +72,20 @@ max_batch_size = 1
 max_batch_timeout = 5
 max_retries = 3
 
+# Generic long-task queue. Any task flagged tasks.is_long_running is routed here
+# by the run endpoint (retrieval finders + per-lead enrichment + long documents),
+# escaping the ~60s waitUntil silent-kill via the consumer's 15-min budget.
+# Producer: src/routes/business-task-run.ts. Consumer: src/queues/task-queue-consumer.ts.
+[[queues.producers]]
+binding = "TASK_QUEUE"
+queue = "textos-task-queue-prod"
+
+[[queues.consumers]]
+queue = "textos-task-queue-prod"
+max_batch_size = 1
+max_batch_timeout = 5
+max_retries = 3
+
 # Cloudflare R2 — generated documents, hero images, exports.
 [[r2_buckets]]
 binding = "ASSETS"
@@ -142,6 +156,17 @@ queue = "textos-app-gen-html-test"
 
 [[env.test.queues.consumers]]
 queue = "textos-app-gen-html-test"
+max_batch_size = 1
+max_batch_timeout = 5
+max_retries = 3
+
+# Generic long-task queue — test variant (separate physical queue from prod).
+[[env.test.queues.producers]]
+binding = "TASK_QUEUE"
+queue = "textos-task-queue-test"
+
+[[env.test.queues.consumers]]
+queue = "textos-task-queue-test"
 max_batch_size = 1
 max_batch_timeout = 5
 max_retries = 3

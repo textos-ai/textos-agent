@@ -465,15 +465,43 @@ admin.post("/tasks/:slug/generate-prompt", async (c) => {
     "discipline) and a user_prompt_template (the rendered instruction). The " +
     "user_prompt_template MUST reference ONLY variables from the provided catalog " +
     "using {{double.brace}} syntax -- never invent variables. It must instruct the " +
-    "model to produce the task's output and state the exact output shape. Return " +
-    'ONLY a JSON object {"system_prompt": string, "user_prompt_template": string} ' +
+    "model to produce the task's output and state the exact output shape.\n\n" +
+    "OUTPUT-SIZE DISCIPLINE (REQUIRED -- prompts that ignore this get rejected):\n" +
+    "The task runs inside a worker with a bounded lifetime, so the prompt you write " +
+    "MUST make the model produce COMPACT output that finishes quickly. Concretely, " +
+    "the prompt you author must:\n" +
+    "- Cap the result at 3-6 sections. State the cap explicitly in the prompt.\n" +
+    "- Cap each section to roughly 80-120 words of tight, high-signal content.\n" +
+    "- Tell the model to be economical: no filler, no preamble, no restating the " +
+    "brief, no repetition. Prefer structured, scannable output over long prose.\n" +
+    "- State an explicit overall ceiling in the prompt (e.g. 'Keep the whole " +
+    "document under ~700 words').\n" +
+    "- NEVER ask for a 'comprehensive', 'exhaustive', 'detailed', 'in-depth', or " +
+    "'thorough' document, and never say 'as much detail as possible'. Those phrases " +
+    "produce runaway output that times out. Ask for the sharpest useful version, not " +
+    "the longest.\n\n" +
+    "OUTPUT-SHAPE CONTRACT (document tasks -- CRITICAL, non-negotiable):\n" +
+    "The running task's response is parsed as STRICT JSON of EXACTLY this shape:\n" +
+    '  { "title": string, "sections": [ { "heading": string, "body": string } ] }\n' +
+    "The user_prompt_template you write MUST instruct the model to return ONLY that " +
+    "JSON object -- nothing before or after it, no markdown headings like '**1. ...**', " +
+    "no prose outside the JSON, no ```json fences. Map your capped 3-6 sections to the " +
+    "'sections' array (so 'produce exactly N sections' means N array items); each " +
+    "section's 80-120 words go in its 'body' string (markdown is allowed INSIDE the " +
+    "body string). A prompt that asks for markdown sections or free-form text instead " +
+    "of this JSON will fail to parse and the task will die -- always spell out the JSON " +
+    "shape explicitly in the prompt you write.\n\n" +
+    'Return ONLY a JSON object {"system_prompt": string, "user_prompt_template": string} ' +
     "-- no markdown fences, no commentary.";
   const userMsg =
     `Task name: ${t.name}\n` +
     `Output type: ${t.output_type}\n` +
     `Brief (the seed -- purpose / audience / content / inputs / constraints):\n${brief}\n\n` +
     `Available variables (use ONLY these):\n${varCatalog}\n\n` +
-    "Write the system_prompt and user_prompt_template. Return ONLY the JSON object.";
+    "Write the system_prompt and user_prompt_template. The generated prompt MUST " +
+    "enforce the output-size discipline from your instructions (3-6 capped sections, " +
+    "~80-120 words each, an explicit overall ceiling, no 'comprehensive'/open-ended " +
+    "language). Return ONLY the JSON object.";
 
   let msg;
   try {
@@ -1579,6 +1607,9 @@ const PostPromptBody = z.object({
   user_prompt_template: z.string().min(1, "user_prompt_template is required"),
   system_prompt:        z.string().nullable().optional(),
   change_note:          z.string().max(500).nullish(),
+  // Per-prompt output cap (migration 084). Omitted → defaults to a safe 1500
+  // on insert (returns in ~40s); raise per-prompt by explicit choice.
+  max_output_tokens:    z.number().int().min(256).max(4000).nullish(),
 });
 
 admin.post("/prompt-definitions/:taskSlug", async (c) => {
@@ -1613,6 +1644,46 @@ admin.post("/prompt-definitions/:taskSlug", async (c) => {
     .maybeSingle();
   const nextVersion = (maxRow?.version ?? 0) + 1;
 
+  // ── system_prompt carry-forward + reject-null ──────────────────────────────
+  // system_prompt is TASK-LEVEL (generated from the task's description, never the
+  // template), so editing a template's FORMAT must NOT lose it. When the request
+  // doesn't supply a non-empty system_prompt (e.g. the editor's "Save as new
+  // version" after a hand-edit, which sends null), inherit the most recent
+  // version that has one. genericDocumentRunner throws task_missing_system_prompt
+  // on an empty system_prompt, so a version with none is unrunnable — reject it
+  // rather than persist it. (A DB CHECK NOT VALID constraint, migration 085, is
+  // the systemic backstop for every other write path.)
+  let systemPrompt =
+    body.system_prompt && body.system_prompt.trim() !== ""
+      ? body.system_prompt
+      : null;
+  if (!systemPrompt) {
+    const { data: lastGood } = await supabase
+      .from("prompt_definitions")
+      .select("version, system_prompt")
+      .eq("task_slug", taskSlug)
+      .not("system_prompt", "is", null)
+      .neq("system_prompt", "")
+      .order("version", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const carried = (lastGood as { version: number; system_prompt: string } | null);
+    if (carried?.system_prompt && carried.system_prompt.trim() !== "") {
+      systemPrompt = carried.system_prompt;
+      log.info("[admin] prompt_system_prompt_carried_forward", {
+        taskSlug, from_version: carried.version, to_version: nextVersion,
+      });
+    }
+  }
+  if (!systemPrompt) {
+    // No supplied system prompt AND no prior good one to carry — do not persist
+    // an unrunnable version.
+    return c.json(
+      errBody("bad_request", "No system prompt for this task — run Generate Prompt first."),
+      400,
+    );
+  }
+
   // Deactivate the current active version (if any).
   await supabase
     .from("prompt_definitions")
@@ -1626,11 +1697,12 @@ admin.post("/prompt-definitions/:taskSlug", async (c) => {
     .insert({
       task_slug:            taskSlug,
       version:              nextVersion,
-      system_prompt:        body.system_prompt ?? null,
+      system_prompt:        systemPrompt,
       user_prompt_template: body.user_prompt_template,
       is_active:            true,
       created_by:           user_id,
       change_note:          body.change_note ?? null,
+      max_output_tokens:    body.max_output_tokens ?? 1500,
     })
     .select()
     .single();
@@ -2098,15 +2170,27 @@ admin.get("/harness/run", async (c) => {
 
   const supabase = createSupabaseClient(c.env);
 
-  const { data: bizRow, error: bizErr } = await supabase
+  // Look up by slug WITHOUT maybeSingle: slugs are unique per-user, not global,
+  // so two users can both have an active 'victora'. maybeSingle() 500s on >1
+  // row (PGRST116), which would take down the whole harness. Pick the most
+  // recently created deterministically and warn loudly if there's a duplicate.
+  const { data: bizRows, error: bizErr } = await supabase
     .from("businesses")
     .select("id, user_id, slug, name, kind, existing_business_url, existing_business_data, created_at")
     .eq("slug", business_slug)
     .eq("is_active", true)
-    .maybeSingle();
+    .order("created_at", { ascending: false });
   if (bizErr) return c.json(errBody("internal", "business_lookup_failed"), 500);
-  if (!bizRow) return c.json(errBody("not_found", `business '${business_slug}' not found`), 404);
-  const business = bizRow as BusinessRow;
+  if (!bizRows || bizRows.length === 0) return c.json(errBody("not_found", `business '${business_slug}' not found`), 404);
+  if (bizRows.length > 1) {
+    log.warn("[harness] duplicate_active_business_slug", {
+      slug: business_slug,
+      count: bizRows.length,
+      ids: (bizRows as Array<{ id: string }>).map((b) => b.id),
+      chosen: (bizRows[0] as { id: string }).id,
+    });
+  }
+  const business = bizRows[0] as BusinessRow;
 
   const [{ data: promptRows, error: promptErr }, { data: allTaskRows, error: taskErr }] = await Promise.all([
     supabase.from("prompt_definitions").select("task_slug").eq("is_active", true),
@@ -2302,21 +2386,31 @@ admin.post("/test-harness/run", async (c) => {
     return c.json(errBody("bad_request", "business_slug required"), 400);
   }
 
-  // 1. Fetch test business (admin path — no user_id scoping)
-  const { data: bizRow, error: bizErr } = await supabase
+  // 1. Fetch test business (admin path — no user_id scoping). Slugs are unique
+  // per-user, not global, so >1 active row can share a slug — don't maybeSingle
+  // (it 500s on PGRST116). Pick most-recent deterministically; warn on dupes.
+  const { data: bizRows, error: bizErr } = await supabase
     .from("businesses")
     .select("id, user_id, slug, name, kind, existing_business_url, existing_business_data, created_at")
     .eq("slug", business_slug)
     .eq("is_active", true)
-    .maybeSingle();
+    .order("created_at", { ascending: false });
   if (bizErr) {
     log.error("[harness] business_lookup_failed", { business_slug, err: bizErr.message });
     return c.json(errBody("internal", "business_lookup_failed"), 500);
   }
-  if (!bizRow) {
+  if (!bizRows || bizRows.length === 0) {
     return c.json(errBody("not_found", `business '${business_slug}' not found`), 404);
   }
-  const business = bizRow as BusinessRow;
+  if (bizRows.length > 1) {
+    log.warn("[harness] duplicate_active_business_slug", {
+      slug: business_slug,
+      count: bizRows.length,
+      ids: (bizRows as Array<{ id: string }>).map((b) => b.id),
+      chosen: (bizRows[0] as { id: string }).id,
+    });
+  }
+  const business = bizRows[0] as BusinessRow;
 
   // 2. Fetch ALL tasks (every status) + active prompt slugs in parallel
   const { data: activePromptRows, error: promptErr } = await supabase

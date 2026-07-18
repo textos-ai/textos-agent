@@ -37,13 +37,21 @@ export async function runDraftReply(tc: TaskCtx): Promise<TaskResult> {
 
   for (const lead of leads as LeadRow[]) {
     const rendered = renderPrompt(promptDef.user_prompt_template, { business, ctx, user, lead });
-    const msg = await anthropic.messages.create({
-      model: models.sonnet,
-      max_tokens: 500,
-      system: promptDef.system_prompt ?? "",
-      messages: [{ role: "user", content: rendered }],
-    });
-    const reply = messageText(msg);
+    let reply: string;
+    try {
+      // Resilience: one lead's LLM error skips THAT lead, never throws the whole
+      // run. The status stays 'verified', so the next run re-drafts it (the
+      // status='verified' filter makes this stage idempotent already).
+      const msg = await anthropic.messages.create({
+        model: models.sonnet,
+        max_tokens: 500,
+        system: promptDef.system_prompt ?? "",
+        messages: [{ role: "user", content: rendered }],
+      });
+      reply = messageText(msg);
+    } catch {
+      continue;
+    }
     if (!reply) continue;
     await supabase.from("connection_leads").update({ status: "drafted", drafted_message: reply }).eq("id", lead.id);
     drafted++;

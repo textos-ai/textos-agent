@@ -24,3 +24,22 @@ export interface HtmlJobMessage {
   userId: string;
   designTaskRunId: string;
 }
+
+/**
+ * Message body for the generic long-task queue (TASK_QUEUE binding). Producer:
+ * the run endpoint in src/routes/business-task-run.ts, for any task flagged
+ * tasks.is_long_running. Consumer: src/queues/task-queue-consumer.ts.
+ *
+ * Same idempotency contract as HtmlJobMessage: the producer pre-creates the
+ * task_run row in status='queued' (config already set) and puts its id in
+ * `taskRunId`. The consumer runs the SHARED runTaskInBackground with the queue's
+ * ~15-min wall-clock budget, escaping the waitUntil silent-kill that caps the
+ * inline path at ~60s. `taskSlug` lets the consumer load the task row generically
+ * — no per-task branching, works for retrieval + enrichment + long documents.
+ */
+export interface TaskQueueMessage {
+  taskRunId: string;
+  businessId: string;
+  userId: string;
+  taskSlug: string;
+}

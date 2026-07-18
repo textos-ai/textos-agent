@@ -34,10 +34,12 @@ export async function runHeartbeatWatchdog(supabase: SupabaseClient): Promise<vo
   //          (legitimately run 60-120s — deep synthesis over full business context)
   // Long tasks are excluded from the 60s sweep to prevent killing healthy runs.
   // The per-business inline sweep in business-task-run.ts uses the same two-tier logic.
+  // is_long_running tasks (queue-routed: retrieval + enrichment + long docs) run
+  // on the 15-min consumer budget and must not be swept at the 60s short tier.
   const { data: longTaskRows } = await supabase
     .from("tasks")
     .select("id")
-    .or("slug.like.generate-business-app%,slug.eq.public-business-website,slug.eq.customer-understanding");
+    .or("slug.like.generate-business-app%,slug.eq.public-business-website,slug.eq.customer-understanding,is_long_running.eq.true");
   const longTaskIds = (longTaskRows ?? []).map((r: { id: string }) => r.id);
 
   const shortCutoff = new Date(Date.now() - 60_000).toISOString();
@@ -60,10 +62,14 @@ export async function runHeartbeatWatchdog(supabase: SupabaseClient): Promise<vo
   }
 
   if (longTaskIds.length > 0) {
-    const longCutoff = new Date(Date.now() - 300_000).toISOString();
+    // 15 min — the queue consumer's wall-clock budget. A whole-pool enrichment
+    // run over a large lead set legitimately runs several minutes; sweeping at
+    // 5 min false-failed healthy runs, which triggered queue redelivery and the
+    // concurrent-rerun metadata race. Only reap past the actual budget ceiling.
+    const longCutoff = new Date(Date.now() - 900_000).toISOString();
     const { data: staleAppTasks, error: appErr } = await supabase
       .from("task_runs")
-      .update({ status: "failed", error: "timeout_5min", completed_at: new Date().toISOString() })
+      .update({ status: "failed", error: "timeout_15min", completed_at: new Date().toISOString() })
       .eq("status", "running")
       .lt("started_at", longCutoff)
       .in("task_id", longTaskIds)

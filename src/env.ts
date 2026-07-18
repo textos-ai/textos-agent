@@ -94,4 +94,7 @@ export interface Env {
    *  the matching consumer handler lives in src/queues/app-gen-html-consumer.ts.
    *  See src/queues/types.ts for the message shape. */
   APP_GEN_HTML_QUEUE?: Queue<import("./queues/types").HtmlJobMessage>;
+  // Generic long-task queue — retrieval + enrichment + long documents flagged
+  // tasks.is_long_running. Consumer: src/queues/task-queue-consumer.ts.
+  TASK_QUEUE?: Queue<import("./queues/types").TaskQueueMessage>;
 }

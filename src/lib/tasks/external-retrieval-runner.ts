@@ -56,14 +56,24 @@ function renderRequest(
   endpointUrl: string,
   spec: RetrievalRequestSpec,
   vars: { business: unknown; ctx: unknown; user: unknown; config: unknown },
-): { req: RenderedRequest; displayQuery: string } {
+): { req: RenderedRequest; displayQuery: string; emptyQuery: boolean } {
   const u = new URL(endpointUrl);
   let displayQuery = "";
+  // A query param literally named q/query is the search term. If the template
+  // declares one but it renders empty, that is a no-silent-fallback failure —
+  // flag it so the runner HALTS instead of searching nothing and reporting 0.
+  let hasQueryParam = false;
+  let emptyQuery = false;
   for (const [k, tpl] of Object.entries(spec.query ?? {})) {
     const val = renderPrompt(tpl, vars as never).trim();
     if (val) u.searchParams.set(k, val);
-    if (k === "q" || k === "query") displayQuery = val;
+    if (k === "q" || k === "query") {
+      hasQueryParam = true;
+      displayQuery = val;
+      if (!val) emptyQuery = true;
+    }
   }
+  if (!hasQueryParam) emptyQuery = false;
   const headers: Record<string, string> = {};
   for (const [k, tpl] of Object.entries(spec.headers ?? {})) {
     headers[k] = renderPrompt(tpl, vars as never);
@@ -72,6 +82,7 @@ function renderRequest(
   return {
     req: { method: (spec.method || "GET").toUpperCase(), url: u.toString(), headers, body },
     displayQuery,
+    emptyQuery,
   };
 }
 
@@ -115,12 +126,21 @@ export async function runExternalRetrieval(
   }
 
   // 3. Render the request from config.
-  const { req, displayQuery } = renderRequest(api.endpoint_url, meta.request, {
+  const { req, displayQuery, emptyQuery } = renderRequest(api.endpoint_url, meta.request, {
     business,
     ctx,
     user,
     config: tc.config ?? {},
   });
+  // No-silent-fallback: a required search term that renders empty HALTS the run
+  // (loud) instead of calling the API with no query and reporting found:0 as a
+  // success. Queries must originate from stored context (derive-search-queries).
+  if (emptyQuery) {
+    throw new Error(
+      `retrieval_empty_query: task '${task.slug}' resolved an empty search phrase — ` +
+      `queries must come from derived customer context, not an empty/absent config.query.`,
+    );
+  }
   await emit({
     type: "cmd",
     text: `Searching ${api.provider} for: "${displayQuery || "(query)"}"`,
@@ -152,6 +172,29 @@ export async function runExternalRetrieval(
       headers: finalReq.headers,
       body: finalReq.method === "GET" ? undefined : finalReq.body,
     });
+    // Credit exhaustion (402 Payment Required) is a HARD stop, distinct from a
+    // rate limit: retrying won't help until credits are topped up. Return a
+    // 'no_credits' signal (not a throw, so the run finishes cleanly instead of
+    // retry-looping) — the caller stops searching and the UI says so plainly.
+    if (res.status === 402) {
+      await emit({
+        type: "cmd",
+        text: `${api.provider} search credits are used up — stopping`,
+        ts: Date.now(),
+      });
+      return { output_data: { source: api.provider, found: 0, inserted: 0, skipped: "no_credits" } };
+    }
+    // Upstream rate-limit (429) / temporary unavailability (503) is a SOFT-SKIP,
+    // never a crash — one busy platform must not fail a multi-platform run. Same
+    // shape the internal rate limiter returns; the run completes on what it fetched.
+    if (res.status === 429 || res.status === 503) {
+      await emit({
+        type: "cmd",
+        text: `${api.provider} is busy (${res.status}) — skipping this search`,
+        ts: Date.now(),
+      });
+      return { output_data: { source: api.provider, found: 0, inserted: 0, skipped: "rate_limited" } };
+    }
     if (!res.ok) {
       throw new Error(`retrieval_fetch_failed: ${api.slug} returned ${res.status}`);
     }
@@ -166,6 +209,14 @@ export async function runExternalRetrieval(
   let inserted = 0;
   for (const it of items) {
     if (!it.url || !it.external_id) continue;
+    // Capture author identity at find-time into the metadata bag (migration
+    // 086). Only set when the response_map produced one — otherwise leave {}
+    // so downstream stages read it as "not captured". Safe against enrichment:
+    // the upsert ignoreDuplicates, so re-finding an already-enriched lead is a
+    // no-op and never clobbers metadata.alignment_read / reach_package.
+    const authorMeta: Record<string, string> = {};
+    if (it.author) authorMeta.author = it.author;
+    if (it.author_url) authorMeta.author_url = it.author_url;
     const up = await supabase.from("connection_leads").upsert(
       {
         business_id: business.id,
@@ -177,11 +228,23 @@ export async function runExternalRetrieval(
         published_at: it.published_at,
         status: "found",
         task_run_id: taskRunId,
+        metadata: Object.keys(authorMeta).length ? authorMeta : {},
       },
       { onConflict: "business_id,source,external_id", ignoreDuplicates: true },
     );
     if (!up.error) inserted++;
   }
+
+  // Surface remaining credits (from the provider's envelope) so it's visible in
+  // the run log / API before the next run — a heads-up before credits hit zero.
+  const credits_remaining =
+    typeof (payload as { credits_remaining?: number })?.credits_remaining === "number"
+      ? (payload as { credits_remaining: number }).credits_remaining
+      : null;
+  const credits_used =
+    typeof (payload as { credits_used?: number })?.credits_used === "number"
+      ? (payload as { credits_used: number }).credits_used
+      : 0;
 
   await emit({
     type: "cmd",
@@ -189,5 +252,5 @@ export async function runExternalRetrieval(
     ts: Date.now(),
   });
 
-  return { output_data: { source: api.provider, found: items.length, inserted } };
+  return { output_data: { source: api.provider, found: items.length, inserted, credits_remaining, credits_used } };
 }
