@@ -167,11 +167,35 @@ export async function runExternalRetrieval(
       kv: env.SNAPSHOT_KV,
       emit,
     });
-    const res = await fetch(finalReq.url, {
-      method: finalReq.method,
-      headers: finalReq.headers,
-      body: finalReq.method === "GET" ? undefined : finalReq.body,
-    });
+    // Bounded fetch — a dead or hanging upstream must NOT ride the full 15-min
+    // consumer budget. A missing/invalid API key can hang the connection open
+    // (this is exactly what a missing SOCIALCRAWL_API_KEY did on prod: a silent
+    // 15-min freeze in 'searching'). Abort at 25s and SOFT-SKIP (same as a
+    // rate-limit) so the pipeline continues to verify/enrich on what it has and
+    // the UI shows a real "search timed out" note instead of freezing.
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 25_000);
+    let res: Response;
+    try {
+      res = await fetch(finalReq.url, {
+        method: finalReq.method,
+        headers: finalReq.headers,
+        body: finalReq.method === "GET" ? undefined : finalReq.body,
+        signal: controller.signal,
+      });
+    } catch (err) {
+      const aborted = err instanceof Error && err.name === "AbortError";
+      await emit({
+        type: "cmd",
+        text: aborted
+          ? `${api.provider} search timed out (25s) — skipping this search`
+          : `${api.provider} search couldn't connect — skipping this search`,
+        ts: Date.now(),
+      });
+      return { output_data: { source: api.provider, found: 0, inserted: 0, skipped: "search_timeout" } };
+    } finally {
+      clearTimeout(timeoutId);
+    }
     // Credit exhaustion (402 Payment Required) is a HARD stop, distinct from a
     // rate limit: retrying won't help until credits are topped up. Return a
     // 'no_credits' signal (not a throw, so the run finishes cleanly instead of

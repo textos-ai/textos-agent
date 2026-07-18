@@ -89,6 +89,10 @@ export async function runLeadSearch(tc: TaskCtx): Promise<TaskResult> {
       // Credit exhaustion is a HARD stop — every further call will 402 too. Bail.
       if (od.skipped === "no_credits") { credits_exhausted.add(od.source ?? finder.slug); outOfCredits = true; break; }
       if (od.skipped === "rate_limited") rate_limited.add(od.source ?? finder.slug);
+      // A search timeout (dead/hanging upstream) is a soft-skip too — and we stop
+      // trying more phrases for this platform, since each would just hang out to
+      // the 25s ceiling. Surfaced as "busy" in the UI.
+      if (od.skipped === "search_timeout") { rate_limited.add(od.source ?? finder.slug); break; }
       platformFound += od.found ?? 0;
       inserted += od.inserted ?? 0;
       per.push({ finder: finder.slug, phrase: p.text, found: od.found ?? 0, inserted: od.inserted ?? 0 });

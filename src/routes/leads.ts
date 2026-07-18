@@ -133,6 +133,15 @@ app.get("/:slug/leads", async (c) => {
     match_threshold: typeof vcfg.match_threshold === "number" ? vcfg.match_threshold : 60,
   };
 
+  // Token cost of one Find run — sourced from the find-my-customers task so the
+  // "Costs N tokens" label on the card can never drift from what's actually charged.
+  const { data: fmcRow } = await supabase
+    .from("tasks").select("token_cost").eq("slug", "find-my-customers").maybeSingle();
+  const find_token_cost =
+    typeof (fmcRow as { token_cost?: number } | null)?.token_cost === "number"
+      ? (fmcRow as { token_cost: number }).token_cost
+      : 5;
+
   // The enriched table rows (default status='drafted'), with optional filters.
   const status = c.req.query("status") || "drafted";
   const source = c.req.query("source");
@@ -259,6 +268,7 @@ app.get("/:slug/leads", async (c) => {
     // Transparency: the gate rules (from config), the funnel, live stage counts,
     // and this run's cost/duration — everything the "how these happened" panel shows.
     rules,
+    find_token_cost,
     funnel,
     progress,
     run_stats: { credits_used, credits_remaining, duration_s },
