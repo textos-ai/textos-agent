@@ -59,8 +59,28 @@ export async function runLeadSearch(tc: TaskCtx): Promise<TaskResult> {
 
   // 2. Load the pipeline's retrieval finders (LEAD_FINDER_SLUGS — one source of
   //    truth shared with the leads UI). One today (Reddit); loops for many.
+  // Per-ICP finder selection: LEAD_FINDER_SLUGS is the GLOBAL default (every
+  // platform we've vetted). A business can NARROW it — e.g. a non-technical ICP
+  // (a marketing consultant's small-biz customers) drops Hacker News, which is
+  // the wrong pond for them, while HN stays on globally for technical/founder
+  // ICPs. The override lives in business_context.customer_signals.lead_finders
+  // (a list of finder slugs); it can only subset the global set, never add an
+  // unvetted finder. Unset / empty intersection → the full global set.
+  let finderSlugs: string[] = LEAD_FINDER_SLUGS;
+  const { data: bctx } = await supabase
+    .from("business_context")
+    .select("customer_signals")
+    .eq("business_id", business.id)
+    .maybeSingle();
+  const override = (bctx as { customer_signals?: { lead_finders?: unknown } } | null)?.customer_signals?.lead_finders;
+  if (Array.isArray(override) && override.length) {
+    const want = new Set(override.filter((x): x is string => typeof x === "string"));
+    const narrowed = LEAD_FINDER_SLUGS.filter((s) => want.has(s));
+    if (narrowed.length) finderSlugs = narrowed;
+  }
+
   const finders: TaskRow[] = [];
-  for (const slug of LEAD_FINDER_SLUGS) {
+  for (const slug of finderSlugs) {
     const t = (await getTaskBySlug(supabase, slug)) as TaskRow | null;
     if (t) finders.push(t);
   }

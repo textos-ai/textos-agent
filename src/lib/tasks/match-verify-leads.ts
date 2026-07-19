@@ -16,6 +16,13 @@ import { resolvePrompt } from "./prompt-resolver";
 // same config so the stated rules never drift from the real gate.
 const DEFAULT_FRESHNESS_DAYS = 180;
 const DEFAULT_MATCH_THRESHOLD = 60;
+// Dual gate: a lead is kept only if it clears BOTH bars — real PAIN and real
+// HIRE-intent (an owner/operator who'd pay, not a peer/no-budget DIY-er). This
+// replaced a pain×hire product that was too harsh (a clear owner asking for
+// help collapsed below the bar). A high-pain/no-budget lead now fails on hire
+// alone and its stored sub-scores show exactly why.
+const DEFAULT_PAIN_MIN = 55;
+const DEFAULT_HIRE_MIN = 48;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 interface LeadRow {
@@ -29,6 +36,8 @@ interface LeadRow {
 
 interface ScoreResult {
   match_score: number;
+  pain_score: number;
+  hire_score: number;
   match_reason: string;
   quote?: string;
 }
@@ -44,9 +53,26 @@ function parseScore(raw: string): ScoreResult {
   const last = s.lastIndexOf("}");
   if (first >= 0 && last > first) s = s.slice(first, last + 1);
   const parsed = JSON.parse(s) as Record<string, unknown>;
-  const score = Number(parsed.match_score);
+  const clamp = (v: unknown): number => {
+    const x = Number(v);
+    return isFinite(x) ? Math.max(0, Math.min(100, Math.round(x))) : 0;
+  };
+  // Two independent judgments: pain (do they have the problem we solve) and
+  // hire (are they an owner/operator who would actually hire AND pay, vs a
+  // peer/practitioner or a no-budget DIY-er). Overall = pain × hire, so a
+  // high-pain / no-budget or peer lead collapses to a low score and reads as
+  // what it is — not a buyer. Product is intentionally strict, for precision.
+  // Back-compat: if a prompt still returns a flat match_score, use it as both.
+  const flat = parsed.match_score !== undefined ? clamp(parsed.match_score) : null;
+  const pain = parsed.pain_score !== undefined ? clamp(parsed.pain_score) : (flat ?? 0);
+  const hire = parsed.hire_score !== undefined ? clamp(parsed.hire_score) : (flat ?? 0);
   return {
-    match_score: isFinite(score) ? Math.max(0, Math.min(100, Math.round(score))) : 0,
+    // Combined score is the average — used only for ranking/display. The KEEP
+    // decision is the dual gate (pain AND hire each clear their bar), applied
+    // in the caller, so a high-pain/low-hire lead reads as what it is.
+    match_score: Math.round((pain + hire) / 2),
+    pain_score: pain,
+    hire_score: hire,
     match_reason: typeof parsed.match_reason === "string" ? parsed.match_reason : "",
     quote: typeof parsed.quote === "string" ? parsed.quote : undefined,
   };
@@ -59,9 +85,11 @@ export async function runMatchVerifyLeads(tc: TaskCtx): Promise<TaskResult> {
   // config change, not a deploy. Fall back to sane defaults if unseeded.
   const { data: cfgRow } = await supabase
     .from("tasks").select("config").eq("slug", "match-verify-leads").maybeSingle();
-  const cfg = ((cfgRow as { config?: { freshness_days?: number; match_threshold?: number } } | null)?.config) ?? {};
+  const cfg = ((cfgRow as { config?: { freshness_days?: number; match_threshold?: number; pain_min?: number; hire_min?: number } } | null)?.config) ?? {};
   const freshnessDays = typeof cfg.freshness_days === "number" ? cfg.freshness_days : DEFAULT_FRESHNESS_DAYS;
   const matchThreshold = typeof cfg.match_threshold === "number" ? cfg.match_threshold : DEFAULT_MATCH_THRESHOLD;
+  const painMin = typeof cfg.pain_min === "number" ? cfg.pain_min : DEFAULT_PAIN_MIN;
+  const hireMin = typeof cfg.hire_min === "number" ? cfg.hire_min : DEFAULT_HIRE_MIN;
   const maxAgeMs = freshnessDays * DAY_MS;
 
   const { data: leads, error } = await supabase
@@ -126,13 +154,13 @@ export async function runMatchVerifyLeads(tc: TaskCtx): Promise<TaskResult> {
       try {
         score = parseScore(messageText(msg));
       } catch {
-        score = { match_score: 0, match_reason: "unparseable_score" };
+        score = { match_score: 0, pain_score: 0, hire_score: 0, match_reason: "unparseable_score" };
       }
     } catch {
       skipped++;   // transient LLM error — stays 'found' for the next run to retry
       continue;
     }
-    if (score.match_score >= matchThreshold) {
+    if (score.pain_score >= painMin && score.hire_score >= hireMin) {
       // Record the lead's age at keep-time (metadata.age_days) so we can later
       // analyse whether older leads produce anything or just add noise. Merge —
       // never clobber the finder's author/handle already in metadata.
@@ -142,7 +170,9 @@ export async function runMatchVerifyLeads(tc: TaskCtx): Promise<TaskResult> {
         match_score: score.match_score,
         match_reason: score.match_reason,
         snippet: score.quote && lead.snippet && lead.snippet.includes(score.quote) ? score.quote : lead.snippet,
-        metadata: { ...(lead.metadata ?? {}), age_days: ageDays },
+        // Keep the pain/hire sub-scores so the funnel can show WHY (strong pain
+        // vs strong hire-intent), not just the combined number.
+        metadata: { ...(lead.metadata ?? {}), age_days: ageDays, pain_score: score.pain_score, hire_score: score.hire_score },
       }).eq("id", lead.id);
       verified++;
     } else {
@@ -150,6 +180,7 @@ export async function runMatchVerifyLeads(tc: TaskCtx): Promise<TaskResult> {
         status: "rejected",
         match_score: score.match_score,
         match_reason: score.match_reason,
+        metadata: { ...(lead.metadata ?? {}), pain_score: score.pain_score, hire_score: score.hire_score },
       }).eq("id", lead.id);
       rejected++;
     }
