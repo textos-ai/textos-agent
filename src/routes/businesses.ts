@@ -419,10 +419,25 @@ app.post("/", async (c) => {
       }),
     });
   } catch (err) {
-    const msg = String(err);
-    if (msg.toLowerCase().includes("duplicate") || msg.includes("23505")) {
+    // Supabase/PostgREST throws a STRUCTURED error object ({ code, message,
+    // details, hint }), not an Error. String(err) on it yields "[object Object]",
+    // which both hid the real message AND broke duplicate detection below (so a
+    // (user_id, slug) collision fell through to a 502 instead of a 409).
+    const e = err as { code?: string; message?: string };
+    const msg = e?.message ?? (err instanceof Error ? err.message : String(err));
+    const isDuplicate =
+      e?.code === "23505" ||
+      msg.toLowerCase().includes("duplicate") ||
+      msg.includes("23505");
+    if (isDuplicate) {
+      // Per-account uniqueness is on (user_id, slug), so the submitted slug IS
+      // the existing business's slug — hand it back so the client can link to it.
       return c.json(
-        errBody("conflict", `slug '${parsed.slug}' is already taken`),
+        errBody(
+          "conflict",
+          `You already have a business for '${parsed.slug}'.`,
+          { slug: parsed.slug },
+        ),
         409,
       );
     }
