@@ -28,7 +28,7 @@ export const c_card_basic: ComponentCatalogEntry = {
   text_mode: 'native',
   text_mode_notes: 'Renders as a message section with title + body.',
   reliability_tier: 'core',
-  archetype_fits: ['strategy', 'assessment', 'calculator'],
+  archetype_fits: ['strategy', 'assessment', 'calculator', 'site'],
   capabilities: {
     when_to_use: 'The default container for a titled chunk of content (a result section, an interpretation block).',
     surface: { supported: ['card', 'raised-card', 'tinted'], default: 'card' },
@@ -62,7 +62,7 @@ export const c_card_cta: ComponentCatalogEntry = {
   text_mode: 'adapted',
   text_mode_notes: 'Renders as a paragraph + inline-keyboard button.',
   reliability_tier: 'core',
-  archetype_fits: ['strategy', 'assessment', 'calculator'],
+  archetype_fits: ['strategy', 'assessment', 'calculator', 'site'],
   example_usage: 'End-of-flow upsell ("Book a call", "Get the full report").',
   capabilities: {
     when_to_use: 'A centered conversion block: headline + supporting line + one primary button. End-of-flow.',
@@ -141,7 +141,7 @@ export const c_list_group: ComponentCatalogEntry = {
   text_mode: 'native',
   text_mode_notes: 'Bulleted text list.',
   reliability_tier: 'core',
-  archetype_fits: ['strategy', 'assessment', 'calculator'],
+  archetype_fits: ['strategy', 'assessment', 'calculator', 'site'],
   example_usage: 'Recommendations list, breakdown items, action items.',
   capabilities: {
     when_to_use: 'A vertical list of items (recommendations, action items, breakdowns), optional per-item badge.',
@@ -203,7 +203,7 @@ export const c_badge: ComponentCatalogEntry = {
   mobile_responsive: true,
   text_mode: 'native',
   reliability_tier: 'core',
-  archetype_fits: ['strategy', 'assessment', 'calculator'],
+  archetype_fits: ['strategy', 'assessment', 'calculator', 'site'],
   capabilities: {
     when_to_use: 'A small inline status/count chip beside a label or heading.',
     surface: { supported: ['tinted'], default: 'tinted', notes: 'text-bg-* / badge-soft-* — color comes from the style slot (skin palette).' },
@@ -297,7 +297,7 @@ export const c_avatar: ComponentCatalogEntry = {
   mobile_responsive: true,
   text_mode: 'visual-only',
   reliability_tier: 'core',
-  archetype_fits: [],
+  archetype_fits: ['site'],
   capabilities: {
     when_to_use: 'A small circular image / icon / initials marker (next to a name, item, or testimonial).',
     surface: { supported: ['tinted'], default: 'tinted', notes: 'icon/initials variant uses bg-{variant}-subtle; color from the variant slot (skin palette).' },
@@ -355,7 +355,7 @@ export const c_blockquote: ComponentCatalogEntry = {
   mobile_responsive: true,
   text_mode: 'native',
   reliability_tier: 'core',
-  archetype_fits: ['strategy'],
+  archetype_fits: ['strategy', 'site'],
   capabilities: {
     when_to_use: 'A styled pull-quote with optional citation (testimonial, key statement).',
     surface: { supported: ['plain', 'tinted', 'card'], default: 'plain', notes: 'flush by default; tint or card it to set the quote apart.' },
@@ -383,7 +383,7 @@ export const c_lightbox: ComponentCatalogEntry = {
   mobile_responsive: true,
   text_mode: 'visual-only',
   reliability_tier: 'extended',
-  archetype_fits: [],
+  archetype_fits: ['site'],
   capabilities: {
     when_to_use: 'A click-to-zoom thumbnail that opens the full image in an overlay (gallery/screenshot).',
     radius: { supported: ['square', 'sm', 'rounded', 'lg'], default: 'square', notes: 'img-fluid ships unrounded; add a rounded utility to soften the thumb.' },

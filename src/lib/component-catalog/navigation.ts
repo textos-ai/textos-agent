@@ -121,7 +121,7 @@ export const c_accordion: ComponentCatalogEntry = {
   text_mode: 'adapted',
   text_mode_notes: 'Use for "Show more" patterns in result analysis. In text mode, each section becomes a follow-up message.',
   reliability_tier: 'core',
-  archetype_fits: ['strategy', 'calculator'],
+  archetype_fits: ['strategy', 'calculator', 'site'],
   capabilities: {
     when_to_use: 'A stack of collapsible bordered sections; "Show more" / FAQ-style disclosure.',
     border: { supported: ['hairline', 'none'], default: 'hairline', notes: 'accordion-item dividers; none = flush variant.' },
@@ -178,7 +178,7 @@ export const c_breadcrumb: ComponentCatalogEntry = {
   mobile_responsive: true,
   text_mode: 'visual-only',
   reliability_tier: 'core',
-  archetype_fits: [],
+  archetype_fits: ['site'],
   capabilities: {
     when_to_use: 'Inline hierarchical path indicator (Home / Section / Current); minimal, no box.',
   },

@@ -9,7 +9,18 @@ export type ComponentCategory =
   | 'form' | 'display' | 'feedback' | 'navigation'
   | 'data-viz' | 'layout' | 'utility';
 
-export type ArchetypeId = 'strategy' | 'assessment' | 'calculator';
+// 'strategy' | 'assessment' | 'calculator' are ASSEMBLER archetypes: each has a
+// definition in src/lib/archetypes/ and a Zod content schema, and assembleApp()
+// can build one.
+//
+// 'site' is a CATALOG TAG, not (yet) an assembler archetype. It marks the
+// entries that serve public client-site sections so the Website Manager can
+// discover them. There is deliberately no SITE_ARCHETYPE definition and no
+// content schema — getArchetype('site') returns undefined and
+// validateContent('site', …) throws, which is correct until Phase 1B decides
+// how an Astro SSR renderer consumes catalog entries (see
+// docs/website-manager-concept.md → Decisions → Composition).
+export type ArchetypeId = 'strategy' | 'assessment' | 'calculator' | 'site';
 
 export type ReliabilityTier = 'core' | 'extended' | 'experimental';
 

@@ -20,7 +20,7 @@ export const c_container: ComponentCatalogEntry = {
   mobile_responsive: true,
   text_mode: 'visual-only',
   reliability_tier: 'core',
-  archetype_fits: ['strategy', 'assessment', 'calculator'],
+  archetype_fits: ['strategy', 'assessment', 'calculator', 'site'],
   capabilities: {
     when_to_use: 'A responsive max-width centering wrapper for page/section content; use container-fluid for full-bleed. Pure structural wrapper — carries no surface, border, radius, elevation, or emphasis of its own.',
   },
@@ -44,7 +44,7 @@ export const c_row_col: ComponentCatalogEntry = {
   mobile_responsive: true,
   text_mode: 'visual-only',
   reliability_tier: 'core',
-  archetype_fits: ['strategy', 'assessment', 'calculator'],
+  archetype_fits: ['strategy', 'assessment', 'calculator', 'site'],
   capabilities: {
     when_to_use: 'A 12-column responsive grid for laying multiple items side by side (columns + gutter). Pure structural layout — the grid itself carries no surface, border, radius, elevation, or emphasis; those live on the components placed inside the columns.',
   },
@@ -76,7 +76,7 @@ export const c_section_hero: ComponentCatalogEntry = {
   mobile_responsive: true,
   text_mode: 'visual-only',
   reliability_tier: 'core',
-  archetype_fits: ['strategy', 'assessment', 'calculator'],
+  archetype_fits: ['strategy', 'assessment', 'calculator', 'site'],
   example_usage: 'Result page banner.',
   capabilities: {
     when_to_use: 'A full-width banner (headline + tagline + optional CTA) that opens the collect and result pages; light by default.',

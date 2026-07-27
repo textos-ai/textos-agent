@@ -33,7 +33,10 @@ export function validateContent(
   archetype_id: ArchetypeId,
   raw: unknown,
 ): ValidationResult {
-  const schema = SCHEMAS[archetype_id];
+  // ArchetypeId includes 'site', a catalog-only tag with no assembler schema
+  // (see component-catalog/types.ts). Index through a widened key type so the
+  // lookup is a runtime miss that lands on the throw below, not a compile error.
+  const schema = (SCHEMAS as Partial<Record<ArchetypeId, (typeof SCHEMAS)[keyof typeof SCHEMAS]>>)[archetype_id];
   if (!schema) {
     throw new ContentValidationError(
       'archetype_id',
@@ -51,7 +54,10 @@ export function validateContent(
       first.message,
     );
   }
-  const crossErrors = CROSS[archetype_id](parsed.data as any);
+  // Same widening as SCHEMAS above. Unreachable for 'site' — the schema miss
+  // already threw — but the type must admit the wider key.
+  const cross = (CROSS as Partial<Record<ArchetypeId, (c: any) => string[]>>)[archetype_id];
+  const crossErrors = cross ? cross(parsed.data as any) : [];
   if (crossErrors.length > 0) {
     throw new ContentValidationError(
       'cross-field',

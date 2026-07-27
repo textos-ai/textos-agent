@@ -33,7 +33,7 @@ const by_category: Record<ComponentCategory, ComponentCatalogEntry[]> = {
 for (const c of ALL) by_category[c.category].push(c);
 
 const by_archetype: Record<ArchetypeId, ComponentCatalogEntry[]> = {
-  strategy: [], assessment: [], calculator: [],
+  strategy: [], assessment: [], calculator: [], site: [],
 };
 for (const c of ALL) {
   for (const a of c.archetype_fits) by_archetype[a].push(c);
