@@ -21,6 +21,7 @@ import { errBody } from "./lib/errors";
 import { log } from "./lib/logger";
 import buildsRoutes from "./routes/builds";
 import businessManagerRoutes from "./routes/business-manager";
+import businessFactsRoutes from "./routes/business-facts";
 import operatorSchoolRoutes from "./routes/operator-school";
 import settingsRoutes from "./routes/settings";
 import generateStoriesRoutes from "./routes/generate-stories";
@@ -109,6 +110,8 @@ app.route("/api/businesses", marketingContentRoutes);
 app.route("/api/businesses", socialConnectRoutes);
 app.route("/api/businesses", socialPublishRoutes);
 app.route("/api/businesses", billingRoutes);
+// Website Manager Phase 1A — business facts (NAP, hours, license, services, areas)
+app.route("/api/businesses", businessFactsRoutes);
 app.route("/api/businesses", businessTaskRunRoutes);
 app.route("/api/businesses", customerUnderstandingRoutes);
 app.route("/api/businesses", leadsRoutes);
