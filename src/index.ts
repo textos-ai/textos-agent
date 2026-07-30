@@ -22,6 +22,8 @@ import { log } from "./lib/logger";
 import buildsRoutes from "./routes/builds";
 import businessManagerRoutes from "./routes/business-manager";
 import businessFactsRoutes from "./routes/business-facts";
+import businessMediaRoutes from "./routes/business-media";
+import businessSiteRoutes from "./routes/business-site";
 import operatorSchoolRoutes from "./routes/operator-school";
 import settingsRoutes from "./routes/settings";
 import generateStoriesRoutes from "./routes/generate-stories";
@@ -112,6 +114,10 @@ app.route("/api/businesses", socialPublishRoutes);
 app.route("/api/businesses", billingRoutes);
 // Website Manager Phase 1A — business facts (NAP, hours, license, services, areas)
 app.route("/api/businesses", businessFactsRoutes);
+// Website Manager Phase 1C — media upload/list/patch/delete (R2 via ASSETS)
+app.route("/api/businesses", businessMediaRoutes);
+// Website Manager Phase 1C — site manager (authored fields, overrides, slots)
+app.route("/api/businesses", businessSiteRoutes);
 app.route("/api/businesses", businessTaskRunRoutes);
 app.route("/api/businesses", customerUnderstandingRoutes);
 app.route("/api/businesses", leadsRoutes);

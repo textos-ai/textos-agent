@@ -28,6 +28,8 @@ import { createSupabaseClient, getBusinessBySlug } from "../services/supabase";
 import { requireAuth } from "../lib/jwt";
 import { errBody } from "../lib/errors";
 import { log } from "../lib/logger";
+import { provisionSite } from "../lib/site-render/provision";
+import { FACTS_SECTIONS, factsAnchor } from "../lib/site-render/facts-sections";
 
 const app = new Hono<{ Bindings: Env }>();
 app.use("*", requireAuth);
@@ -72,6 +74,10 @@ const ProfileSchema = z.object({
   geo_lng:             longitude,
   license_number:      optionalText,
   license_authority:   optionalText,
+  // The noun people search for. A business fact — true whether or not there
+  // is a website — so it lives here beside services, not in the site manager.
+  trade_noun:          optionalText,
+  trade_noun_plural:   optionalText,
   google_place_id:     optionalText,
   google_business_url: optionalText,
   facebook_url:        optionalText,
@@ -146,12 +152,58 @@ const AreaSchema = z.object({
   }
 });
 
-const FactsSchema = z.object({
+// ── Phase 1C collections ──────────────────────────────────────────────────
+// These three have no natural business-unique key (unlike service_key /
+// area_slug), so rows carry an optional `id`. Rows with an id are updated in
+// place; rows without one are inserted; ids absent from the payload are pruned.
+// That keeps display_order stable and lets an operator reorder without the row
+// identity churning.
+
+const FaqSchema = z.object({
+  id:       z.string().uuid().optional(),
+  question: requiredText("question"),
+  answer:   requiredText("answer"),
+  scope:    z.enum(["global", "home_teaser", "area"]).default("global"),
+});
+
+const ProjectSchema = z.object({
+  id:          z.string().uuid().optional(),
+  caption:     requiredText("caption"),
+  city:        optionalText,
+  service_key: z.string().trim().regex(SLUG_RE, "service_key must be lowercase kebab-case")
+                  .nullable().optional().transform((v) => v ?? null),
+  media_id:    z.string().uuid().nullable().optional().transform((v) => v ?? null),
+});
+
+const DifferentiatorSchema = z.object({
+  id:       z.string().uuid().optional(),
+  headline: requiredText("headline"),
+  body:     requiredText("body"),
+  icon:     optionalText,
+});
+
+// Exported so a test can assert it accepts every field the form posts.
+export const FactsSchema = z.object({
   profile:  ProfileSchema,
   hours:    z.array(HourSchema).max(7).default([]),
   services: z.array(ServiceSchema).default([]),
   areas:    z.array(AreaSchema).default([]),
+  faqs:            z.array(FaqSchema).default([]),
+  projects:        z.array(ProjectSchema).default([]),
+  differentiators: z.array(DifferentiatorSchema).default([]),
 }).superRefine((f, ctx) => {
+  // A project may only reference a service this business actually has —
+  // the DB enforces it too, but this gives a field-level message.
+  const keys = new Set(f.services.map((s) => s.service_key));
+  f.projects.forEach((p, i) => {
+    if (p.service_key && !keys.has(p.service_key)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["projects", i, "service_key"],
+        message: `'${p.service_key}' is not one of this business's services`,
+      });
+    }
+  });
   const dupe = <T>(xs: T[], key: (x: T) => string, label: string) => {
     const seen = new Set<string>();
     for (const x of xs) {
@@ -183,10 +235,10 @@ app.get("/:slug/facts", async (c) => {
   const slug = c.req.param("slug");
   const supabase = createSupabaseClient(c.env);
 
-  const business = await getBusinessBySlug(supabase, auth.user_id, slug).catch(() => null);
+  const business = await getBusinessBySlug(supabase, auth.user_id, slug);
   if (!business) return c.json(errBody("not_found", `business '${slug}' not found`), 404);
 
-  const [profileRes, hoursRes, servicesRes, areasRes] = await Promise.all([
+  const [profileRes, hoursRes, servicesRes, areasRes, faqsRes, projectsRes, diffsRes, mediaRes] = await Promise.all([
     supabase.from("business_profile").select("*").eq("business_id", business.id).maybeSingle(),
     supabase.from("business_hours").select("*").eq("business_id", business.id)
       .order("day_of_week", { ascending: true }),
@@ -194,9 +246,18 @@ app.get("/:slug/facts", async (c) => {
       .order("display_order", { ascending: true }),
     supabase.from("business_service_areas").select("*").eq("business_id", business.id)
       .order("display_order", { ascending: true }),
+    supabase.from("business_faqs").select("*").eq("business_id", business.id)
+      .order("display_order", { ascending: true }),
+    supabase.from("business_projects").select("*").eq("business_id", business.id)
+      .order("display_order", { ascending: true }),
+    supabase.from("business_differentiators").select("*").eq("business_id", business.id)
+      .order("display_order", { ascending: true }),
+    supabase.from("site_media")
+      .select("id, url, alt_text, mime_type, width, height, bytes, kind, role, origin, poster_url")
+      .eq("business_id", business.id).order("created_at", { ascending: false }),
   ]);
 
-  const firstErr = [profileRes, hoursRes, servicesRes, areasRes].find((r) => r.error);
+  const firstErr = [profileRes, hoursRes, servicesRes, areasRes, faqsRes, projectsRes, diffsRes, mediaRes].find((r) => r.error);
   if (firstErr?.error) {
     log.error("[facts] read_failed", { business_id: business.id, err: firstErr.error.message });
     return c.json(errBody("internal", `facts_read_failed: ${firstErr.error.message}`), 500);
@@ -204,10 +265,19 @@ app.get("/:slug/facts", async (c) => {
 
   return c.json({
     business: { slug: business.slug, name: business.name },
+    // The page's own section registry. facts.astro renders each band heading
+    // from this rather than hardcoding it, so the manager's "Business Facts →
+    // <heading>" link quotes the same string the client sees. See
+    // lib/site-render/facts-sections.ts.
+    sections: FACTS_SECTIONS.map((x) => ({ ...x, anchor: factsAnchor(x.key) })),
     profile:  profileRes.data ?? null,
     hours:    hoursRes.data ?? [],
     services: servicesRes.data ?? [],
     areas:    areasRes.data ?? [],
+    faqs:            faqsRes.data ?? [],
+    projects:        projectsRes.data ?? [],
+    differentiators: diffsRes.data ?? [],
+    media:           mediaRes.data ?? [],
   });
 });
 
@@ -224,7 +294,7 @@ app.put("/:slug/facts", async (c) => {
   const slug = c.req.param("slug");
   const supabase = createSupabaseClient(c.env);
 
-  const business = await getBusinessBySlug(supabase, auth.user_id, slug).catch(() => null);
+  const business = await getBusinessBySlug(supabase, auth.user_id, slug);
   if (!business) return c.json(errBody("not_found", `business '${slug}' not found`), 404);
 
   let facts: Facts;
@@ -293,19 +363,82 @@ app.put("/:slug/facts", async (c) => {
     }
   }
 
+  // 5-7. Id-keyed collections (Phase 1C). No natural business key, so rows with
+  // an id are updated in place, rows without one are inserted, and ids the
+  // payload dropped are deleted.
+  const idKeyed: Array<{ table: string; rows: Array<Record<string, unknown>> }> = [
+    {
+      table: "business_faqs",
+      rows: facts.faqs.map((x, i) => ({
+        ...(x.id ? { id: x.id } : {}),
+        business_id: bid, question: x.question, answer: x.answer, scope: x.scope,
+        display_order: i, ...stamp,
+      })),
+    },
+    {
+      table: "business_projects",
+      rows: facts.projects.map((x, i) => ({
+        ...(x.id ? { id: x.id } : {}),
+        business_id: bid, caption: x.caption, city: x.city,
+        service_key: x.service_key, media_id: x.media_id,
+        display_order: i, ...stamp,
+      })),
+    },
+    {
+      table: "business_differentiators",
+      rows: facts.differentiators.map((x, i) => ({
+        ...(x.id ? { id: x.id } : {}),
+        business_id: bid, headline: x.headline, body: x.body, icon: x.icon,
+        display_order: i, ...stamp,
+      })),
+    },
+  ];
+
+  for (const col of idKeyed) {
+    if (col.rows.length > 0) {
+      const { error } = await supabase.from(col.table).upsert(col.rows, { onConflict: "id" });
+      if (error) {
+        log.error("[facts] idkeyed_write_failed", { business_id: bid, table: col.table, err: error.message });
+        return c.json(errBody("internal", `${col.table}_write_failed: ${error.message}`), 500);
+      }
+    }
+    const keptIds = col.rows.map((r) => r.id).filter(Boolean) as string[];
+    let del = supabase.from(col.table).delete().eq("business_id", bid);
+    if (keptIds.length > 0) del = del.not("id", "in", `(${keptIds.join(",")})`);
+    const { error: dErr } = await del;
+    if (dErr) {
+      log.error("[facts] idkeyed_prune_failed", { business_id: bid, table: col.table, err: dErr.message });
+      return c.json(errBody("internal", `${col.table}_prune_failed: ${dErr.message}`), 500);
+    }
+  }
+
   log.info("[facts] saved", {
     business_id: bid,
     hours: facts.hours.length, services: facts.services.length, areas: facts.areas.length,
+    faqs: facts.faqs.length, projects: facts.projects.length, differentiators: facts.differentiators.length,
   });
 
   // Read back what was actually stored. The response is the DB's version, not
   // the request's — "verify by effect", per CLAUDE.md.
-  const [profileRes, hoursRes, servicesRes, areasRes] = await Promise.all([
+  const [profileRes, hoursRes, servicesRes, areasRes, faqsRes, projectsRes, diffsRes, mediaRes] = await Promise.all([
     supabase.from("business_profile").select("*").eq("business_id", bid).maybeSingle(),
     supabase.from("business_hours").select("*").eq("business_id", bid).order("day_of_week", { ascending: true }),
     supabase.from("business_services").select("*").eq("business_id", bid).order("display_order", { ascending: true }),
     supabase.from("business_service_areas").select("*").eq("business_id", bid).order("display_order", { ascending: true }),
+    supabase.from("business_faqs").select("*").eq("business_id", bid).order("display_order", { ascending: true }),
+    supabase.from("business_projects").select("*").eq("business_id", bid).order("display_order", { ascending: true }),
+    supabase.from("business_differentiators").select("*").eq("business_id", bid).order("display_order", { ascending: true }),
+    supabase.from("site_media").select("id, url, alt_text, mime_type, width, height, bytes, kind, role, origin, poster_url").eq("business_id", bid).order("created_at", { ascending: false }),
   ]);
+
+  // Read-back errors are surfaced, not swallowed — a missing table here means
+  // the write path is writing into a schema that does not match the code.
+  const readErr = [profileRes, hoursRes, servicesRes, areasRes, faqsRes, projectsRes, diffsRes, mediaRes]
+    .find((r) => r.error);
+  if (readErr?.error) {
+    log.error("[facts] readback_failed", { business_id: bid, err: readErr.error.message });
+    return c.json(errBody("internal", `facts_readback_failed: ${readErr.error.message}`), 500);
+  }
 
   return c.json({
     ok: true,
@@ -313,7 +446,43 @@ app.put("/:slug/facts", async (c) => {
     hours:    hoursRes.data ?? [],
     services: servicesRes.data ?? [],
     areas:    areasRes.data ?? [],
+    faqs:            faqsRes.data ?? [],
+    projects:        projectsRes.data ?? [],
+    differentiators: diffsRes.data ?? [],
+    media:           mediaRes.data ?? [],
   });
+});
+
+// ── POST /:slug/site ──────────────────────────────────────────────────────
+// Provision a managed site for this business from a template. Creates the
+// sites / site_pages / site_sections rows; section membership and order come
+// from the template's section_catalog in the DB, never from code.
+//
+// Idempotent — re-running refreshes section rows and leaves site_fields alone,
+// so site-authored copy survives a re-provision.
+//
+// Phase 1B: home page only. Body: { template_key?: string }.
+app.post("/:slug/site", async (c) => {
+  const auth = c.get("auth");
+  const slug = c.req.param("slug");
+  const supabase = createSupabaseClient(c.env);
+
+  const business = await getBusinessBySlug(supabase, auth.user_id, slug);
+  if (!business) return c.json(errBody("not_found", `business '${slug}' not found`), 404);
+
+  const body = await c.req.json().catch(() => ({}));
+  const templateKey =
+    typeof (body as { template_key?: unknown }).template_key === "string"
+      ? (body as { template_key: string }).template_key
+      : "trades-v1";
+
+  try {
+    const result = await provisionSite(supabase, business.id, business.slug, templateKey, ["home"]);
+    return c.json({ ok: true, ...result });
+  } catch (err) {
+    log.error("[facts] provision_failed", { business_id: business.id, err: String(err) });
+    return c.json(errBody("internal", `provision_failed: ${String(err)}`), 500);
+  }
 });
 
 export default app;

@@ -10,6 +10,7 @@ import { errBody } from "../lib/errors";
 import { log } from "../lib/logger";
 import { runTaskInBackground } from "./business-task-run";
 import { runScheduledReconcile } from "../cron/reconcileScheduledPosts";
+import { provisionSite } from "../lib/site-render/provision";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // /api/internal/* — worker→worker chain trigger routes.
@@ -244,6 +245,60 @@ app.post("/run-task", async (c) => {
     },
     202,
   );
+});
+
+// ── POST /provision-site ──────────────────────────────────────────────────
+// Provision a managed site from a template. Secret-guarded twin of
+// POST /api/businesses/:slug/site — that one is the operator path (user JWT),
+// this one is for setup and verification without a browser session.
+//
+// Sections and their order come from the template's section_catalog in the DB;
+// there is no section list in code. Idempotent — re-running refreshes section
+// rows and never touches site_fields.
+const ProvisionSiteBody = z.object({
+  businessSlug: z.string().min(1),
+  templateKey: z.string().min(1).default("trades-v1"),
+  // Which page types to provision. Defaults to the phase-2A set. NOT a
+  // hardcoded page list in the renderer — this only says which of the
+  // template's page types to create rows for; the template owns the rest.
+  pageTypes: z.array(z.string().min(1)).default(["home", "services", "projects", "why_us", "faq", "contact", "legal"]),
+});
+
+app.post("/provision-site", async (c) => {
+  const expected = c.env.INTERNAL_TRIGGER_SECRET;
+  if (!expected) return c.json(errBody("not_configured", "INTERNAL_TRIGGER_SECRET unset"), 503);
+  if ((c.req.header("x-internal-secret") ?? "") !== expected) {
+    return c.json(errBody("unauthorized", "bad internal secret"), 401);
+  }
+
+  let body: z.infer<typeof ProvisionSiteBody>;
+  try {
+    body = ProvisionSiteBody.parse(await c.req.json());
+  } catch (err) {
+    return c.json(errBody("bad_request", `invalid body: ${String(err)}`), 400);
+  }
+
+  const supabase = createSupabaseClient(c.env);
+  const { data: biz } = await supabase
+    .from("businesses")
+    .select("id, slug")
+    .eq("slug", body.businessSlug)
+    .maybeSingle();
+  if (!biz) return c.json(errBody("not_found", `business '${body.businessSlug}' not found`), 404);
+
+  try {
+    const result = await provisionSite(
+      supabase,
+      (biz as { id: string }).id,
+      (biz as { slug: string }).slug,
+      body.templateKey,
+      body.pageTypes,
+    );
+    return c.json({ ok: true, ...result });
+  } catch (err) {
+    log.error("[internal] provision_site_failed", { slug: body.businessSlug, err: String(err) });
+    return c.json(errBody("internal", `provision_failed: ${String(err)}`), 500);
+  }
 });
 
 export default app;

@@ -857,9 +857,9 @@ app.get("/:slug/context", async (c) => {
   const auth = c.get("auth");
   const slug = c.req.param("slug");
   const supabase = createSupabaseClient(c.env);
-  const business = await getBusinessBySlug(supabase, auth.user_id, slug).catch(() => null);
+  const business = await getBusinessBySlug(supabase, auth.user_id, slug);
   if (!business) return c.json(errBody("not_found", `business '${slug}' not found`), 404);
-  const context = await getBusinessContext(supabase, business.id).catch(() => null);
+  const context = await getBusinessContext(supabase, business.id);
   return c.json({ business: { slug: business.slug, name: business.name }, context });
 });
 
@@ -906,10 +906,10 @@ app.post("/:slug/context/rebuild", async (c) => {
     return c.json(errBody("bad_request", "invalid body", err instanceof Error ? err.message : String(err)), 400);
   }
 
-  const business = await getBusinessBySlug(supabase, auth.user_id, slug).catch(() => null);
+  const business = await getBusinessBySlug(supabase, auth.user_id, slug);
   if (!business) return c.json(errBody("not_found", `business '${slug}' not found`), 404);
 
-  const ctx = await getBusinessContext(supabase, business.id).catch(() => null);
+  const ctx = await getBusinessContext(supabase, business.id);
   if (!ctx) return c.json(errBody("not_found", "no business_context to rebuild"), 404);
 
   // Candidate docs with their producing task (via task_run -> task).

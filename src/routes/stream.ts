@@ -36,7 +36,7 @@ app.get("/business/:slug", async (c) => {
   const mode = c.req.query("mode");
   const supabase = createSupabaseClient(c.env);
 
-  const business = await getBusinessBySlug(supabase, auth.user_id, slug).catch(() => null);
+  const business = await getBusinessBySlug(supabase, auth.user_id, slug);
   if (!business) {
     return c.json(errBody("not_found", `business '${slug}' not found`), 404);
   }
@@ -55,7 +55,7 @@ app.get("/business/:slug", async (c) => {
     }
 
     // ── Check if build is already complete or genuinely running ────────
-    const existingRun = await getPlaybookRunByBusiness(supabase, business.id).catch(() => null);
+    const existingRun = await getPlaybookRunByBusiness(supabase, business.id);
 
     if (existingRun?.status === "completed") {
       try {
@@ -87,7 +87,7 @@ app.get("/business/:slug", async (c) => {
     }
 
     // ── Check legacy task_runs for backward compat (seed data) ───────
-    const runs = await getTaskRunsForBusiness(supabase, business.id).catch(() => []);
+    const runs = await getTaskRunsForBusiness(supabase, business.id);
     const allDone = runs.length > 0 && runs.every((r) => r.status === "completed");
     if (allDone && !existingRun) {
       await send({ type: "status", message: "build_already_complete", ts: Date.now() });
@@ -95,7 +95,7 @@ app.get("/business/:slug", async (c) => {
     }
 
     // ── Run or resume the free build ─────────────────────────────────
-    const user = await getUserById(supabase, auth.user_id).catch(() => null);
+    const user = await getUserById(supabase, auth.user_id);
     if (!user) {
       await send({ type: "error", message: "User not found", ts: Date.now() });
       return;

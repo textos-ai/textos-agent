@@ -5,6 +5,7 @@ import { FEEDBACK_COMPONENTS } from './feedback';
 import { DATA_VIZ_COMPONENTS } from './data-viz';
 import { LAYOUT_COMPONENTS } from './layout';
 import { UTILITY_COMPONENTS } from './utility';
+import { SITE_COMPONENTS } from './site';
 import type {
   ComponentCatalog,
   ComponentCatalogEntry,
@@ -21,6 +22,8 @@ const ALL: ComponentCatalogEntry[] = [
   ...DATA_VIZ_COMPONENTS,
   ...LAYOUT_COMPONENTS,
   ...UTILITY_COMPONENTS,
+  // Public client-site chrome — 'site' archetype only, never in a mini-app.
+  ...SITE_COMPONENTS,
 ];
 
 const by_id: Record<string, ComponentCatalogEntry> = {};

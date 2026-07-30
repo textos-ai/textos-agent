@@ -16,12 +16,12 @@ export const c_card_basic: ComponentCatalogEntry = {
   html_template: `<div class="card">
   {{#header}}<div class="card-header"><h5 class="card-title mb-0">{{header}}</h5></div>{{/header}}
   <div class="card-body">
-    {{#title}}<h5 class="card-title mb-2">{{title}}</h5>{{/title}}
+    {{#title}}<h{{heading_level|5}} class="card-title mb-2">{{title}}</h{{heading_level|5}}>{{/title}}
     {{slot:content}}
   </div>
   {{#footer}}<div class="card-footer">{{footer}}</div>{{/footer}}
 </div>`,
-  fillable_slots: ['header', 'title', 'content', 'footer'],
+  fillable_slots: ['header', 'title', 'content', 'footer', 'heading_level'],
   js_init: 'noop',
   js_dependencies: [],
   mobile_responsive: true,
@@ -50,12 +50,12 @@ export const c_card_cta: ComponentCatalogEntry = {
   source_demo_path: '.homer-reference/landing.html',
   html_template: `<div class="card border-0 bg-primary-subtle">
   <div class="card-body text-center p-4">
-    <h3 class="fw-bold mb-2">{{headline}}</h3>
+    <h{{heading_level|3}} class="fw-bold mb-2">{{headline}}</h{{heading_level|3}}>
     <p class="text-muted mb-3">{{supporting_text}}</p>
     <a href="{{cta_url}}" class="btn btn-primary rounded-pill">{{cta_label}}</a>
   </div>
 </div>`,
-  fillable_slots: ['headline', 'supporting_text', 'cta_url', 'cta_label'],
+  fillable_slots: ['headline', 'supporting_text', 'cta_url', 'cta_label', 'heading_level'],
   js_init: 'noop',
   js_dependencies: [],
   mobile_responsive: true,

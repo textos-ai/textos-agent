@@ -112,6 +112,10 @@ app.post("/:slug/customer-understanding/generate", async (c) => {
 
   let founderAnswers = "";
   try {
+    // Deliberate: an absent or malformed body is a legitimate state here (both
+    // fields are optional), not a failure to report. Unlike a database error,
+    // there is nothing an operator could act on. Left as-is in the
+    // silent-degrade audit.
     const raw = await c.req.json().catch(() => null);
     if (raw && typeof raw === "object" && typeof (raw as any).founder_answers === "string") {
       founderAnswers = ((raw as any).founder_answers as string).trim();

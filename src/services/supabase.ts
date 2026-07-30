@@ -1,5 +1,6 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { Env } from "../env";
+import { dbError } from "../lib/db-errors";
 
 export function createSupabaseClient(env: Env): SupabaseClient {
   return createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
@@ -80,7 +81,7 @@ export async function getTaskBySlug(
     .eq("status", "active")
     .maybeSingle();
 
-  if (error) throw error;
+  if (error) throw dbError("tasks", error);
   return (data as TaskRow | null) ?? null;
 }
 
@@ -111,7 +112,7 @@ export async function upsertUser(
   const { error } = await client
     .from("users")
     .upsert(row, { onConflict: "id", ignoreDuplicates: false });
-  if (error) throw error;
+  if (error) throw dbError("users", error);
 }
 
 export async function getUserById(
@@ -123,7 +124,7 @@ export async function getUserById(
     .select("id, email, handle, handle_confirmed_at, created_at")
     .eq("id", id)
     .maybeSingle();
-  if (error) throw error;
+  if (error) throw dbError("users", error);
   return (data as UserRow | null) ?? null;
 }
 
@@ -136,7 +137,7 @@ export async function isHandleAvailable(
     .from("users")
     .select("*", { count: "exact", head: true })
     .ilike("handle", handle);
-  if (error) throw error;
+  if (error) throw dbError("users", error);
   return (count ?? 0) === 0;
 }
 
@@ -152,7 +153,7 @@ export async function setUserHandle(
     .eq("id", user_id)
     .select("id, email, handle, handle_confirmed_at, created_at")
     .single();
-  if (error) throw error;
+  if (error) throw dbError("users", error);
   return data as UserRow;
 }
 
@@ -178,7 +179,7 @@ export async function getActivePlans(
     .eq("is_active", true)
     .order("monthly_cents", { ascending: true });
 
-  if (error) throw error;
+  if (error) throw dbError("subscription_plans", error);
   return (data as SubscriptionPlanRow[]) ?? [];
 }
 
@@ -230,7 +231,7 @@ export async function getBusinessContext(
     .select("*")
     .eq("business_id", businessId)
     .maybeSingle();
-  if (error) throw error;
+  if (error) throw dbError("business_context", error);
   return (data as BusinessContextRow | null) ?? null;
 }
 
@@ -243,7 +244,7 @@ export async function upsertBusinessContext(
     .upsert(ctx, { onConflict: "business_id" })
     .select("*")
     .single();
-  if (error) throw error;
+  if (error) throw dbError("business_context", error);
   return data as BusinessContextRow;
 }
 
@@ -255,7 +256,7 @@ export async function countBusinessContextByUser(
     .from("business_context")
     .select("*", { count: "exact", head: true })
     .eq("user_id", userId);
-  if (error) throw error;
+  if (error) throw dbError("business_context", error);
   return count ?? 0;
 }
 
@@ -283,7 +284,7 @@ export async function getBusinessesByUser(
     .eq("is_active", true) // hide soft-deleted / admin-deactivated rows
     .order("created_at", { ascending: false });
 
-  if (error) throw error;
+  if (error) throw dbError("businesses", error);
   if (!businesses || businesses.length === 0) return [];
 
   const { data: contexts, error: ctxError } = await client
@@ -304,6 +305,23 @@ export async function getBusinessesByUser(
   }));
 }
 
+/**
+ * Resolve a business owned by this user, or null when there is genuinely no such
+ * row.
+ *
+ * NULL MEANS ABSENT. IT NEVER MEANS "THE QUERY FAILED."
+ *
+ * Callers used to wrap this in `.catch(() => null)` and answer 404 "business not
+ * found", which reported every database failure as a missing business. On the
+ * FACT_COLLECTIONS crash that turned a malformed SUPABASE_URL (PGRST125) into
+ * "business 'jkqualityelectric' not found" and sent debugging in the wrong
+ * direction for several minutes. Same silent lie as a missing table reading as
+ * empty data, which 1C removed from the render path.
+ *
+ * A failure now throws a classified error — SchemaError when a migration is
+ * missing, otherwise query_failed with the code — and app.onError returns it as a
+ * 500 carrying the message. A 404 from a caller therefore means what it says.
+ */
 export async function getBusinessBySlug(
   client: SupabaseClient,
   userId: string,
@@ -317,7 +335,7 @@ export async function getBusinessBySlug(
     .eq("is_active", true) // deactivated business → treated as not found for user paths
     .maybeSingle();
 
-  if (error) throw error;
+  if (error) throw dbError("businesses", error);
   return (data as BusinessRow | null) ?? null;
 }
 
@@ -338,7 +356,7 @@ export async function createBusiness(
     .select("*")
     .single();
 
-  if (error) throw error;
+  if (error) throw dbError("businesses", error);
   return data as BusinessRow;
 }
 
@@ -360,7 +378,7 @@ export async function createEmptyBusinessContext(
     .select("agent_name")
     .single();
   console.log(`[createEmptyBusinessContext] saved agent_name="${data?.agent_name}" error=${error ? JSON.stringify(error) : "none"}`);
-  if (error) throw error;
+  if (error) throw dbError("business_context", error);
 }
 
 export async function setAgentName(
@@ -372,7 +390,7 @@ export async function setAgentName(
     .from("business_context")
     .update({ agent_name: agentName })
     .eq("business_id", businessId);
-  if (error) throw error;
+  if (error) throw dbError("business_context", error);
 }
 
 export async function countUserBusinesses(
@@ -385,7 +403,7 @@ export async function countUserBusinesses(
     .eq("user_id", userId)
     .eq("is_active", true); // quota only counts active businesses
 
-  if (error) throw error;
+  if (error) throw dbError("businesses", error);
   return count ?? 0;
 }
 
@@ -440,7 +458,7 @@ export async function getTaskRunsForBusiness(
     .eq("business_id", businessId)
     .order("started_at", { ascending: false });
 
-  if (error) throw error;
+  if (error) throw dbError("task_runs", error);
   return (data as TaskRunRow[]) ?? [];
 }
 
@@ -452,7 +470,7 @@ export async function getAllActiveTasks(
     .select(TASK_SELECT_COLUMNS)
     .eq("status", "active");
 
-  if (error) throw error;
+  if (error) throw dbError("tasks", error);
   return (data as unknown as TaskRow[]) ?? [];
 }
 
@@ -513,7 +531,7 @@ export async function getPlaybookRunByBusiness(
     .order("started_at", { ascending: false })
     .limit(1)
     .maybeSingle();
-  if (error) throw error;
+  if (error) throw dbError("playbook_runs", error);
   return (data as PlaybookRunRow | null) ?? null;
 }
 
@@ -526,7 +544,7 @@ export async function createPlaybookRun(
     .insert({ ...payload, status: "pending" })
     .select("*")
     .single();
-  if (error) throw error;
+  if (error) throw dbError("playbook_runs", error);
   return data as PlaybookRunRow;
 }
 
@@ -539,7 +557,7 @@ export async function updatePlaybookRun(
     .from("playbook_runs")
     .update(updates)
     .eq("id", runId);
-  if (error) throw error;
+  if (error) throw dbError("playbook_runs", error);
 }
 
 // ── stream_events ─────────────────────────────────────────────────────
@@ -574,7 +592,7 @@ export async function getStreamEventsForRun(
     .select("seq, event_type, event_data")
     .eq("run_id", runId)
     .order("seq", { ascending: true });
-  if (error) throw error;
+  if (error) throw dbError("stream_events", error);
   return (data ?? []) as Array<{ seq: number; event_type: string; event_data: Record<string, unknown> }>;
 }
 
@@ -602,7 +620,7 @@ export async function createTaskRunForBuild(
     })
     .select("id")
     .single();
-  if (error) throw error;
+  if (error) throw dbError("task_runs", error);
   return (data as { id: string }).id;
 }
 
@@ -620,7 +638,7 @@ export async function completeTaskRun(
       output_data: outputData,
     })
     .eq("id", id);
-  if (error) throw error;
+  if (error) throw dbError("task_runs", error);
 }
 
 export async function failTaskRun(
@@ -637,7 +655,7 @@ export async function failTaskRun(
       error: message,
     })
     .eq("id", id);
-  if (error) throw error;
+  if (error) throw dbError("task_runs", error);
 }
 
 export async function getCompletedTaskRunSlugs(
