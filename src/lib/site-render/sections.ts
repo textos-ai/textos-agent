@@ -61,8 +61,18 @@ export interface RenderCtx {
    * about, seen from the visitor's side.
    */
   renderedAnchors: Set<string>;
-  /** Every page on this site, from site_pages. Drives cross-page nav. */
-  pages: Array<{ page_type: string; route_path: string; title: string | null; noindex: boolean }>;
+  /** Every page on this site, from site_pages. Drives cross-page nav.
+   *
+   *  instance_key is the JOIN KEY back to the fact that generated the page — the
+   *  area_slug on an area page. Optional only because the nav resolution genuinely
+   *  does not need it and the test seam does not supply it; compose always sets it.
+   *  Matching on `title` instead (what area_card_grid did) breaks the moment an
+   *  operator renames a page, and silently: the card keeps rendering, minus its
+   *  blurb. */
+  pages: Array<{
+    page_type: string; route_path: string; title: string | null; noindex: boolean;
+    instance_key?: string | null;
+  }>;
   /**
    * Every section key DECLARED on this page, known before any renderer runs.
    * renderedAnchors is only complete in the second pass, so a first-pass section
@@ -720,8 +730,31 @@ const reviews: SectionRenderer = (ctx) => {
 const service_area_chips: SectionRenderer = (ctx) => {
   const areas = ctx.facts.areas;
   if (areas.length === 0) return "";
+  // EVERY CHIP THAT CAN LINK, LINKS. These named fourteen places and went
+  // nowhere — the whole point of area pages is that "Kenner" on the home page
+  // takes you to the Kenner page, and a dead chip beside a live area page is the
+  // site failing to use its own content.
+  //
+  // The badge template is verbatim Homer recon and stays a <span>; the anchor
+  // wraps it, which is what area_card_grid already does for its cards. Nothing
+  // structural is hand-written here that the catalog could have supplied.
+  //
+  // An area with NO page renders as a bare chip rather than a link to a 404.
+  // Provisioning now follows the facts, so that is a transient state, but a chip
+  // must never promise a page that is not there.
+  const pageBySlug = new Map(
+    ctx.pages
+      .filter((p) => p.page_type === "area_detail" && !p.noindex && p.instance_key)
+      .map((p) => [p.instance_key as string, p.route_path]),
+  );
   const chips = areas
-    .map((a) => comp("badge", { label: a.city, pill: true }))
+    .map((a) => {
+      const badge = comp("badge", { label: a.city, pill: true });
+      const route = pageBySlug.get(a.area_slug);
+      return route
+        ? `<a class="trades-chip-link" href="${esc(pageHref(ctx, route))}">${badge}</a>`
+        : badge;
+    })
     .join("");
   const p = ctx.facts.profile;
   const sub = p?.locality ? `Based in ${p.locality}${p.region ? `, ${p.region}` : ""}.` : undefined;
@@ -1269,7 +1302,10 @@ const area_card_grid: SectionRenderer = (ctx) => {
   const pages = ctx.pages.filter((p) => p.page_type === "area_detail" && !p.noindex);
   if (pages.length === 0) return "";
   const cards = pages.map((p) => {
-    const a = ctx.facts.areas.find((x) => areaLabel(x) === p.title);
+    // Joined on instance_key, not on the rendered title. Title matching lost the
+    // blurb the moment a page was renamed, and lost it silently.
+    const a = ctx.facts.areas.find((x) => x.area_slug === p.instance_key)
+      ?? ctx.facts.areas.find((x) => areaLabel(x) === p.title);
     return `<a class="area-card fade-up" href="${esc(pageHref(ctx, p.route_path))}">`
       + `<h2 class="area-card__title">${esc(p.title ?? "")}</h2>`
       + (a?.local_blurb ? `<p class="area-card__blurb">${esc(a.local_blurb)}</p>` : "")

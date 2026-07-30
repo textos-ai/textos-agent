@@ -152,6 +152,10 @@ export const SECTION_FACT_COLLECTION: Record<string, string> = {
   differentiator_band: 'differentiators',
   differentiator_list: 'differentiators',
   service_area_chips: 'areas',
+  // The area index. Same collection as the chips, so the manager shows its fact
+  // contents — and the duplicate-content score, which hangs off the collection —
+  // on the page the area pages actually belong to.
+  area_card_grid: 'areas',
   reviews: 'google_place_id',
 };
 

@@ -129,6 +129,9 @@ export async function composeManagedPage(
   // are reachable but not advertised, matching the mockup's robots.txt.
   const navPages = allPages.map((x) => ({
     page_type: x.page_type, route_path: x.route_path, title: x.title, noindex: !!x.noindex,
+    // The fact this page was generated from — area_slug on an area page. Carried
+    // so a section can link a FACT to its PAGE without matching on display text.
+    instance_key: x.instance_key,
   }));
 
   const wantPath = opts.routePath ?? "/";

@@ -143,7 +143,21 @@ export async function provisionSite(
    *  may have more than one site; find-or-create is the default because
    *  re-provisioning must be idempotent. */
   forceNew = false,
+  /**
+   * Restrict a repeatable page type to these instance keys.
+   *
+   * Provisioning walks instances sequentially — a page upsert, a sections upsert
+   * and a field seed each, several round trips per page. Re-expanding all
+   * fourteen areas on a save that added ONE took about seven seconds, all of it
+   * re-confirming pages that already existed.
+   *
+   * Undefined means "every instance", which is what a full provision or a
+   * re-provision wants. The caller that is merely keeping pages in step with the
+   * facts passes just the missing keys and pays for those.
+   */
+  onlyInstanceKeys?: string[],
 ): Promise<ProvisionResult> {
+  const onlyKeys = onlyInstanceKeys ? new Set(onlyInstanceKeys) : null;
   // 0. The businesses row — source for the one-time authored-copy import.
   const { data: bizRow } = await supabase
     .from("businesses")
@@ -278,8 +292,14 @@ export async function provisionSite(
   for (const wanted of pageTypes) {
     const def = allPageTypes.find((p) => p.page_type === wanted);
     if (!def) throw new Error(`template '${templateKey}' has no page_type '${wanted}'`);
-    const instanceList = expand(def);
-    if (def.repeatable && instanceList.length === 1 && instanceList[0].instanceKey === null) {
+    // Filtered AFTER expansion, and only for instanced types: a non-instanced
+    // page (home, /areas) has instanceKey null and must never be filtered out by
+    // an area-key list, or the index would vanish from a targeted top-up.
+    const expanded = expand(def);
+    const instanceList = onlyKeys
+      ? expanded.filter((i) => i.instanceKey === null || onlyKeys.has(i.instanceKey))
+      : expanded;
+    if (def.repeatable && expanded.length === 1 && expanded[0].instanceKey === null) {
       throw new Error(
         `page_type '${wanted}' is repeatable but declares no instances — nothing to provision. ` +
         `Add an 'instances' array to the template's page_type.`,

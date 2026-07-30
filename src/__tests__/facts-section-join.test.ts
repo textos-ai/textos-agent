@@ -29,6 +29,7 @@ describe("section → Facts band join", () => {
       differentiator_band: "Why customers pick you",
       differentiator_list: "Why customers pick you",
       service_area_chips: "Where you work",
+      area_card_grid: "Where you work",
       reviews: "Where your proof lives",
     };
     // Same key set — a section added to the map without a test entry fails here

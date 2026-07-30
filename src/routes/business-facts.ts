@@ -440,8 +440,87 @@ app.put("/:slug/facts", async (c) => {
     return c.json(errBody("internal", `facts_readback_failed: ${readErr.error.message}`), 500);
   }
 
+  // ── Area pages follow the area facts, with no separate step ───────────────
+  //
+  // Adding a service area in Business Facts has to produce a working area page.
+  // It did not: BOTH provisionSite callers ask for ["home"], so nothing in the
+  // running system has ever minted an area page — the one that existed came from
+  // migration 109 running once, when this business had a single area. Fourteen
+  // areas, one page, and the Service Areas dropdown expands from the PAGES.
+  //
+  // ADDITIVE ONLY, AND DELIBERATELY SO. provisionSite upserts pages and sections
+  // and inserts site_fields only when absent; it contains no DELETE. This call
+  // therefore cannot destroy authored copy or retire a URL. The reverse direction
+  // — an area the operator dropped — is NOT handled here, because the prune above
+  // makes a removal indistinguishable from a form that lost a row, and quietly
+  // 404ing a live page on that signal is not a decision this handler should make.
+  // Pages for removed areas stay live and are reported as stale (see below).
+  //
+  // Only when the set actually CHANGED. Provisioning walks every instance
+  // sequentially, so running it on every profile-only save would add round trips
+  // to a request that has nothing to provision.
+  let sitePages: {
+    ok: boolean; provisioned: number; missing_before: string[];
+    stale: string[]; error?: string;
+  } | null = null;
+  {
+    const { data: siteRow } = await supabase
+      .from("sites").select("id").eq("business_id", bid)
+      .order("created_at", { ascending: false }).limit(1).maybeSingle();
+    if (siteRow) {
+      const siteId = (siteRow as { id: string }).id;
+      const { data: existingPages } = await supabase
+        .from("site_pages").select("instance_key")
+        .eq("site_id", siteId).eq("page_type", "area_detail");
+      const have = new Set(
+        ((existingPages ?? []) as Array<{ instance_key: string | null }>)
+          .map((p) => p.instance_key).filter((k): k is string => !!k),
+      );
+      const want = new Set(facts.areas.map((a) => a.area_slug));
+      const missing = [...want].filter((k) => !have.has(k));
+      // An area page whose fact row is gone. Reported, never touched — what should
+      // happen to a live URL is Rob's call, not this handler's.
+      const stale = [...have].filter((k) => !want.has(k));
+
+      if (missing.length > 0) {
+        try {
+          // area_index rides along: the dropdown's parent link and the card grid
+          // both live there, and a site provisioned before 2C has no such page.
+          // Only the missing areas. Re-expanding all of them costs ~450ms each
+          // and re-confirms pages that already exist; the common case is one new
+          // area on a save. area_index carries instance_key null and so is never
+          // filtered out — it is upserted every time, which is what makes a site
+          // provisioned before 2C grow its /areas page on the first save.
+          await provisionSite(
+            supabase, bid, business.slug, "trades-v1",
+            ["area_index", "area_detail"], false, missing,
+          );
+          sitePages = { ok: true, provisioned: missing.length, missing_before: missing, stale };
+          log.info("[facts] area_pages_provisioned", {
+            business_id: bid, site_id: siteId, count: missing.length,
+          });
+        } catch (err) {
+          // The FACTS SAVED. Returning 500 here would tell the operator their
+          // typing was lost, which is false. Report the provisioning failure as
+          // its own outcome instead — loud in the logs, visible in the response,
+          // never swallowed. areaSlug throws when trade_noun is missing, which is
+          // the likeliest cause and is fixable on this same page.
+          log.error("[facts] area_provision_failed", { business_id: bid, err: String(err) });
+          sitePages = {
+            ok: false, provisioned: 0, missing_before: missing, stale, error: String(err),
+          };
+        }
+      } else {
+        sitePages = { ok: true, provisioned: 0, missing_before: [], stale };
+      }
+    }
+  }
+
   return c.json({
     ok: true,
+    // Null when the business has no managed site yet — there is nothing to keep
+    // in step, which is different from "nothing needed doing".
+    site_pages: sitePages,
     profile:  profileRes.data ?? null,
     hours:    hoursRes.data ?? [],
     services: servicesRes.data ?? [],
