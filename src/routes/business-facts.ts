@@ -39,7 +39,58 @@ app.use("*", requireAuth);
 // level message instead of a raw Postgres constraint violation.
 
 const SLUG_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
-const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;      // HH:MM, 24h
+const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/;   // HH:MM or HH:MM:SS, 24h
+
+/**
+ * A time of day, normalised to HH:MM.
+ *
+ * THE READ-BACK MUST BE WRITABLE. Postgres `time` returns "07:00:00", the schema
+ * demanded "07:00", so GET /facts → PUT the response back unchanged returned 400
+ * on every open day. A document store whose own output is not valid input is
+ * broken: any client that edits one field and posts the document back — which is
+ * exactly what the intake form does — is one round trip from a validation wall.
+ *
+ * Seconds are accepted and dropped rather than rejected, because they carry no
+ * information here: opening hours are minute-granular and the DB column is the
+ * only thing that ever adds ":00".
+ */
+const timeOfDay = z
+  .string()
+  .trim()
+  .regex(TIME_RE, "must be HH:MM (24h)")
+  .transform((s) => s.slice(0, 5))
+  .nullable()
+  .optional()
+  .transform((v) => v ?? null);
+
+/**
+ * The keys an object ACTUALLY CARRIES, intersected with the ones we may write.
+ *
+ * The schema normalises every absent field to null (`.optional().transform(v => v
+ * ?? null)`), which is right for validation and catastrophic for persistence:
+ * by the time the parsed object reaches the upsert, "the operator cleared this"
+ * and "the form did not post this" are the same value. A payload missing
+ * street_address wiped a real address with no error.
+ *
+ * So the WRITE set comes from the raw request body, not the parsed one. Present
+ * and empty is a deliberate clear and still writes null; absent is left alone.
+ */
+function presentKeys(rawRow: unknown, allowed: readonly string[]): string[] {
+  if (!rawRow || typeof rawRow !== "object") return [];
+  const raw = rawRow as Record<string, unknown>;
+  return allowed.filter((k) => Object.prototype.hasOwnProperty.call(raw, k));
+}
+
+/** The parsed values for exactly the keys the payload carried. */
+function patchFrom(
+  rawRow: unknown,
+  parsedRow: Record<string, unknown>,
+  allowed: readonly string[],
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const k of presentKeys(rawRow, allowed)) out[k] = parsedRow[k];
+  return out;
+}
 
 /** Trim, then treat "" as absent. Never substitutes a value. */
 const optionalText = z
@@ -58,7 +109,10 @@ const requiredText = (field: string) =>
 const latitude  = z.number().min(-90).max(90).nullable().optional().transform((v) => v ?? null);
 const longitude = z.number().min(-180).max(180).nullable().optional().transform((v) => v ?? null);
 
-const ProfileSchema = z.object({
+// The field list is exported from the SHAPE, never written out a second time —
+// a column added here must not also have to be added to a write-list, or the two
+// drift and the new field silently stops persisting.
+const ProfileFields = z.object({
   legal_name:          optionalText,
   alternate_name:      optionalText,
   description:         optionalText,
@@ -85,7 +139,10 @@ const ProfileSchema = z.object({
   analytics_id:        optionalText,
   logo_media_id:       z.string().uuid().nullable().optional().transform((v) => v ?? null),
   hero_media_id:       z.string().uuid().nullable().optional().transform((v) => v ?? null),
-}).superRefine((p, ctx) => {
+});
+const PROFILE_KEYS = Object.keys(ProfileFields.shape) as ReadonlyArray<string>;
+
+const ProfileSchema = ProfileFields.superRefine((p, ctx) => {
   // Geo is a pair or nothing — a lone coordinate is meaningless and the DB
   // rejects it, so catch it here with a readable message.
   if ((p.geo_lat === null) !== (p.geo_lng === null)) {
@@ -100,8 +157,8 @@ const ProfileSchema = z.object({
 const HourSchema = z.object({
   day_of_week: z.number().int().min(0).max(6),   // 0=Sunday .. 6=Saturday
   is_closed:   z.boolean(),
-  opens:       z.string().regex(TIME_RE, "opens must be HH:MM (24h)").nullable().optional().transform((v) => v ?? null),
-  closes:      z.string().regex(TIME_RE, "closes must be HH:MM (24h)").nullable().optional().transform((v) => v ?? null),
+  opens:       timeOfDay,
+  closes:      timeOfDay,
 }).superRefine((h, ctx) => {
   const day = `day ${h.day_of_week}`;
   if (h.is_closed) {
@@ -130,8 +187,9 @@ const ServiceSchema = z.object({
   body:        optionalText,
   bullets:     z.array(z.string().trim().min(1)).default([]),
 });
+const SERVICE_KEYS = Object.keys(ServiceSchema.shape) as ReadonlyArray<string>;
 
-const AreaSchema = z.object({
+const AreaFields = z.object({
   area_slug: requiredText("area_slug")
     .regex(SLUG_RE, "area_slug must be lowercase kebab-case, e.g. kenner-la"),
   city:        requiredText("city"),
@@ -145,7 +203,10 @@ const AreaSchema = z.object({
   // doorway page, so this is a hard error, not a warning.
   local_blurb: requiredText("local_blurb"),
   landmarks_blurb: requiredText("landmarks_blurb"),
-}).superRefine((a, ctx) => {
+});
+const AREA_KEYS = Object.keys(AreaFields.shape) as ReadonlyArray<string>;
+
+const AreaSchema = AreaFields.superRefine((a, ctx) => {
   if ((a.geo_lat === null) !== (a.geo_lng === null)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["geo_lat"],
       message: `${a.area_slug}: geo_lat and geo_lng must both be set or both be empty` });
@@ -297,9 +358,15 @@ app.put("/:slug/facts", async (c) => {
   const business = await getBusinessBySlug(supabase, auth.user_id, slug);
   if (!business) return c.json(errBody("not_found", `business '${slug}' not found`), 404);
 
+  // The RAW body is kept alongside the parsed one. Which keys the client actually
+  // sent is information the parsed object no longer carries, and it is the only
+  // thing separating "clear this field" from "this form forgot a field".
+  let rawBody: Record<string, unknown> = {};
   let facts: Facts;
   try {
-    facts = FactsSchema.parse(await c.req.json());
+    const json = await c.req.json();
+    rawBody = (json && typeof json === "object") ? json as Record<string, unknown> : {};
+    facts = FactsSchema.parse(json);
   } catch (err) {
     if (err instanceof z.ZodError) {
       return c.json(errBody("bad_request", "facts_invalid", fieldErrors(err)), 400);
@@ -311,15 +378,37 @@ app.put("/:slug/facts", async (c) => {
   const bid = business.id;
 
   // 1. Profile — 1:1 upsert on business_id.
+  //
+  // ONLY THE COLUMNS THE PAYLOAD CARRIED. Spreading the parsed profile wrote a
+  // null for every field the client omitted, so a form that dropped a field
+  // deleted the fact behind it with no error and no way to tell it apart from a
+  // deliberate clear. See presentKeys.
+  const profilePatch = patchFrom(rawBody.profile, facts.profile, PROFILE_KEYS);
+  // Geo is a pair in the DB's eyes (there is a CHECK, and superRefine mirrors
+  // it). Writing one half of a pair the payload only half-carried would produce
+  // exactly the lone coordinate both of them reject, so either key present
+  // writes both.
+  if ("geo_lat" in profilePatch || "geo_lng" in profilePatch) {
+    profilePatch.geo_lat = facts.profile.geo_lat;
+    profilePatch.geo_lng = facts.profile.geo_lng;
+  }
   const { error: pErr } = await supabase
     .from("business_profile")
-    .upsert({ business_id: bid, ...facts.profile, ...stamp }, { onConflict: "business_id" });
+    .upsert({ business_id: bid, ...profilePatch, ...stamp }, { onConflict: "business_id" });
   if (pErr) {
     log.error("[facts] profile_write_failed", { business_id: bid, err: pErr.message });
     return c.json(errBody("internal", `profile_write_failed: ${pErr.message}`), 500);
   }
 
   // 2-4. Collections — upsert, then prune what the payload dropped.
+  //
+  // Rows are positional: zod preserves array order, so index i of the parsed
+  // array is index i of the raw one.
+  const rawArr = (k: string): unknown[] =>
+    Array.isArray(rawBody[k]) ? rawBody[k] as unknown[] : [];
+  const rawServices = rawArr("services");
+  const rawAreas = rawArr("areas");
+
   const collections: Array<{
     table: string; conflict: string; keyCol: string;
     rows: Array<Record<string, unknown>>; keys: string[];
@@ -329,14 +418,27 @@ app.put("/:slug/facts", async (c) => {
       rows: facts.hours.map((h) => ({ business_id: bid, ...h, ...stamp })),
       keys: facts.hours.map((h) => String(h.day_of_week)),
     },
+    // Same omitted-column rule as the profile: a row writes only what it carried,
+    // plus the natural key the upsert conflicts on (without which the row cannot
+    // be matched at all) and the ordering the payload's position defines.
     {
       table: "business_services", conflict: "business_id,service_key", keyCol: "service_key",
-      rows: facts.services.map((s, i) => ({ business_id: bid, ...s, display_order: i, ...stamp })),
+      rows: facts.services.map((s, i) => ({
+        business_id: bid,
+        ...patchFrom(rawServices[i], s, SERVICE_KEYS),
+        service_key: s.service_key,
+        display_order: i, ...stamp,
+      })),
       keys: facts.services.map((s) => s.service_key),
     },
     {
       table: "business_service_areas", conflict: "business_id,area_slug", keyCol: "area_slug",
-      rows: facts.areas.map((a, i) => ({ business_id: bid, ...a, display_order: i, ...stamp })),
+      rows: facts.areas.map((a, i) => ({
+        business_id: bid,
+        ...patchFrom(rawAreas[i], a, AREA_KEYS),
+        area_slug: a.area_slug,
+        display_order: i, ...stamp,
+      })),
       keys: facts.areas.map((a) => a.area_slug),
     },
   ];
@@ -461,7 +563,7 @@ app.put("/:slug/facts", async (c) => {
   // to a request that has nothing to provision.
   let sitePages: {
     ok: boolean; provisioned: number; missing_before: string[];
-    stale: string[]; error?: string;
+    unpublished: string[]; republished: string[]; error?: string;
   } | null = null;
   {
     const { data: siteRow } = await supabase
@@ -470,17 +572,45 @@ app.put("/:slug/facts", async (c) => {
     if (siteRow) {
       const siteId = (siteRow as { id: string }).id;
       const { data: existingPages } = await supabase
-        .from("site_pages").select("instance_key")
+        .from("site_pages").select("id, instance_key, noindex")
         .eq("site_id", siteId).eq("page_type", "area_detail");
-      const have = new Set(
-        ((existingPages ?? []) as Array<{ instance_key: string | null }>)
-          .map((p) => p.instance_key).filter((k): k is string => !!k),
-      );
+      const rows = ((existingPages ?? []) as Array<{
+        id: string; instance_key: string | null; noindex: boolean }>)
+        .filter((p) => !!p.instance_key);
+      const have = new Set(rows.map((p) => p.instance_key as string));
       const want = new Set(facts.areas.map((a) => a.area_slug));
       const missing = [...want].filter((k) => !have.has(k));
-      // An area page whose fact row is gone. Reported, never touched — what should
-      // happen to a live URL is Rob's call, not this handler's.
-      const stale = [...have].filter((k) => !want.has(k));
+
+      // ── UNPUBLISH, NEVER DELETE ───────────────────────────────────────────
+      //
+      // An area page whose fact row is gone goes noindex. That one flag is the
+      // whole mechanism: nav, the area card grid, sitemap.xml and llms.txt all
+      // already filter on it, and robots.txt already emits a Disallow for it. The
+      // URL keeps serving, so an inbound link still lands somewhere real instead
+      // of a 404, and the page stops being advertised or indexed — which is the
+      // indexable-empty-page defect closed without destroying anything.
+      //
+      // Reversible by construction: re-adding the area republishes the same row,
+      // with its authored copy and its URL intact.
+      //
+      // Destruction stays a human decision. A dropped form row and a deliberate
+      // deletion arrive here as the same signal, and only a person can tell them
+      // apart — so the manager offers an explicit delete, and this does not.
+      const toUnpublish = rows.filter((p) => !want.has(p.instance_key as string) && !p.noindex);
+      const toRepublish = rows.filter((p) => want.has(p.instance_key as string) && p.noindex);
+      for (const [list, noindex] of [[toUnpublish, true], [toRepublish, false]] as const) {
+        if (list.length === 0) continue;
+        const { error: nErr } = await supabase
+          .from("site_pages").update({ noindex }).in("id", list.map((p) => p.id));
+        if (nErr) {
+          log.error("[facts] area_publish_flag_failed", { business_id: bid, noindex, err: nErr.message });
+        }
+      }
+      const unpublished = toUnpublish.map((p) => p.instance_key as string);
+      const republished = toRepublish.map((p) => p.instance_key as string);
+      if (unpublished.length || republished.length) {
+        log.info("[facts] area_pages_publish_state", { business_id: bid, unpublished, republished });
+      }
 
       if (missing.length > 0) {
         try {
@@ -495,7 +625,10 @@ app.put("/:slug/facts", async (c) => {
             supabase, bid, business.slug, "trades-v1",
             ["area_index", "area_detail"], false, missing,
           );
-          sitePages = { ok: true, provisioned: missing.length, missing_before: missing, stale };
+          sitePages = {
+            ok: true, provisioned: missing.length, missing_before: missing,
+            unpublished, republished,
+          };
           log.info("[facts] area_pages_provisioned", {
             business_id: bid, site_id: siteId, count: missing.length,
           });
@@ -507,11 +640,12 @@ app.put("/:slug/facts", async (c) => {
           // the likeliest cause and is fixable on this same page.
           log.error("[facts] area_provision_failed", { business_id: bid, err: String(err) });
           sitePages = {
-            ok: false, provisioned: 0, missing_before: missing, stale, error: String(err),
+            ok: false, provisioned: 0, missing_before: missing,
+            unpublished, republished, error: String(err),
           };
         }
       } else {
-        sitePages = { ok: true, provisioned: 0, missing_before: [], stale };
+        sitePages = { ok: true, provisioned: 0, missing_before: [], unpublished, republished };
       }
     }
   }

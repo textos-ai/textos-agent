@@ -26,6 +26,7 @@ import { log } from "../lib/logger";
 import { loadSiteFacts, resolveSourcePath, unwrap } from "../lib/site-render/facts";
 import type { DerivationMap } from "../lib/site-render/resolver";
 import { provisionSite } from "../lib/site-render/provision";
+import { areaSlug } from "../lib/site-render/keyword-derive";
 import { anchorFor, SHARED_AUTHORED_SECTIONS } from "../lib/site-render/sections";
 import {
   FACTS_SECTIONS, resolveSource, resolveCollection, SECTION_FACT_COLLECTION, countedNoun,
@@ -248,10 +249,13 @@ app.get("/:slug/site/manage", async (c) => {
   // page's fields to reach them. Ordered by the template's own page order so the
   // manager's page order matches the nav's.
   const pagesRes = await supabase
-    .from("site_pages").select("id, page_type, route_path, title")
+    // instance_key + noindex: the manager reports which area pages are published
+    // and which are inert leftovers of a removed service area.
+    .from("site_pages").select("id, page_type, route_path, title, instance_key, noindex")
     .eq("site_id", site.id);
   const allPages = unwrap<Array<Record<string, unknown>>>(pagesRes, "site_pages", []) as unknown as
-    Array<{ id: string; page_type: string; route_path: string; title: string | null }>;
+    Array<{ id: string; page_type: string; route_path: string; title: string | null;
+           instance_key: string | null; noindex: boolean }>;
 
   const home = allPages.find((p) => p.page_type === "home");
   if (!home) return c.json(errBody("internal", "home page row missing — re-provision the site"), 500);
@@ -613,6 +617,36 @@ app.get("/:slug/site/manage", async (c) => {
     };
   })();
 
+  // ── Area pages and their publish state (2C part B) ────────────────────────
+  //
+  // An area page whose fact row is gone is UNPUBLISHED, not deleted: noindex, out
+  // of nav / sitemap / llms.txt, URL still serving. That is reversible and safe,
+  // but it is invisible — the operator would never know the page was still there.
+  // So it is named here, with the one action that is genuinely destructive left
+  // to a person.
+  const areaFactSlugs = new Set(facts.areas.map((a) => a.area_slug));
+  const areaPages = allPages
+    .filter((p) => p.page_type === "area_detail")
+    .map((p) => {
+      const hasFact = !!p.instance_key && areaFactSlugs.has(p.instance_key);
+      return {
+        page_id: p.id,
+        instance_key: p.instance_key,
+        title: p.title,
+        route_path: p.route_path,
+        href: `/sites/${site.slug}${p.route_path}`,
+        published: !p.noindex,
+        // The fact row is what republishes a page. Without one the page is inert:
+        // it renders no local content, and only deleting the area page or
+        // re-adding the service area changes that.
+        has_fact: hasFact,
+        // Deletion is offered ONLY where it cannot fight the provisioner: a page
+        // whose area still exists would be re-created on the next save, so the
+        // button would read as broken rather than as refused.
+        deletable: !hasFact,
+      };
+    });
+
   const mediaRes = await supabase
     .from("site_media")
     .select("id, url, alt_text, kind, mime_type, width, height, bytes, role, origin, poster_url")
@@ -668,6 +702,7 @@ app.get("/:slug/site/manage", async (c) => {
     derived,
     slots,
     area_quality: areaQuality,
+    area_pages: areaPages,
     media: mediaRows ?? [],
     preview_url: `/sites/${site.slug}`,
   });
@@ -821,6 +856,206 @@ app.post("/:slug/site/create", async (c) => {
     log.error("[site-manage] create_failed", { business_id: business.id, err: String(err) });
     return c.json(errBody("internal", `create_failed: ${String(err)}`), 500);
   }
+});
+
+// ── POST /:slug/site/areas/regenerate-urls ────────────────────────────────
+//
+// Recompute area page URLs from the current facts.
+//
+// An area page's route is COMPUTED ONCE AT PROVISION TIME AND STORED, so that
+// editing trade_noun — or fixing a missing region — cannot silently rewrite live
+// URLs and break every inbound link to them. That rule is right, and it means a
+// stored route can legitimately fall out of step with the facts: an area saved
+// without its region carries /areas/gretna-electrician while every sibling carries
+// /areas/{city}-{region}-{noun}.
+//
+// So the correction is a DELIBERATE action, and it reports before it acts.
+// `apply` defaults to false: the caller sees exactly which pages would change,
+// from and to, and opts in. Nothing is written on a dry run.
+//
+// The cost of applying is real and is stated rather than hidden: the old URL stops
+// existing. Anything linking to it — a search result, a directory listing, a
+// customer's bookmark — 404s.
+app.post("/:slug/site/areas/regenerate-urls", async (c) => {
+  const auth = c.get("auth");
+  const slug = c.req.param("slug");
+  const supabase = createSupabaseClient(c.env);
+
+  const business = await getBusinessBySlug(supabase, auth.user_id, slug);
+  if (!business) return c.json(errBody("not_found", `business '${slug}' not found`), 404);
+
+  const body = await c.req.json().catch(() => ({}));
+  const apply = (body as { apply?: unknown }).apply === true;
+
+  const { data: siteRow } = await supabase
+    .from("sites").select("id, slug").eq("business_id", business.id)
+    .order("created_at", { ascending: false }).limit(1).maybeSingle();
+  if (!siteRow) return c.json(errBody("not_found", "this business has no site"), 404);
+  const site = siteRow as { id: string; slug: string };
+
+  const areaRes = await supabase
+    .from("business_service_areas").select("area_slug, city, region")
+    .eq("business_id", business.id).order("display_order", { ascending: true });
+  const areas = unwrap<Array<{ area_slug: string; city: string; region: string | null }>>(
+    areaRes, "business_service_areas", []);
+  const { data: profRow } = await supabase
+    .from("business_profile").select("trade_noun").eq("business_id", business.id).maybeSingle();
+  const tradeNoun = (profRow as { trade_noun: string | null } | null)?.trade_noun ?? null;
+
+  // areaSlug halts without a trade noun rather than minting "/areas/gretna-".
+  // Reported as a 400 the operator can act on, not as a 500.
+  if (!tradeNoun || tradeNoun.trim() === "") {
+    return c.json(errBody("bad_request",
+      "trade_noun is not set on this business, so area URLs cannot be computed. "
+      + "Set it in Business Facts first."), 400);
+  }
+
+  const pagesRes = await supabase
+    .from("site_pages").select("id, instance_key, route_path, title")
+    .eq("site_id", site.id).eq("page_type", "area_detail");
+  const pages = unwrap<Array<{
+    id: string; instance_key: string | null; route_path: string; title: string | null }>>(
+    pagesRes, "site_pages", []);
+
+  const changes: Array<{
+    page_id: string; instance_key: string; title: string | null;
+    from: string; to: string; from_href: string; to_href: string;
+  }> = [];
+  const skipped: Array<{ instance_key: string | null; reason: string }> = [];
+
+  for (const p of pages) {
+    const area = areas.find((a) => a.area_slug === p.instance_key);
+    if (!area) {
+      // An unpublished page — its area is gone, so there are no facts to
+      // recompute from. Left exactly as it is.
+      skipped.push({ instance_key: p.instance_key, reason: "no service area for this page" });
+      continue;
+    }
+    const want = `/areas/${areaSlug(area.city, area.region, tradeNoun)}`;
+    if (want === p.route_path) continue;
+    changes.push({
+      page_id: p.id, instance_key: area.area_slug, title: p.title,
+      from: p.route_path, to: want,
+      from_href: `/sites/${site.slug}${p.route_path}`,
+      to_href: `/sites/${site.slug}${want}`,
+    });
+  }
+
+  // Two areas that would resolve to one URL. Applying would make the second
+  // upsert collide with the first and leave the site half-rewritten, so it halts
+  // with both names rather than part-applying.
+  const wanted = new Map<string, string>();
+  for (const ch of changes) {
+    const clash = wanted.get(ch.to);
+    if (clash) {
+      return c.json(errBody("bad_request",
+        `'${clash}' and '${ch.instance_key}' both resolve to ${ch.to}. `
+        + `Give them distinct cities or regions before regenerating.`), 409);
+    }
+    wanted.set(ch.to, ch.instance_key);
+  }
+
+  if (!apply || changes.length === 0) {
+    return c.json({
+      ok: true, applied: false, would_change: changes.length, changes, skipped,
+      warning: changes.length > 0
+        ? "Applying replaces these URLs. Anything linking to the old address will 404."
+        : null,
+    });
+  }
+
+  for (const ch of changes) {
+    const { error } = await supabase
+      .from("site_pages").update({ route_path: ch.to }).eq("id", ch.page_id);
+    if (error) {
+      // Partially applied. Say so with the exact page, rather than reporting a
+      // clean failure over a site that is now half-rewritten.
+      log.error("[site-manage] regenerate_urls_failed", {
+        business_id: business.id, page_id: ch.page_id, err: error.message });
+      return c.json(errBody("internal",
+        `url_update_failed at ${ch.from}: ${error.message}. `
+        + `Earlier pages in this run were already updated.`), 500);
+    }
+  }
+  log.info("[site-manage] area_urls_regenerated", {
+    business_id: business.id, site_id: site.id, count: changes.length,
+  });
+  return c.json({ ok: true, applied: true, would_change: changes.length, changes, skipped, warning: null });
+});
+
+// ── DELETE /:slug/site/pages/:page_id ─────────────────────────────────────
+//
+// The one destructive action on a site page, and deliberately the only one.
+//
+// A removed service area UNPUBLISHES its page automatically (noindex, out of nav
+// and the sitemap, URL still serving). That is reversible and costs nothing. This
+// is the other half: retiring the URL for good, which cannot be undone and which
+// 404s anything still linking to it.
+//
+// A dropped form row and a deliberate deletion reach the save as the same signal,
+// so the save must never destroy. A person clicking a button that says the URL
+// will 404 is a different signal, and it is the only one this accepts.
+//
+// REFUSED while the service area still exists: the next facts save would
+// re-provision the page, so the delete would appear to silently undo itself.
+app.delete("/:slug/site/pages/:page_id", async (c) => {
+  const auth = c.get("auth");
+  const slug = c.req.param("slug");
+  const pageId = c.req.param("page_id");
+  const supabase = createSupabaseClient(c.env);
+
+  const business = await getBusinessBySlug(supabase, auth.user_id, slug);
+  if (!business) return c.json(errBody("not_found", `business '${slug}' not found`), 404);
+
+  // Ownership is proved through the site, not taken from the URL — a page_id
+  // from another business must not be deletable by guessing it.
+  const sitesRes = await supabase.from("sites").select("id").eq("business_id", business.id);
+  const siteIds = unwrap<Array<{ id: string }>>(sitesRes, "sites", []).map((s) => s.id);
+  if (siteIds.length === 0) return c.json(errBody("not_found", "this business has no site"), 404);
+
+  const { data: pageRow } = await supabase
+    .from("site_pages").select("id, site_id, page_type, instance_key, route_path, title")
+    .eq("id", pageId).maybeSingle();
+  const page = pageRow as {
+    id: string; site_id: string; page_type: string; instance_key: string | null;
+    route_path: string; title: string | null } | null;
+  if (!page || !siteIds.includes(page.site_id)) {
+    return c.json(errBody("not_found", `page '${pageId}' not found on this business`), 404);
+  }
+  if (page.page_type !== "area_detail") {
+    return c.json(errBody("bad_request",
+      `only area pages can be deleted here; '${page.page_type}' is part of the template`), 400);
+  }
+
+  if (page.instance_key) {
+    const { data: areaRow } = await supabase
+      .from("business_service_areas").select("area_slug")
+      .eq("business_id", business.id).eq("area_slug", page.instance_key).maybeSingle();
+    if (areaRow) {
+      return c.json(errBody("bad_request",
+        `'${page.instance_key}' is still a service area, so this page would be recreated on the next `
+        + `save. Remove the area in Business Facts first — that unpublishes the page on its own.`), 409);
+    }
+  }
+
+  // Children first. site_fields hangs off site_sections, which hangs off the
+  // page; relying on a cascade that may not be declared would leave orphan rows
+  // behind and no error to notice them by.
+  const secRes = await supabase.from("site_sections").select("id").eq("page_id", page.id);
+  const secIds = unwrap<Array<{ id: string }>>(secRes, "site_sections", []).map((s) => s.id);
+  if (secIds.length > 0) {
+    const { error: fErr } = await supabase.from("site_fields").delete().in("section_id", secIds);
+    if (fErr) return c.json(errBody("internal", `site_fields_delete_failed: ${fErr.message}`), 500);
+    const { error: sErr } = await supabase.from("site_sections").delete().eq("page_id", page.id);
+    if (sErr) return c.json(errBody("internal", `site_sections_delete_failed: ${sErr.message}`), 500);
+  }
+  const { error: pErr } = await supabase.from("site_pages").delete().eq("id", page.id);
+  if (pErr) return c.json(errBody("internal", `site_pages_delete_failed: ${pErr.message}`), 500);
+
+  log.info("[site-manage] area_page_deleted", {
+    business_id: business.id, page_id: page.id, route_path: page.route_path,
+  });
+  return c.json({ ok: true, deleted: { page_id: page.id, route_path: page.route_path, title: page.title } });
 });
 
 export default app;

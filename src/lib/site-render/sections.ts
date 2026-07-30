@@ -1337,7 +1337,29 @@ const breadcrumb_nav: SectionRenderer = (ctx) => {
 // ── area_hero ─────────────────────────────────────────────────────────────
 const area_hero: SectionRenderer = (ctx) => {
   const a = currentArea(ctx);
-  if (!a) return "";
+  // UNPUBLISHED: the page exists, its service area does not any more. The row is
+  // kept and flagged noindex rather than deleted, so a visitor arriving from an
+  // old link or a stale search result still lands on the client's site — and must
+  // land on something that reads as a page, not on a blank document with a nav.
+  //
+  // It says only what is true: this business no longer lists this place. It does
+  // NOT name the place as though it were still served, and it does not invent a
+  // reason. The way onward is the areas index, which lists what IS served.
+  if (!a) {
+    const here = ctx.pages.find((p) => p.route_path === ctx.currentPath);
+    const index = ctx.pages.find((p) => p.page_type === "area_index");
+    const name = here?.title ?? "";
+    return comp("page-hero", {
+      anchor: anchorFor("area_hero"),
+      label: "Service area",
+      headline: name ? `We no longer cover ${name}` : "This service area is no longer covered",
+      subhead: index
+        ? "Have a look at the areas we do cover, or get in touch and we will tell you who can help."
+        : "Get in touch and we will tell you who can help.",
+      meta_line: null,
+      has_media: false, media_url: null, media_alt: "",
+    });
+  }
   const noun = ctx.facts.profile?.trade_noun ?? "";
   return comp("page-hero", {
     anchor: anchorFor("area_hero"),
@@ -1400,8 +1422,9 @@ const area_faq: SectionRenderer = (ctx) => {
 
 // ── area_map_nearby — the other areas, so no area page is an orphan (B3) ──
 const area_map_nearby: SectionRenderer = (ctx) => {
-  const a = currentArea(ctx);
-  if (!a) return "";
+  // NO currentArea GUARD. This is the one section an unpublished page needs most:
+  // it is the visitor's route back into the areas that ARE covered. Gating it on
+  // the missing fact row left that page a dead end.
   const others = ctx.pages.filter(
     (p) => p.page_type === "area_detail" && p.route_path !== ctx.currentPath && !p.noindex);
   if (others.length === 0) return "";
