@@ -102,6 +102,20 @@ describe.skipIf(!env)("facts GET → PUT round trip", () => {
       local_blurb: "Where the probe lives.", landmarks_blurb: "Past the probe bridge.",
       display_order: 0, source: "operator",
     }]);
+    // The id-keyed three. Every nullable field is POPULATED, because the fault
+    // being guarded against only shows on a field that had something to lose.
+    await sb.from("business_faqs").insert([{
+      business_id: businessId, question: "Are you licensed?", answer: "Yes, fully.",
+      scope: "global", display_order: 0, source: "operator",
+    }]);
+    await sb.from("business_projects").insert([{
+      business_id: businessId, caption: "Panel swap on Probe Street", city: "Probeville",
+      service_key: "panel-upgrade", media_id: null, display_order: 0, source: "operator",
+    }]);
+    await sb.from("business_differentiators").insert([{
+      business_id: businessId, headline: "Licensed and insured", body: "On every job.",
+      icon: "shield", display_order: 0, source: "operator",
+    }]);
   }, 60000);
 
   afterAll(async () => { await destroy(); }, 60000);
@@ -135,10 +149,102 @@ describe.skipIf(!env)("facts GET → PUT round trip", () => {
       }
     };
     cmp(before.profile, after.profile, "profile");
-    for (const coll of ["hours", "services", "areas"] as const) {
+    // Every collection, including the three id-keyed ones. Those build their rows
+    // from a field list rather than a spread, which is a different way to lose a
+    // field but the same class of fault.
+    for (const coll of ["hours", "services", "areas", "faqs", "projects", "differentiators"] as const) {
       expect(after[coll].length, coll).toBe(before[coll].length);
       before[coll].forEach((row: any, i: number) => cmp(row, after[coll][i], `${coll}[${i}]`));
     }
+  }, 60000);
+
+  /**
+   * The OTHER failure mode, and the reason a verbatim round trip is not enough on
+   * its own.
+   *
+   * The id-keyed collections assemble their rows from a hand-written field list.
+   * A field added to the schema and forgotten there validates cleanly, saves
+   * nothing, and reads back as whatever was already stored — so posting the
+   * document back unchanged still passes. That is exactly the trade_noun shape:
+   * accepted, silently discarded.
+   *
+   * The only thing that catches it is CHANGING every field and checking the
+   * change survives. Round trip proves nothing is destroyed; this proves
+   * everything is actually written.
+   */
+  it("persists a change to every editable field on the id-keyed collections", async () => {
+    const routes = (await import("../routes/business-facts")).default;
+    const get = async () => (await routes.fetch(
+      new Request(`https://test.local/${SLUG}/facts`), env as never)).json() as Promise<any>;
+
+    const before = await get();
+    const edited = {
+      ...before,
+      faqs: before.faqs.map((f: any) => ({
+        ...f, question: "EDITED question?", answer: "EDITED answer.", scope: "home_teaser",
+      })),
+      projects: before.projects.map((p: any) => ({ ...p, caption: "EDITED caption", city: "EDITED City" })),
+      differentiators: before.differentiators.map((d: any) => ({
+        ...d, headline: "EDITED headline", body: "EDITED body", icon: "EDITED-icon",
+      })),
+    };
+    const res = await routes.fetch(new Request(`https://test.local/${SLUG}/facts`, {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(edited),
+    }), env as never);
+    expect(res.status, JSON.stringify(await res.clone().json()).slice(0, 400)).toBe(200);
+
+    const after = await get();
+    // Same rows, not replacements — the id is what keeps display order and
+    // identity stable across an edit.
+    expect(after.faqs[0].id).toBe(before.faqs[0].id);
+    expect(after.projects[0].id).toBe(before.projects[0].id);
+    expect(after.differentiators[0].id).toBe(before.differentiators[0].id);
+
+    expect(after.faqs[0].question).toBe("EDITED question?");
+    expect(after.faqs[0].answer).toBe("EDITED answer.");
+    expect(after.faqs[0].scope).toBe("home_teaser");
+    expect(after.projects[0].caption).toBe("EDITED caption");
+    expect(after.projects[0].city).toBe("EDITED City");
+    expect(after.differentiators[0].headline).toBe("EDITED headline");
+    expect(after.differentiators[0].body).toBe("EDITED body");
+    expect(after.differentiators[0].icon).toBe("EDITED-icon");
+  }, 60000);
+
+  it("leaves an omitted nullable alone on an id-keyed row, and clears it on an explicit null", async () => {
+    const routes = (await import("../routes/business-facts")).default;
+    const get = async () => (await routes.fetch(
+      new Request(`https://test.local/${SLUG}/facts`), env as never)).json() as Promise<any>;
+    const put = async (payload: unknown) => routes.fetch(new Request(
+      `https://test.local/${SLUG}/facts`,
+      { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) },
+    ), env as never);
+
+    const before = await get();
+    const city = before.projects[0].city;
+    const icon = before.differentiators[0].icon;
+    expect(city).toBeTruthy();
+    expect(icon).toBeTruthy();
+
+    // OMITTED on an existing row — these are optionalText, so the schema turns
+    // them into an explicit null exactly as it did for the profile.
+    const omitted = {
+      ...before,
+      projects: before.projects.map((p: any) => { const c = { ...p }; delete c.city; return c; }),
+      differentiators: before.differentiators.map((d: any) => { const c = { ...d }; delete c.icon; return c; }),
+    };
+    expect((await put(omitted)).status).toBe(200);
+    let now = await get();
+    expect(now.projects[0].city, "an omitted nullable must survive").toBe(city);
+    expect(now.differentiators[0].icon, "an omitted nullable must survive").toBe(icon);
+
+    // PRESENT AND NULL — still a deliberate clear.
+    expect((await put({
+      ...before,
+      projects: before.projects.map((p: any) => ({ ...p, city: null })),
+    })).status).toBe(200);
+    now = await get();
+    expect(now.projects[0].city, "an explicit null must clear").toBeNull();
+    expect(now.differentiators[0].icon, "and must not touch its neighbours").toBe(icon);
   }, 60000);
 
   it("leaves a column alone when the payload omits it, and clears it when the payload says null", async () => {
@@ -173,18 +279,29 @@ describe.skipIf(!env)("facts GET → PUT round trip", () => {
 
   it("accepts the HH:MM:SS the database returns", async () => {
     const routes = (await import("../routes/business-facts")).default;
+    const get = async () => (await routes.fetch(
+      new Request(`https://test.local/${SLUG}/facts`), env as never)).json() as Promise<any>;
+
+    // The rest of the document rides along untouched. Posting empty collections
+    // here would also delete a service a project still references, which is a
+    // separate (pre-existing) fault and would make this test fail for a reason
+    // that has nothing to do with time parsing.
+    const before = await get();
     const res = await routes.fetch(new Request(`https://test.local/${SLUG}/facts`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        profile: {},
-        hours: [{ day_of_week: 1, is_closed: false, opens: "07:00:00", closes: "19:00:00" }],
-        services: [], areas: [], faqs: [], projects: [], differentiators: [],
+        ...before,
+        hours: [
+          { day_of_week: 0, is_closed: true, opens: null, closes: null },
+          { day_of_week: 1, is_closed: false, opens: "07:00:00", closes: "19:00:00" },
+        ],
       }),
     }), env as never);
     expect(res.status, JSON.stringify(await res.clone().json()).slice(0, 300)).toBe(200);
     const body = await res.json() as any;
     const mon = body.hours.find((h: any) => h.day_of_week === 1);
     expect(mon.opens.slice(0, 5)).toBe("07:00");
+    expect(mon.closes.slice(0, 5)).toBe("19:00");
   }, 60000);
 });

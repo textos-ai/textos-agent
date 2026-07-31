@@ -243,6 +243,10 @@ const DifferentiatorSchema = z.object({
   icon:     optionalText,
 });
 
+const FAQ_KEYS = Object.keys(FaqSchema.shape) as ReadonlyArray<string>;
+const PROJECT_KEYS = Object.keys(ProjectSchema.shape) as ReadonlyArray<string>;
+const DIFFERENTIATOR_KEYS = Object.keys(DifferentiatorSchema.shape) as ReadonlyArray<string>;
+
 // Exported so a test can assert it accepts every field the form posts.
 export const FactsSchema = z.object({
   profile:  ProfileSchema,
@@ -468,31 +472,52 @@ app.put("/:slug/facts", async (c) => {
   // 5-7. Id-keyed collections (Phase 1C). No natural business key, so rows with
   // an id are updated in place, rows without one are inserted, and ids the
   // payload dropped are deleted.
+  /**
+   * One row of an id-keyed collection.
+   *
+   * INSERT vs UPDATE are not the same rule, and collapsing them is what the
+   * profile bug was:
+   *
+   *   * No id — a NEW row. The whole parsed object is written, defaults and all,
+   *     because there is nothing behind it to preserve and a column the payload
+   *     did not mention has no stored value to fall back on.
+   *   * An id — an EXISTING row. Only the keys the payload actually carried are
+   *     written, so a form that stops posting `city` or `icon` leaves the stored
+   *     one alone instead of nulling it. These fields are optionalText, so the
+   *     schema turns "absent" into an explicit null exactly as it did for the
+   *     profile; without this they carry the identical silent-delete bug.
+   *
+   * The field list comes off the schema's shape, so a field added to a schema and
+   * forgotten in a hand-written row builder — the trade_noun shape, which
+   * validates fine and then never persists — cannot happen here.
+   */
+  const idRow = (
+    raw: unknown, parsed: Record<string, unknown>, keys: ReadonlyArray<string>, i: number,
+  ): Record<string, unknown> => ({
+    ...(parsed.id
+      ? { id: parsed.id, ...patchFrom(raw, parsed, keys) }
+      : Object.fromEntries(keys.filter((k) => k !== "id").map((k) => [k, parsed[k]]))),
+    business_id: bid,
+    display_order: i,
+    ...stamp,
+  });
+
+  const rawFaqs = rawArr("faqs");
+  const rawProjects = rawArr("projects");
+  const rawDiffs = rawArr("differentiators");
+
   const idKeyed: Array<{ table: string; rows: Array<Record<string, unknown>> }> = [
     {
       table: "business_faqs",
-      rows: facts.faqs.map((x, i) => ({
-        ...(x.id ? { id: x.id } : {}),
-        business_id: bid, question: x.question, answer: x.answer, scope: x.scope,
-        display_order: i, ...stamp,
-      })),
+      rows: facts.faqs.map((x, i) => idRow(rawFaqs[i], x, FAQ_KEYS, i)),
     },
     {
       table: "business_projects",
-      rows: facts.projects.map((x, i) => ({
-        ...(x.id ? { id: x.id } : {}),
-        business_id: bid, caption: x.caption, city: x.city,
-        service_key: x.service_key, media_id: x.media_id,
-        display_order: i, ...stamp,
-      })),
+      rows: facts.projects.map((x, i) => idRow(rawProjects[i], x, PROJECT_KEYS, i)),
     },
     {
       table: "business_differentiators",
-      rows: facts.differentiators.map((x, i) => ({
-        ...(x.id ? { id: x.id } : {}),
-        business_id: bid, headline: x.headline, body: x.body, icon: x.icon,
-        display_order: i, ...stamp,
-      })),
+      rows: facts.differentiators.map((x, i) => idRow(rawDiffs[i], x, DIFFERENTIATOR_KEYS, i)),
     },
   ];
 
