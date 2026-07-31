@@ -172,6 +172,128 @@ describe.skipIf(!env)("facts GET → PUT round trip", () => {
    * change survives. Round trip proves nothing is destroyed; this proves
    * everything is actually written.
    */
+  /**
+   * THE PAYLOAD THE BROWSER ACTUALLY SENDS, not the one the schema expects.
+   *
+   * Every other test here seeds rows in the database first, so the read-back
+   * carries ids and the PUT carries them straight back. The form does not work
+   * that way: `facts.astro` only attaches an id to a row it is EDITING —
+   * `if (row.dataset.id) o.id = row.dataset.id` — so a newly typed FAQ, project
+   * or differentiator arrives with no id at all.
+   *
+   * That difference hid a total data-loss bug behind a green suite. The handler
+   * pruned against the ids the payload carried; a save of nothing but new rows
+   * carried none, the "delete everything not in this list" filter was skipped,
+   * and the unscoped delete removed the rows the same request had just inserted.
+   * Rob typed five FAQs, got a 200, and none of them existed.
+   *
+   * So this mirrors the form's own shape function rather than describing the
+   * schema. If the form starts sending something else, this should be changed to
+   * match it — that is the point of it.
+   */
+  const asFormSends = (o: Record<string, unknown>) => {
+    const out = { ...o };
+    // The form omits the key entirely for a new row; it never sends id: null.
+    if (!out.id) delete out.id;
+    return out;
+  };
+
+  it("saves brand-new rows that arrive with no id, the way the form sends them", async () => {
+    const routes = (await import("../routes/business-facts")).default;
+    const get = async () => (await routes.fetch(
+      new Request(`https://test.local/${SLUG}/facts`), env as never)).json() as Promise<any>;
+    const put = async (payload: unknown) => routes.fetch(new Request(
+      `https://test.local/${SLUG}/facts`,
+      { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) },
+    ), env as never);
+
+    const before = await get();
+
+    // Start from empty, exactly as a business that has never entered any.
+    expect((await put({ ...before, faqs: [], projects: [], differentiators: [] })).status).toBe(200);
+    expect((await get()).faqs.length).toBe(0);
+
+    // Now five new FAQs with NO ids — Rob's exact case.
+    const typed = [1, 2, 3, 4, 5].map((n) => asFormSends({
+      question: `Typed question ${n}?`, answer: `Typed answer ${n}.`, scope: "global",
+    }));
+    for (const f of typed) expect("id" in f, "the form sends no id for a new row").toBe(false);
+
+    const res = await put({ ...before, faqs: typed, projects: [], differentiators: [] });
+    expect(res.status, JSON.stringify(await res.clone().json()).slice(0, 300)).toBe(200);
+
+    const after = await get();
+    expect(after.faqs.length, "five typed FAQs must still be there").toBe(5);
+    expect(after.faqs.map((f: any) => f.question).sort())
+      .toEqual(typed.map((f: any) => f.question).sort());
+    // Every row got a real id and kept its order.
+    for (const f of after.faqs) expect(f.id).toBeTruthy();
+    expect(after.faqs.map((f: any) => f.display_order)).toEqual([0, 1, 2, 3, 4]);
+
+    // A MIXTURE is the normal second save: existing rows carry ids, a newly typed
+    // one does not. Both must survive.
+    const mixed = [
+      ...after.faqs.map((f: any) => asFormSends({ ...f, answer: f.answer + " (edited)" })),
+      asFormSends({ question: "A sixth, typed later?", answer: "Yes.", scope: "global" }),
+    ];
+    const mixedRes = await put({ ...before, faqs: mixed, projects: [], differentiators: [] });
+    expect(mixedRes.status, JSON.stringify(await mixedRes.clone().json()).slice(0, 400)).toBe(200);
+    const mixedAfter = await get();
+    expect(mixedAfter.faqs.length, "five edited plus one new").toBe(6);
+    expect(mixedAfter.faqs.filter((f: any) => f.answer.endsWith("(edited)")).length).toBe(5);
+    expect(mixedAfter.faqs.some((f: any) => f.question === "A sixth, typed later?")).toBe(true);
+
+    // And REMOVING one still works — the prune must not have been defanged.
+    const minusOne = mixedAfter.faqs.slice(1).map((f: any) => asFormSends(f));
+    expect((await put({ ...before, faqs: minusOne, projects: [], differentiators: [] })).status).toBe(200);
+    expect((await get()).faqs.length, "dropping a row still deletes it").toBe(5);
+
+    // Clearing everything is still a legitimate delete-all.
+    expect((await put({ ...before, faqs: [], projects: [], differentiators: [] })).status).toBe(200);
+    expect((await get()).faqs.length).toBe(0);
+
+    // RESTORE THE SEED. This test deliberately empties three collections, and the
+    // others in this file read what beforeAll planted. Leaving them empty would
+    // make those fail depending on execution order, which is a worse bug in a
+    // test file than the one it is guarding against.
+    expect((await put({
+      ...before,
+      faqs: [asFormSends({ question: "Are you licensed?", answer: "Yes, fully.", scope: "global" })],
+      projects: [asFormSends({ caption: "Panel swap on Probe Street", city: "Probeville",
+        service_key: "panel-upgrade", media_id: null })],
+      differentiators: [asFormSends({ headline: "Licensed and insured", body: "On every job.", icon: "shield" })],
+    })).status).toBe(200);
+    const restored = await get();
+    expect(restored.faqs.length).toBe(1);
+    expect(restored.projects.length).toBe(1);
+    expect(restored.differentiators.length).toBe(1);
+  }, 120000);
+
+  it("saves new projects and differentiators with no id too", async () => {
+    const routes = (await import("../routes/business-facts")).default;
+    const get = async () => (await routes.fetch(
+      new Request(`https://test.local/${SLUG}/facts`), env as never)).json() as Promise<any>;
+    const before = await get();
+
+    const res = await routes.fetch(new Request(`https://test.local/${SLUG}/facts`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...before,
+        // service_key must reference a real service — the schema enforces it.
+        projects: [asFormSends({ caption: "Typed project", city: "Probeville",
+          service_key: before.services[0]?.service_key ?? null, media_id: null })],
+        differentiators: [asFormSends({ headline: "Typed differentiator", body: "Body.", icon: null })],
+      }),
+    }), env as never);
+    expect(res.status, JSON.stringify(await res.clone().json()).slice(0, 300)).toBe(200);
+
+    const after = await get();
+    expect(after.projects.length, "a typed project must persist").toBe(1);
+    expect(after.differentiators.length, "a typed differentiator must persist").toBe(1);
+    expect(after.projects[0].caption).toBe("Typed project");
+    expect(after.differentiators[0].headline).toBe("Typed differentiator");
+  }, 120000);
+
   it("persists a change to every editable field on the id-keyed collections", async () => {
     const routes = (await import("../routes/business-facts")).default;
     const get = async () => (await routes.fetch(

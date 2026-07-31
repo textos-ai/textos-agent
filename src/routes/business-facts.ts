@@ -522,14 +522,69 @@ app.put("/:slug/facts", async (c) => {
   ];
 
   for (const col of idKeyed) {
+    // PRUNE AGAINST WHAT WAS WRITTEN, NEVER AGAINST WHAT THE PAYLOAD CARRIED.
+    //
+    // These rows have no natural key, so a NEW one arrives with no id — the form
+    // only sends one for a row it is editing. keptIds was built from the payload,
+    // so a save containing nothing but new rows produced an EMPTY kept list, the
+    // `length > 0` guard skipped the `not in` filter, and the delete ran
+    // unscoped: insert five FAQs, then delete every FAQ for the business,
+    // including the five just inserted. One request, 200 OK, nothing saved and
+    // nothing to see in the response.
+    //
+    // The ids only exist after the insert, so they are read back from it. RETURNS
+    // ALL AFFECTED ROWS, inserted and updated alike, which is exactly the set
+    // that must survive the prune.
+    let keptIds: string[] = [];
     if (col.rows.length > 0) {
-      const { error } = await supabase.from(col.table).upsert(col.rows, { onConflict: "id" });
-      if (error) {
-        log.error("[facts] idkeyed_write_failed", { business_id: bid, table: col.table, err: error.message });
-        return c.json(errBody("internal", `${col.table}_write_failed: ${error.message}`), 500);
+      // ONE WRITE PER KEY SIGNATURE, and inserts kept apart from updates.
+      //
+      // PostgREST flattens an array of objects into a SINGLE column list and
+      // fills any key a row lacks with null. So a save mixing an edited FAQ (has
+      // id) with a newly typed one (has none) sent `id: null` for the new row and
+      // the database rejected the whole batch:
+      //   null value in column "id" of relation "business_faqs" violates not-null
+      // That is the normal second save — edit one, add another — and it failed
+      // wholesale. Grouping by exact key set also covers rows that legitimately
+      // differ because patchFrom wrote only what each carried.
+      const groups = new Map<string, Array<Record<string, unknown>>>();
+      for (const r of col.rows) {
+        const sig = Object.keys(r).sort().join(",");
+        const g = groups.get(sig) ?? [];
+        g.push(r);
+        groups.set(sig, g);
+      }
+      for (const rows of groups.values()) {
+        // No id means a genuinely new row: INSERT and let the database mint one.
+        // An upsert would have to name a conflict target the row does not carry.
+        const isNew = !("id" in rows[0]);
+        const { data: written, error } = isNew
+          ? await supabase.from(col.table).insert(rows).select("id")
+          : await supabase.from(col.table).upsert(rows, { onConflict: "id" }).select("id");
+        if (error) {
+          log.error("[facts] idkeyed_write_failed", {
+            business_id: bid, table: col.table, is_new: isNew, err: error.message });
+          return c.json(errBody("internal", `${col.table}_write_failed: ${error.message}`), 500);
+        }
+        keptIds.push(...((written ?? []) as Array<{ id: string }>).map((r) => r.id).filter(Boolean));
+      }
+
+      // NO FALLBACKS. If the write did not hand back one id per row, the prune
+      // below cannot be trusted to spare the right rows — and the failure mode of
+      // guessing here is deleting the operator's work. Halt instead, loudly.
+      if (keptIds.length !== col.rows.length) {
+        log.error("[facts] idkeyed_write_incomplete", {
+          business_id: bid, table: col.table, sent: col.rows.length, written: keptIds.length,
+        });
+        return c.json(errBody("internal",
+          `${col.table}_write_incomplete: sent ${col.rows.length} rows, the database confirmed `
+          + `${keptIds.length}. Nothing was deleted. Try again.`), 500);
       }
     }
-    const keptIds = col.rows.map((r) => r.id).filter(Boolean) as string[];
+
+    // An EMPTY payload is the one legitimate unscoped delete: the operator
+    // cleared the collection. That is now the only way to reach it — previously
+    // "cleared everything" and "added the first row" were the same signal.
     let del = supabase.from(col.table).delete().eq("business_id", bid);
     if (keptIds.length > 0) del = del.not("id", "in", `(${keptIds.join(",")})`);
     const { error: dErr } = await del;
