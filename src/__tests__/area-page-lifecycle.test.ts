@@ -221,17 +221,16 @@ describe.skipIf(!env)("area page lifecycle", () => {
   }, 180000);
 
   /**
-   * The map degrades to NOTHING, not to a broken frame.
+   * The map degrades to a plain hero, not to a broken frame.
    *
-   * area_map is a template section now, so every area page carries a
-   * site_sections row for it whether or not that area has a point to centre on.
-   * An embed built from a null coordinate would either 404, or — worse — render
-   * a map of 0,0 in the Gulf of Guinea presented as where a licensed electrician
-   * works. The section must produce no output at all.
+   * The map is the hero BACKGROUND now — a third variant alongside a photo and
+   * the solid surface — so "no coordinates" has to fall back the same way "no
+   * photo" always did: same hero, same headline, no background. An embed built
+   * from a null coordinate would 404, or worse render 0,0 in the Gulf of Guinea
+   * presented as where a licensed electrician works.
    *
-   * End-to-end rather than a unit assertion: what is being tested is that a
-   * PROVISIONED section with no data renders empty through compose, which the
-   * renderer alone cannot show.
+   * End-to-end rather than a unit assertion: this drives compose over a real
+   * provisioned page, which is where a template/renderer mismatch would show.
    */
   it("renders no map for an area with no coordinates, and a real one when they arrive", async () => {
     // The AREA helper deliberately carries geo_lat/geo_lng null.
@@ -247,36 +246,40 @@ describe.skipIf(!env)("area page lifecycle", () => {
       return {
         keys: managed.sections.map((s: any) => s.section_key),
         html: managed.sections.map((s: any) => s.html).join(""),
+        sections: managed.sections,
         report: managed.field_report,
       };
     };
 
     let page = await render();
-    // The section IS provisioned — this is not passing by being absent.
-    expect(page.report.some((r: any) => r.section_key === "area_map"),
-      "area_map must be provisioned for this to prove anything").toBe(true);
-    // ...and it rendered nothing.
-    expect(page.report.find((r: any) => r.section_key === "area_map").rendered).toBe(false);
-    expect(page.keys, "no empty map section in the output").not.toContain("area_map");
+    // The hero IS rendered — this is not passing because the page is broken.
+    expect(page.keys, "the hero must render for this to prove anything").toContain("area_hero");
+    // ...and it carries no map.
     expect(page.html).not.toContain("openstreetmap");
     expect(page.html).not.toContain("<iframe");
-    // The rest of the page is unharmed.
+    expect(page.html).not.toContain("is-map");
+    // Still a complete hero, not a stub.
     expect(page.html).toContain("<h1");
 
-    // Give the area a point; the map appears, centred on it.
+    // Give the area a point; the map becomes the hero's background.
     await sb.from("business_service_areas")
       .update({ geo_lat: 29.9941, geo_lng: -90.2417 })
       .eq("business_id", businessId).eq("area_slug", "kenner-la");
 
     page = await render();
-    expect(page.keys).toContain("area_map");
-    expect(page.html).toContain("openstreetmap.org/export/embed.html");
-    expect(page.html).toContain("marker=29.99410,-90.24170");
-    expect(page.html).toContain('loading="lazy"');
-    expect(page.html, "never an API key in public markup").not.toMatch(/[?&]key=/);
+    expect(page.keys, "the map is a background, not a section of its own")
+      .toEqual(expect.arrayContaining(["area_hero"]));
+    expect(page.keys, "the retired band must not come back").not.toContain("area_map");
 
-    // And it sits directly after the hero, not wherever the array happened to put it.
-    expect(page.keys.indexOf("area_map")).toBe(page.keys.indexOf("area_hero") + 1);
+    const hero = page.sections.find((s: any) => s.section_key === "area_hero").html;
+    expect(hero).toContain("page-hero__bg--map");
+    expect(hero).toContain("openstreetmap.org/export/embed.html");
+    expect(hero).toContain("marker=29.99410,-90.24170");
+    expect(hero).toContain('loading="lazy"');
+    expect(hero, "decorative, so not a tab stop").toContain('tabindex="-1"');
+    expect(hero, "attribution must survive the frame becoming unclickable")
+      .toContain("openstreetmap.org/copyright");
+    expect(hero, "never an API key in public markup").not.toMatch(/[?&]key=/);
   }, 180000);
 
   it("reports URL changes before making them, and only rewrites when asked", async () => {

@@ -270,19 +270,52 @@ export const c_page_hero: ComponentCatalogEntry = {
     'Compact hero for an inner page: small accent label, H1, optional subhead, optional background media with scrim. No CTAs — those live further down the page.',
   homer_classes: 'page-hero page-hero__inner page-hero__label',
   source_verification: 'custom',
-  html_template: `<section id="{{anchor}}" class="page-hero {{has_media?is-media}}">
+  // THREE BACKGROUNDS, ONE HERO: a photo, a map, or the solid surface. They are
+  // mutually exclusive — the caller sets has_media OR has_map, never both — and
+  // the text treatment is identical in all three, which is the whole point of
+  // making the map a variant rather than a second hero component.
+  //
+  // The map is DECORATION: pointer-events are killed in CSS (a pannable map
+  // behind a headline fights the content, and a scroll near the hero would zoom
+  // the map instead of the page), the wrapper is aria-hidden and the frame is
+  // tabindex="-1" so it is not a keyboard trap or a screen-reader detour.
+  //
+  // Because that kills the embed's OWN attribution link, the caller must supply
+  // a live one — see map_attrib_*. It renders above the scrim, at full opacity,
+  // outside the aria-hidden wrapper. OSM's terms require visible attribution and
+  // "inside a frame nobody can click" does not satisfy that.
+  //
+  // NOTE THE SPACES around the {{flag?class}} constructs: `{{key?cls}}` compiles
+  // to {{#key}}cls{{/key}} with no separator, so writing them adjacent would
+  // concatenate two class names into one that matches nothing. Same trap
+  // documented on hero-media.
+  html_template: `<section id="{{anchor}}" class="page-hero {{has_media?is-media}} {{has_map?is-map}}">
   {{#has_media}}<div class="page-hero__bg">
     <img class="page-hero__img" src="{{media_url}}" alt="{{media_alt}}" />
   </div>
   <div class="page-hero__scrim"></div>{{/has_media}}
+  {{#has_map}}<div class="page-hero__bg page-hero__bg--map" aria-hidden="true">
+    <iframe class="page-hero__map" src="{{map_src}}" title="{{map_title}}"
+            tabindex="-1" loading="lazy" referrerpolicy="no-referrer" style="border:0"></iframe>
+  </div>
+  <div class="page-hero__scrim"></div>{{/has_map}}
   <div class="page-hero__inner">
     {{#label}}<span class="page-hero__label">{{label}}</span>{{/label}}
     <h1 class="page-hero__headline">{{headline}}</h1>
     {{#subhead}}<p class="page-hero__subhead">{{subhead}}</p>{{/subhead}}
     {{#meta_line}}<p class="page-hero__meta">{{meta_line}}</p>{{/meta_line}}
   </div>
+  {{#has_map}}<div class="page-hero__mapfoot">
+    {{#map_link_href}}<a class="page-hero__maplink" href="{{map_link_href}}" target="_blank" rel="noopener noreferrer">{{map_link_label|View a larger map}}</a>{{/map_link_href}}
+    <a class="page-hero__mapattrib" href="{{map_attrib_href}}" target="_blank" rel="noopener noreferrer">{{map_attrib_label|© OpenStreetMap contributors}}</a>
+  </div>{{/has_map}}
 </section>`,
-  fillable_slots: ['anchor', 'label', 'headline', 'subhead', 'meta_line', 'has_media', 'media_url', 'media_alt'],
+  fillable_slots: [
+    'anchor', 'label', 'headline', 'subhead', 'meta_line',
+    'has_media', 'media_url', 'media_alt',
+    'has_map', 'map_src', 'map_title', 'map_link_href', 'map_link_label',
+    'map_attrib_href', 'map_attrib_label',
+  ],
   js_init: 'noop',
   js_dependencies: [],
   mobile_responsive: true,

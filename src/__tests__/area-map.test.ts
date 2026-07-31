@@ -1,9 +1,8 @@
-// The area map component and the two blurbs' placement.
+// The area page hero: its map background, its chips, and the two blurbs.
 //
-// Runs against the renderers directly — no database. The area_map SECTION cannot
-// appear on a real page until migration 111 is applied and the area pages are
-// re-provisioned, so an end-to-end test would be asserting the migration, not the
-// renderer. What matters here is what the renderer does with a coordinate.
+// Runs against the renderers directly — no database. The standalone area_map
+// section that 111 added is retired (112): the map is the hero BACKGROUND now, so
+// what these pin is what area_hero does with a coordinate, not a separate band.
 import { describe, it, expect } from "vitest";
 import { SECTION_RENDERERS, type RenderCtx } from "../lib/site-render/sections";
 
@@ -36,44 +35,58 @@ function ctxFor(area: Record<string, unknown> | null): RenderCtx {
   } as unknown as RenderCtx;
 }
 
-describe("area_map", () => {
-  it("centres a bounding box on the area's own coordinates", () => {
-    const html = SECTION_RENDERERS.area_map(ctxFor(AREA()));
+describe("area_hero map background", () => {
+  it("puts the map behind the hero text, not in a band below", () => {
+    const html = SECTION_RENDERERS.area_hero(ctxFor(AREA()));
+    expect(html).toContain("is-map");
+    expect(html).toContain("page-hero__bg--map");
     expect(html).toContain("openstreetmap.org/export/embed.html");
-
-    const bbox = /bbox=([^&"]+)/.exec(html)?.[1];
-    expect(bbox, "the embed needs a bbox").toBeTruthy();
-    const [w, s, e, n] = bbox!.split(",").map(Number);
-    // The area's point sits inside its own box, and the box is the right way up.
-    expect(w).toBeLessThan(-89.9631);
-    expect(e).toBeGreaterThan(-89.9631);
-    expect(s).toBeLessThan(29.9427);
-    expect(n).toBeGreaterThan(29.9427);
-    // A city-sized view, not a street and not a continent.
-    expect(n - s).toBeGreaterThan(0.02);
-    expect(n - s).toBeLessThan(0.2);
-    // Longitude is widened by 1/cos(lat) so the box is not letterboxed away from
-    // the equator; at 30°N that is a visible ~15%.
-    expect(e - w).toBeGreaterThan(n - s);
+    // Same hero, same text treatment — the headline and subhead are still the
+    // page-hero ones, so this is a background variant and not a second hero.
+    expect(html).toContain("page-hero__headline");
+    expect(html).toContain("page-hero__subhead");
+    expect(html).toContain("page-hero__scrim");
   });
 
-  it("marks the point and titles the frame with the place", () => {
-    const html = SECTION_RENDERERS.area_map(ctxFor(AREA()));
-    expect(html).toContain("marker=29.94270,-89.96310");
-    expect(html).toContain('title="Map of Chalmette, LA"');
+  it("makes the map decorative: no pointer target, no tab stop, not announced", () => {
+    const html = SECTION_RENDERERS.area_hero(ctxFor(AREA()));
+    // pointer-events is CSS, but these are the markup half of the same decision.
+    expect(html).toContain('tabindex="-1"');
+    expect(html).toContain('aria-hidden="true"');
     expect(html).toContain('loading="lazy"');
-    // No API key can ever appear in this markup — that is the whole reason the
-    // component is OSM rather than Google.
-    expect(html).not.toMatch(/[?&]key=/);
   });
 
-  it("renders NOTHING when the area has no coordinates", () => {
-    // A map of the wrong place is a false claim about where a licensed
-    // contractor works. Absent beats approximate.
-    expect(SECTION_RENDERERS.area_map(ctxFor(AREA({ geo_lat: null, geo_lng: null })))).toBe("");
-    expect(SECTION_RENDERERS.area_map(ctxFor(AREA({ geo_lat: 29.9, geo_lng: null })))).toBe("");
-    // And nothing at all on an unpublished page, whose fact row is gone.
-    expect(SECTION_RENDERERS.area_map(ctxFor(null))).toBe("");
+  it("carries a LIVE attribution link, because the embed's own is now unclickable", () => {
+    const html = SECTION_RENDERERS.area_hero(ctxFor(AREA()));
+    expect(html).toContain("openstreetmap.org/copyright");
+    expect(html).toContain("© OpenStreetMap contributors");
+    // And it sits outside the aria-hidden wrapper, or it would be announced to
+    // nobody and hidden from assistive tech.
+    const wrapper = /<div class="page-hero__bg page-hero__bg--map"[\s\S]*?<\/div>/.exec(html)?.[0] ?? "";
+    expect(wrapper).not.toContain("openstreetmap.org/copyright");
+    // The way into an interactive map survives the loss of panning.
+    expect(html).toContain("View Chalmette, LA on a larger map");
+  });
+
+  it("falls back to the solid hero when the area has no coordinates", () => {
+    const html = SECTION_RENDERERS.area_hero(ctxFor(AREA({ geo_lat: null, geo_lng: null })));
+    expect(html).not.toContain("is-map");
+    expect(html).not.toContain("openstreetmap");
+    expect(html).not.toContain("<iframe");
+    // Still a complete hero — the headline and the landmarks line are the point.
+    expect(html).toContain("page-hero__headline");
+    expect(html).toContain("From Paris Road to the Chalmette Battlefield.");
+  });
+
+  it("centres on this area, not on a default", () => {
+    const a = SECTION_RENDERERS.area_hero(ctxFor(AREA()));
+    const b = SECTION_RENDERERS.area_hero(ctxFor(AREA({
+      city: "Slidell", area_slug: "slidell-la", geo_lat: 30.2752, geo_lng: -89.7812,
+    })));
+    const src = (h: string) => /src="([^"]*embed\.html[^"]*)"/.exec(h)?.[1] ?? "";
+    expect(src(a)).not.toBe(src(b));
+    expect(src(a)).toContain("marker=29.94270,-89.96310");
+    expect(src(b)).toContain("marker=30.27520,-89.78120");
   });
 });
 
@@ -84,7 +97,7 @@ describe("service_area_chips", () => {
     AREA({ area_slug: "meraux-la", city: "Meraux", landmarks_blurb: "Between Judge Perez and the river." }),
   ];
   const chipsCtx = () => {
-    const c = ctxFor(AREAS[0]) as Record<string, unknown>;
+    const c = ctxFor(AREAS[0]) as unknown as Record<string, unknown>;
     (c.facts as Record<string, unknown>).areas = AREAS;
     (c.facts as Record<string, unknown>).profile = { trade_noun: "electrician", locality: "St Bernard", region: "LA" };
     c.currentPath = "/";
@@ -116,7 +129,7 @@ describe("service_area_chips", () => {
   });
 
   it("still carries the blurb on an area that has no page yet", () => {
-    const c = chipsCtx() as Record<string, unknown>;
+    const c = chipsCtx() as unknown as Record<string, unknown>;
     c.pages = []; // nothing provisioned yet
     const html = SECTION_RENDERERS.service_area_chips(c as unknown as RenderCtx);
     // No links — a chip must never promise a page that is not there — but the
@@ -127,7 +140,7 @@ describe("service_area_chips", () => {
   });
 
   it("quotes in a blurb cannot break out of the attribute", () => {
-    const c = chipsCtx() as Record<string, unknown>;
+    const c = chipsCtx() as unknown as Record<string, unknown>;
     (c.facts as Record<string, unknown>).areas = [
       AREA({ landmarks_blurb: 'Near the "old" mill & the bridge' }),
     ];

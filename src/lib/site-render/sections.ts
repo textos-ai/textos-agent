@@ -1318,6 +1318,44 @@ function areaLabel(a: { city: string; region: string | null }): string {
   return a.region ? `${a.city}, ${a.region}` : a.city;
 }
 
+/**
+ * The OpenStreetMap embed for an area, or null when it has no point.
+ *
+ * ONE COMPUTATION, used by the hero background and by the standalone area_map
+ * section while both exist. Two copies of a bounding-box calculation would drift
+ * the moment one was tuned, and the drift would show as two maps of the same
+ * place at different zooms.
+ *
+ * Null, never a fallback centre: a map of the wrong place is a false claim about
+ * where a licensed contractor works, and 0,0 is in the Gulf of Guinea.
+ */
+function areaMapEmbed(a: {
+  city: string; region: string | null; geo_lat: number | null; geo_lng: number | null;
+}): { src: string; title: string; largerHref: string; largerLabel: string } | null {
+  if (a.geo_lat === null || a.geo_lng === null) return null;
+  const lat = Number(a.geo_lat), lng = Number(a.geo_lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+
+  // ~5km across at these latitudes — a city, not a street and not a state. The
+  // longitude span is widened by 1/cos(lat) so the box stays visually square as
+  // you move away from the equator; without it a New Orleans map is noticeably
+  // letterboxed.
+  const dLat = 0.045;
+  const dLng = dLat / Math.max(0.2, Math.cos((lat * Math.PI) / 180));
+  const r = (n: number) => n.toFixed(5);
+  const bbox = [r(lng - dLng), r(lat - dLat), r(lng + dLng), r(lat + dLat)].join(",");
+  const label = areaLabel(a);
+  return {
+    src: `https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${r(lat)},${r(lng)}`,
+    title: `Map of ${label}`,
+    largerHref: `https://www.openstreetmap.org/?mlat=${r(lat)}&mlon=${r(lng)}#map=13/${r(lat)}/${r(lng)}`,
+    largerLabel: `View ${label} on a larger map`,
+  };
+}
+
+/** Where the embed's own (now unclickable) attribution points. */
+const OSM_COPYRIGHT_URL = "https://www.openstreetmap.org/copyright";
+
 // ── area_card_grid — the index (C3) ───────────────────────────────────────
 const area_card_grid: SectionRenderer = (ctx) => {
   const pages = ctx.pages.filter((p) => p.page_type === "area_detail" && !p.noindex);
@@ -1382,6 +1420,7 @@ const area_hero: SectionRenderer = (ctx) => {
     });
   }
   const noun = ctx.facts.profile?.trade_noun ?? "";
+  const map = areaMapEmbed(a);
   return comp("page-hero", {
     anchor: anchorFor("area_hero"),
     label: "Service area",
@@ -1399,7 +1438,25 @@ const area_hero: SectionRenderer = (ctx) => {
     //    was backwards for a page whose whole purpose is local specificity.
     subhead: a.landmarks_blurb,
     meta_line: null,
+    // THE MAP IS THE BACKGROUND, not a band below. An area page's subject is a
+    // place, so the place is what sits behind its headline — the same slot a
+    // photo occupies on every other inner page, with the same scrim and the same
+    // text treatment. An area with no coordinates falls back to the solid
+    // surface, exactly as a page with no photo does.
     has_media: false, media_url: null, media_alt: "",
+    ...(map
+      ? {
+          has_map: true,
+          map_src: map.src,
+          map_title: map.title,
+          map_link_href: map.largerHref,
+          map_link_label: map.largerLabel,
+          // The embed's own attribution link cannot be clicked once the frame is
+          // pointer-events:none, so this is the live one OSM's terms require.
+          map_attrib_href: OSM_COPYRIGHT_URL,
+          map_attrib_label: "© OpenStreetMap contributors",
+        }
+      : { has_map: false }),
   });
 };
 
@@ -1418,31 +1475,17 @@ const area_hero: SectionRenderer = (ctx) => {
 // NO COORDINATES, NO SECTION. An area saved without lat/lng renders nothing here
 // rather than a map of the wrong place or of the middle of the ocean — a map is a
 // factual claim about where a licensed contractor works.
-const area_map: SectionRenderer = (ctx) => {
-  const a = currentArea(ctx);
-  if (!a || a.geo_lat === null || a.geo_lng === null) return "";
-  const lat = Number(a.geo_lat), lng = Number(a.geo_lng);
-  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return "";
-
-  // ~5km across at these latitudes — a city, not a street and not a state. The
-  // longitude span is widened by 1/cos(lat) so the box stays visually square as
-  // you move away from the equator; without it a New Orleans map is noticeably
-  // letterboxed.
-  const dLat = 0.045;
-  const dLng = dLat / Math.max(0.2, Math.cos((lat * Math.PI) / 180));
-  const r = (n: number) => n.toFixed(5);
-  const bbox = [r(lng - dLng), r(lat - dLat), r(lng + dLng), r(lat + dLat)].join(",");
-
-  return comp("map-embed-osm", {
-    anchor: anchorFor("area_map"),
-    bbox,
-    marker: `${r(lat)},${r(lng)}`,
-    title: `Map of ${areaLabel(a)}`,
-    height: 360,
-    link_href: `https://www.openstreetmap.org/?mlat=${r(lat)}&mlon=${r(lng)}#map=13/${r(lat)}/${r(lng)}`,
-    link_label: `View ${areaLabel(a)} on a larger map`,
-  });
-};
+// area_map — RETIRED. The map is the hero BACKGROUND now (see area_hero), so a
+// standalone band under it was a second copy of the same map. Migration 112 drops
+// the section from the template and deletes its rows.
+//
+// The renderer goes first, deliberately. Between this deploy and that migration,
+// compose finds a provisioned section with no handler, logs
+// no_renderer_for_section and skips it — which is exactly the intended end state,
+// reached a little early. The reverse order would have shown two maps until the
+// migration landed. The map-embed-osm catalog entry stays: it is a working,
+// keyless component and the only thing that changed is that nothing composes it
+// today.
 
 // ── area_services_grid — services, linked back to the services page (B3) ──
 const area_services_grid: SectionRenderer = (ctx) => {
@@ -1514,7 +1557,6 @@ export const SECTION_RENDERERS: Record<string, SectionRenderer> = {
   area_card_grid,
   breadcrumb_nav,
   area_hero,
-  area_map,
   area_services_grid,
   area_positioning,
   area_faq,
