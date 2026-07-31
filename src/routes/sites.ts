@@ -12,6 +12,61 @@ const app = new Hono<{ Bindings: Env }>();
  * Returns both businesses table visual identity columns and business_context data.
  * V1 note: slug is unique per user; collisions impossible at alpha scale.
  */
+/**
+ * POST /:slug/integrations/verify — a widget reporting that it actually loaded.
+ *
+ * WHY THIS EXISTS: status must never be optimistic. Saving a config proves only
+ * that an operator pasted something, so "connected" cannot be set at save time.
+ * The only evidence that an integration works is that its script loaded in a real
+ * browser, and the only place that is observable is the visitor's page.
+ *
+ * Public and unauthenticated by necessity — it is called from a client's public
+ * site by anonymous visitors. Bounded accordingly:
+ *   * it can only ever touch an integration that ALREADY EXISTS and is active,
+ *     so it cannot create anything;
+ *   * it writes one of two known statuses and a timestamp, nothing else;
+ *   * `ok:false` records 'error', which is the more useful signal of the two.
+ *
+ * WHAT IT DOES NOT PROVE, stated plainly so the manager does not overclaim: that
+ * the vendor account is valid, that the widget is configured correctly, or that a
+ * human saw it. It proves the script this site asked for was fetched and executed
+ * by a browser. A forged call would have to come from someone who loaded the page
+ * — the same population whose load is being attested — so the payoff is nil, but
+ * it is not authenticated and should not be read as if it were.
+ */
+app.post("/:slug/integrations/verify", async (c) => {
+  const slug = c.req.param("slug");
+  if (!slug || !/^[a-z0-9-]+$/.test(slug)) {
+    return c.json({ ok: false }, 400);
+  }
+  const body = await c.req.json().catch(() => ({})) as { provider?: unknown; ok?: unknown };
+  const provider = typeof body.provider === "string" ? body.provider : "";
+  if (!provider || !/^[a-z0-9-]+$/.test(provider)) return c.json({ ok: false }, 400);
+  const loaded = body.ok !== false;
+
+  const supabase = createSupabaseClient(c.env);
+  const { data: siteRow } = await supabase
+    .from("sites").select("id").eq("slug", slug).maybeSingle();
+  if (!siteRow) return c.json({ ok: false }, 404);
+
+  // Scoped UPDATE, never an insert: an integration nobody configured cannot be
+  // brought into existence by a beacon.
+  const { error } = await supabase
+    .from("site_integrations")
+    .update({
+      status: loaded ? "connected" : "error",
+      last_verified_at: new Date().toISOString(),
+    })
+    .eq("site_id", (siteRow as { id: string }).id)
+    .eq("provider", provider)
+    .eq("is_active", true);
+  if (error) {
+    log.warn("[sites] integration_verify_failed", { slug, provider, err: error.message });
+    return c.json({ ok: false }, 500);
+  }
+  return c.json({ ok: true });
+});
+
 app.get("/:slug", async (c) => {
   const slug = c.req.param("slug");
 

@@ -20,6 +20,7 @@ import {
   type RenderCtx, type PageInstanceDef, type NavItemDef, SHARED_AUTHORED_SECTIONS,
 } from "./sections";
 import { buildGraph, type FaqEntry, type JsonLdOptions } from "./jsonld";
+import { loadProviders, loadSiteIntegrations, renderIntegration } from "./integrations";
 
 export interface ComposedPage {
   template_key: string;
@@ -60,6 +61,29 @@ export interface ComposedPage {
   };
   /** Diagnostics — which fields were derived vs authored. Not rendered. */
   field_report: Array<{ section_key: string; rendered: boolean }>;
+  /**
+   * Third-party integrations, composed and grouped by where they belong (3A C).
+   *
+   * MARKUP, NOT SCRIPT TAGS IN THE DOCUMENT. These fragments are handed to the
+   * web layer as data and injected client-side AFTER first paint — a chat widget
+   * on a trades site must never sit between a visitor and the phone number. The
+   * web owns the loader; the agent owns what gets loaded.
+   */
+  integrations: {
+    head: IntegrationFragment[];
+    body_end: IntegrationFragment[];
+    inline_mount: IntegrationFragment[];
+  };
+}
+
+export interface IntegrationFragment {
+  provider: string;
+  /** Composed from the provider's template with the operator's validated values. */
+  html: string;
+  /** Screen corner it claims, for the manager's conflict warning. */
+  position: string | null;
+  /** Recorded only — there is no consent surface to gate on yet. */
+  requires_consent: boolean;
 }
 
 export interface ComposeOptions {
@@ -324,6 +348,48 @@ export async function composeManagedPage(
     if (html) out.push({ section_key: s.section_key, html });
   }
 
+  // 6b. Third-party integrations (3A C).
+  //
+  // NEVER FATAL. A vendor widget is an addition to the page, not the page: a
+  // provider row that was retired, or a config that no longer matches its
+  // pattern, must not take a licensed contractor's site down. Each one is
+  // composed independently and a failure is logged and skipped.
+  const integrations: ComposedPage["integrations"] = { head: [], body_end: [], inline_mount: [] };
+  try {
+    const [providers, configured] = await Promise.all([
+      loadProviders(supabase),
+      loadSiteIntegrations(supabase, site.id),
+    ]);
+    for (const row of configured) {
+      if (!row.is_active) continue;
+      const provider = providers.find((p) => p.provider_key === row.provider);
+      if (!provider) {
+        // Retired or deleted out from under a site. Silence on the page, noise
+        // in the log — the manager reports it as provider_missing.
+        log.warn("[site-render] integration_provider_missing", {
+          site_id: site.id, provider: row.provider });
+        continue;
+      }
+      try {
+        const html = renderIntegration(provider, row.config);
+        if (html.trim() === "") continue;
+        integrations[provider.placement].push({
+          provider: provider.provider_key,
+          html,
+          position: provider.position,
+          requires_consent: provider.requires_consent,
+        });
+      } catch (err) {
+        // A stored value that no longer satisfies its pattern — most likely the
+        // pattern was tightened after the fact. Drop the widget, keep the site.
+        log.error("[site-render] integration_render_failed", {
+          site_id: site.id, provider: row.provider, err: String(err) });
+      }
+    }
+  } catch (err) {
+    log.error("[site-render] integrations_load_failed", { site_id: site.id, err: String(err) });
+  }
+
   // 7. Structured data — from the facts, matching exactly what rendered.
   const logoUrl = facts.profile?.logo_media_id ? facts.media[facts.profile.logo_media_id]?.url ?? null : null;
   const heroUrl = facts.profile?.hero_media_id ? facts.media[facts.profile.hero_media_id]?.url ?? null : null;
@@ -389,5 +455,6 @@ export async function composeManagedPage(
     },
     meta_warnings: metaWarnings,
     field_report: report,
+    integrations,
   };
 }

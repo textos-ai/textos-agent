@@ -191,6 +191,48 @@ describe("rendering", () => {
   });
 });
 
+describe("composed fragments are inert until the loader acts (part C)", () => {
+  it("groups by placement so the loader knows what goes where and when", () => {
+    // The grouping IS the ordering policy: head runs on DOMContentLoaded so a
+    // pageview is not lost to a bounce, body_end waits for idle so widgets
+    // compete with nothing.
+    expect(GA4.placement).toBe("head");
+    expect(VOICE.placement).toBe("body_end");
+  });
+
+  it("a custom element and its script both compose at body_end", () => {
+    // Shape 2 from the brief. Custom elements upgrade whenever the script
+    // defines them, so both halves sit in one fragment and order does not
+    // matter — no multi-placement machinery needed.
+    const el: Provider = {
+      ...VOICE,
+      embed_template:
+        '<elevenlabs-convai agent-id="{{agent_id}}"></elevenlabs-convai>'
+        + '<script src="https://unpkg.com/@elevenlabs/convai-widget-embed" async></script>',
+    };
+    const html = renderIntegration(el, { agent_id: "agent_12345678" });
+    expect(html).toContain('<elevenlabs-convai agent-id="agent_12345678">');
+    expect(html).toContain("unpkg.com/@elevenlabs/convai-widget-embed");
+    // The element carries the operator's value; the script carries none.
+    expect(html.indexOf("elevenlabs-convai")).toBeLessThan(html.indexOf("<script"));
+  });
+
+  it("an iframe provider needs no script at all", () => {
+    // Shape 3. Nothing to wait on, so the loader treats presence in the DOM as
+    // the load event.
+    const iframe: Provider = {
+      ...GA4,
+      provider_key: "hcp-booking",
+      placement: "inline_mount",
+      embed_template: '<iframe src="https://book.example.com/{{company_id}}" loading="lazy"></iframe>',
+      fields: [{ key: "company_id", label: "Company ID", pattern: "^[a-f0-9-]{8,64}$", required: true, help: null, placeholder: null }],
+    };
+    const html = renderIntegration(iframe, { company_id: "abc123de-4567" });
+    expect(html).toContain("book.example.com/abc123de-4567");
+    expect(html).not.toContain("<script");
+  });
+});
+
 describe("position conflicts", () => {
   const integration = (provider: string, is_active = true) => ({
     id: provider, site_id: "s", provider, config: {}, is_active,
