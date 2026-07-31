@@ -77,6 +77,67 @@ describe("area_map", () => {
   });
 });
 
+describe("service_area_chips", () => {
+  const AREAS = [
+    AREA(), // Chalmette
+    AREA({ area_slug: "arabi-la", city: "Arabi", landmarks_blurb: "Along St Claude to the levee." }),
+    AREA({ area_slug: "meraux-la", city: "Meraux", landmarks_blurb: "Between Judge Perez and the river." }),
+  ];
+  const chipsCtx = () => {
+    const c = ctxFor(AREAS[0]) as Record<string, unknown>;
+    (c.facts as Record<string, unknown>).areas = AREAS;
+    (c.facts as Record<string, unknown>).profile = { trade_noun: "electrician", locality: "St Bernard", region: "LA" };
+    c.currentPath = "/";
+    c.pages = AREAS.map((a) => ({
+      page_type: "area_detail", route_path: `/areas/${a.area_slug}-electrician`,
+      title: `${a.city}, LA`, noindex: false, instance_key: a.area_slug,
+    }));
+    return c as unknown as RenderCtx;
+  };
+
+  it("gives every chip its own area's landmarks line", () => {
+    const html = SECTION_RENDERERS.service_area_chips(chipsCtx());
+    // One carrier per area, not one blurb for the section.
+    expect((html.match(/data-area-blurb="/g) ?? []).length).toBe(3);
+    expect(html).toContain("Along St Claude to the levee.");
+    expect(html).toContain("Between Judge Perez and the river.");
+    // And each sits on the chip it belongs to.
+    expect(html).toMatch(/arabi-la-electrician"[^>]*data-area-blurb="Along St Claude/);
+  });
+
+  it("renders a real line server-side, so the section reads with no JavaScript", () => {
+    const html = SECTION_RENDERERS.service_area_chips(chipsCtx());
+    const shown = /<p class="trades-area-blurb"[^>]*>([^<]+)</.exec(html)?.[1];
+    expect(shown, "the paragraph must have text before any script runs")
+      .toBe("From Paris Road to the Chalmette Battlefield.");
+    // And the default is recorded, so leaving a chip can restore it.
+    expect(html).toContain('data-area-blurb-default="From Paris Road to the Chalmette Battlefield."');
+    expect(html).toContain("data-area-blurb-target");
+  });
+
+  it("still carries the blurb on an area that has no page yet", () => {
+    const c = chipsCtx() as Record<string, unknown>;
+    c.pages = []; // nothing provisioned yet
+    const html = SECTION_RENDERERS.service_area_chips(c as unknown as RenderCtx);
+    // No links — a chip must never promise a page that is not there — but the
+    // hover behaviour does not depend on navigation.
+    expect(html).not.toContain("trades-chip-link");
+    expect((html.match(/data-area-blurb="/g) ?? []).length).toBe(3);
+    expect(html).toContain("trades-chip-static");
+  });
+
+  it("quotes in a blurb cannot break out of the attribute", () => {
+    const c = chipsCtx() as Record<string, unknown>;
+    (c.facts as Record<string, unknown>).areas = [
+      AREA({ landmarks_blurb: 'Near the "old" mill & the bridge' }),
+    ];
+    const html = SECTION_RENDERERS.service_area_chips(c as unknown as RenderCtx);
+    expect(html).toContain("&quot;old&quot;");
+    expect(html).toContain("&amp;");
+    expect(html).not.toContain('"old"');
+  });
+});
+
 describe("the two area blurbs", () => {
   it("puts landmarks in the hero and the local blurb in the body", () => {
     const ctx = ctxFor(AREA());

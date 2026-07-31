@@ -747,21 +747,42 @@ const service_area_chips: SectionRenderer = (ctx) => {
       .filter((p) => p.page_type === "area_detail" && !p.noindex && p.instance_key)
       .map((p) => [p.instance_key as string, p.route_path]),
   );
+  // Each chip CARRIES ITS OWN AREA'S landmarks line, and the paragraph beneath
+  // shows whichever chip the visitor is pointing at.
+  //
+  // This block used to print areas[0].landmarks_blurb flat — one city's writing
+  // standing in as copy about the whole business, so JK's home page described
+  // fourteen parishes in New Orleans' words. Every area's line is reachable here
+  // instead, which is also the only version where none of them is privileged.
+  //
+  // The first area's line is what renders server-side, so the section reads
+  // correctly with no JavaScript, on a touch device with no hover, and to a
+  // crawler. The swap is an enhancement on top of a complete page, never the
+  // thing that makes it complete.
+  //
+  // data-* rather than a JSON blob: the text is already in the markup for the
+  // chip it belongs to, so nothing has to be kept in step with anything.
   const chips = areas
     .map((a) => {
       const badge = comp("badge", { label: a.city, pill: true });
       const route = pageBySlug.get(a.area_slug);
+      const blurb = a.landmarks_blurb ? ` data-area-blurb="${esc(a.landmarks_blurb)}"` : "";
+      // An area with no page still swaps the blurb — it just does not navigate.
       return route
-        ? `<a class="trades-chip-link" href="${esc(pageHref(ctx, route))}">${badge}</a>`
-        : badge;
+        ? `<a class="trades-chip-link" href="${esc(pageHref(ctx, route))}"${blurb}>${badge}</a>`
+        : `<span class="trades-chip-static"${blurb}>${badge}</span>`;
     })
     .join("");
   const p = ctx.facts.profile;
   const sub = p?.locality ? `Based in ${p.locality}${p.region ? `, ${p.region}` : ""}.` : undefined;
+  const first = areas.find((a) => !!a.landmarks_blurb)?.landmarks_blurb ?? "";
   return section("areas", anchorFor("service_area_chips"),
     head(ctx.f.get("section_eyebrow") ?? "Where We Work", ctx.f.get("section_headline") ?? "Areas we serve", sub) +
     `<div class="trades-chips">${chips}</div>` +
-    (areas[0]?.landmarks_blurb ? `<p class="trades-area-blurb">${esc(areas[0].landmarks_blurb)}</p>` : ""));
+    (first
+      ? `<p class="trades-area-blurb" data-area-blurb-target`
+        + ` data-area-blurb-default="${esc(first)}">${esc(first)}</p>`
+      : ""));
 };
 
 // ── 9. differentiator_band ─────────────────────────────────────────────────
