@@ -1366,9 +1366,60 @@ const area_hero: SectionRenderer = (ctx) => {
     label: "Service area",
     // The H1 states the subject in the words someone would search (B2).
     headline: noun ? `${noun} in ${areaLabel(a)}` : areaLabel(a),
-    subhead: a.local_blurb,
+    // LANDMARKS, not the local blurb. Two reasons, and they agree:
+    //
+    // 1. The template says so. 092 declares area_hero's fields as
+    //    ["area_hero_headline", "area_landmarks_blurb", ...] and area_positioning's
+    //    as [..., "area_local_blurb"]. The renderer had them the other way round,
+    //    so this restores the spec rather than changing it.
+    // 2. The duplicate-content scorer measured it: landmarks_blurb carries the
+    //    unique writing on 14 of 14 of JK's areas. Putting the one element that
+    //    distinguishes this page from its thirteen siblings last, under the fold,
+    //    was backwards for a page whose whole purpose is local specificity.
+    subhead: a.landmarks_blurb,
     meta_line: null,
     has_media: false, media_url: null, media_alt: "",
+  });
+};
+
+// ── area_map — where this place actually is, under the hero ───────────────
+//
+// Skipped in 2B because the reference's embed hardcoded one set of coordinates
+// and could not generalise. business_service_areas now stores geo_lat/geo_lng per
+// area, so the objection is gone: every area centres on its own point.
+//
+// ITS OWN SECTION, not folded into area_map_nearby. That section is named "map"
+// and is a list of links to sibling areas — it belongs at the FOOT of the page,
+// and a map belongs directly under the hero. Merging them would drag the nearby
+// list up with it. (092 bundled `map_embed_or_placeholder` into area_map_nearby;
+// this deliberately supersedes that placement, which put the map last.)
+//
+// NO COORDINATES, NO SECTION. An area saved without lat/lng renders nothing here
+// rather than a map of the wrong place or of the middle of the ocean — a map is a
+// factual claim about where a licensed contractor works.
+const area_map: SectionRenderer = (ctx) => {
+  const a = currentArea(ctx);
+  if (!a || a.geo_lat === null || a.geo_lng === null) return "";
+  const lat = Number(a.geo_lat), lng = Number(a.geo_lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return "";
+
+  // ~5km across at these latitudes — a city, not a street and not a state. The
+  // longitude span is widened by 1/cos(lat) so the box stays visually square as
+  // you move away from the equator; without it a New Orleans map is noticeably
+  // letterboxed.
+  const dLat = 0.045;
+  const dLng = dLat / Math.max(0.2, Math.cos((lat * Math.PI) / 180));
+  const r = (n: number) => n.toFixed(5);
+  const bbox = [r(lng - dLng), r(lat - dLat), r(lng + dLng), r(lat + dLat)].join(",");
+
+  return comp("map-embed-osm", {
+    anchor: anchorFor("area_map"),
+    bbox,
+    marker: `${r(lat)},${r(lng)}`,
+    title: `Map of ${areaLabel(a)}`,
+    height: 360,
+    link_href: `https://www.openstreetmap.org/?mlat=${r(lat)}&mlon=${r(lng)}#map=13/${r(lat)}/${r(lng)}`,
+    link_label: `View ${areaLabel(a)} on a larger map`,
   });
 };
 
@@ -1391,12 +1442,15 @@ const area_services_grid: SectionRenderer = (ctx) => {
 };
 
 // ── area_positioning — the landmarks blurb, the local-signal payload ──────
+// The local blurb, which moved DOWN here as the landmarks blurb moved up to the
+// hero. Both stay used and neither is orphaned: 092 declares area_local_blurb as
+// this section's field, so this is the template's own mapping restored.
 const area_positioning: SectionRenderer = (ctx) => {
   const a = currentArea(ctx);
-  if (!a?.landmarks_blurb) return "";
+  if (!a?.local_blurb) return "";
   return section("areapos", anchorFor("area_positioning"),
     comp("container", {
-      content: `<div class="prose fade-up"><p>${esc(a.landmarks_blurb)}</p></div>`,
+      content: `<div class="prose fade-up"><p>${esc(a.local_blurb)}</p></div>`,
     }));
 };
 
@@ -1439,6 +1493,7 @@ export const SECTION_RENDERERS: Record<string, SectionRenderer> = {
   area_card_grid,
   breadcrumb_nav,
   area_hero,
+  area_map,
   area_services_grid,
   area_positioning,
   area_faq,

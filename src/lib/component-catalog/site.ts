@@ -296,6 +296,63 @@ export const c_page_hero: ComponentCatalogEntry = {
   },
 };
 
+/**
+ * A location map, from OpenStreetMap's official embed endpoint.
+ *
+ * WHY NOT GOOGLE. The Maps Embed API needs a key in the iframe src — that is,
+ * in the public HTML of every client site. The only Google key in this stack is
+ * GOOGLE_PLACES_API_KEY, a WRANGLER SECRET used server-side by daycycle-connect;
+ * publishing it would leak it and hand anyone the ability to bill Places calls.
+ * A separate referrer-restricted Embed key is Rob's to create, and until it
+ * exists there is no supported Google path. (The keyless
+ * maps.google.com?output=embed form works but is undocumented — if Google
+ * changes it, every client site breaks at once, silently.)
+ *
+ * OSM's export/embed.html is officially embeddable, needs no key, bills nothing
+ * and sets no advertising cookies — a real advantage on a page whose visitors
+ * are homeowners looking for a phone number. Swapping to Google later is a
+ * change to THIS TEMPLATE only, because nothing else composes a map.
+ *
+ * bbox, not a centre+zoom: the OSM embed takes a bounding box. The caller
+ * computes it from the area's lat/lng.
+ *
+ * loading="lazy" plus explicit dimensions: an iframe directly under the hero is
+ * inside the first viewport on desktop, so lazy loading alone does not save the
+ * request there — the fixed height is what stops it shifting the page while it
+ * arrives.
+ */
+export const c_map_embed_osm: ComponentCatalogEntry = {
+  id: 'map-embed-osm',
+  name: 'Location map (OpenStreetMap)',
+  category: 'display',
+  description:
+    'Keyless embedded map centred on a bounding box, with an optional marker. For showing where a service area is on a public client site.',
+  homer_classes: 'area-map area-map__frame',
+  source_verification: 'custom',
+  html_template: `<div class="area-map" id="{{anchor}}">
+  <iframe class="area-map__frame"
+          src="https://www.openstreetmap.org/export/embed.html?bbox={{bbox}}&amp;layer=mapnik{{#marker}}&amp;marker={{marker}}{{/marker}}"
+          title="{{title}}"
+          width="100%" height="{{height|360}}"
+          loading="lazy" referrerpolicy="no-referrer"
+          style="border:0"></iframe>
+  {{#link_href}}<a class="area-map__link" href="{{link_href}}" target="_blank" rel="noopener noreferrer">{{link_label|View a larger map}}</a>{{/link_href}}
+</div>`,
+  fillable_slots: ['anchor', 'bbox', 'marker', 'title', 'height', 'link_href', 'link_label'],
+  js_init: 'noop',
+  js_dependencies: [],
+  mobile_responsive: true,
+  text_mode: 'adapted',
+  reliability_tier: 'core',
+  reliability_notes:
+    'Custom TextOS component. No JS and no API key. Third-party iframe: it will not render where the network blocks openstreetmap.org, which is why the caller only composes it when the area has real coordinates.',
+  archetype_fits: ['site'],
+  capabilities: {
+    when_to_use:
+      'A public page about one place, where showing where that place is helps a visitor. Not for a mini-app.',
+  },
+};
+
 export const SITE_COMPONENTS: ComponentCatalogEntry[] = [
   c_site_nav,
   c_site_footer,
@@ -303,4 +360,5 @@ export const SITE_COMPONENTS: ComponentCatalogEntry[] = [
   c_star_rating_static,
   c_hero_media,
   c_page_hero,
+  c_map_embed_osm,
 ];
