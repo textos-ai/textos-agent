@@ -220,6 +220,65 @@ describe.skipIf(!env)("area page lifecycle", () => {
     expect(managed, "a deleted page is gone for good").toBeNull();
   }, 180000);
 
+  /**
+   * The map degrades to NOTHING, not to a broken frame.
+   *
+   * area_map is a template section now, so every area page carries a
+   * site_sections row for it whether or not that area has a point to centre on.
+   * An embed built from a null coordinate would either 404, or — worse — render
+   * a map of 0,0 in the Gulf of Guinea presented as where a licensed electrician
+   * works. The section must produce no output at all.
+   *
+   * End-to-end rather than a unit assertion: what is being tested is that a
+   * PROVISIONED section with no data renders empty through compose, which the
+   * renderer alone cannot show.
+   */
+  it("renders no map for an area with no coordinates, and a real one when they arrive", async () => {
+    // The AREA helper deliberately carries geo_lat/geo_lng null.
+    await saveFacts([AREA("kenner-la", "Kenner")]);
+    const rows = await areaPageRows();
+    const route = rows.find((r) => r.instance_key === "kenner-la")!.route_path;
+
+    const sites = (await import("../routes/sites")).default;
+    const render = async () => {
+      const res = await sites.fetch(new Request(
+        `https://test.local/${SLUG}?path=${encodeURIComponent(route)}`), env as never);
+      const managed = (await res.json() as any).managed_site;
+      return {
+        keys: managed.sections.map((s: any) => s.section_key),
+        html: managed.sections.map((s: any) => s.html).join(""),
+        report: managed.field_report,
+      };
+    };
+
+    let page = await render();
+    // The section IS provisioned — this is not passing by being absent.
+    expect(page.report.some((r: any) => r.section_key === "area_map"),
+      "area_map must be provisioned for this to prove anything").toBe(true);
+    // ...and it rendered nothing.
+    expect(page.report.find((r: any) => r.section_key === "area_map").rendered).toBe(false);
+    expect(page.keys, "no empty map section in the output").not.toContain("area_map");
+    expect(page.html).not.toContain("openstreetmap");
+    expect(page.html).not.toContain("<iframe");
+    // The rest of the page is unharmed.
+    expect(page.html).toContain("<h1");
+
+    // Give the area a point; the map appears, centred on it.
+    await sb.from("business_service_areas")
+      .update({ geo_lat: 29.9941, geo_lng: -90.2417 })
+      .eq("business_id", businessId).eq("area_slug", "kenner-la");
+
+    page = await render();
+    expect(page.keys).toContain("area_map");
+    expect(page.html).toContain("openstreetmap.org/export/embed.html");
+    expect(page.html).toContain("marker=29.99410,-90.24170");
+    expect(page.html).toContain('loading="lazy"');
+    expect(page.html, "never an API key in public markup").not.toMatch(/[?&]key=/);
+
+    // And it sits directly after the hero, not wherever the array happened to put it.
+    expect(page.keys.indexOf("area_map")).toBe(page.keys.indexOf("area_hero") + 1);
+  }, 180000);
+
   it("reports URL changes before making them, and only rewrites when asked", async () => {
     await saveFacts([AREA("kenner-la", "Kenner")]);
     const site = await siteRoutes();
