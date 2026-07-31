@@ -79,7 +79,7 @@ export const FACTS_SECTIONS: FactsSection[] = [
   },
   {
     key: 'proof', eyebrow: 'Reviews & social', heading: 'Where your proof lives',
-    owns: ['google_place_id', 'google_business_url', 'facebook_url', 'instagram_url', 'analytics_id'],
+    owns: ['google_place_id', 'google_business_url', 'facebook_url', 'instagram_url'],
   },
 ];
 
@@ -91,7 +91,7 @@ const FIELD_NAMES: Record<string, string> = {
   geo_lat: 'latitude', geo_lng: 'longitude', hours: 'opening hours',
   license_number: 'license number', license_authority: 'issuing authority',
   google_place_id: 'Google Place ID', google_business_url: 'Google Business URL',
-  facebook_url: 'Facebook URL', instagram_url: 'Instagram URL', analytics_id: 'analytics ID',
+  facebook_url: 'Facebook URL', instagram_url: 'Instagram URL',
   logo_media_id: 'logo', hero_media_id: 'main photo',
   services: 'services', areas: 'service areas', faqs: 'FAQs',
   projects: 'projects', differentiators: 'differentiators',

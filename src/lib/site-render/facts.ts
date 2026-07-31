@@ -43,7 +43,6 @@ export interface ProfileRow {
   google_business_url: string | null;
   facebook_url: string | null;
   instagram_url: string | null;
-  analytics_id: string | null;
   logo_media_id: string | null;
   hero_media_id: string | null;
 }

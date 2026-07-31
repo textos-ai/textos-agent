@@ -27,6 +27,10 @@ import { loadSiteFacts, resolveSourcePath, unwrap } from "../lib/site-render/fac
 import type { DerivationMap } from "../lib/site-render/resolver";
 import { provisionSite } from "../lib/site-render/provision";
 import { areaSlug } from "../lib/site-render/keyword-derive";
+import {
+  loadProviders, loadSiteIntegrations, validateIntegrationConfig,
+  positionConflicts, IntegrationConfigError,
+} from "../lib/site-render/integrations";
 import { anchorFor, SHARED_AUTHORED_SECTIONS } from "../lib/site-render/sections";
 import {
   FACTS_SECTIONS, resolveSource, resolveCollection, SECTION_FACT_COLLECTION, countedNoun,
@@ -856,6 +860,149 @@ app.post("/:slug/site/create", async (c) => {
     log.error("[site-manage] create_failed", { business_id: business.id, err: String(err) });
     return c.json(errBody("internal", `create_failed: ${String(err)}`), 500);
   }
+});
+
+// ── Integrations (Phase 3A part B) ────────────────────────────────────────
+//
+// OPERATORS SUPPLY VALUES. They pick a provider from the registry and fill the
+// fields it declares; every value is checked against that field's own pattern
+// and escaped into the admin-authored template. There is no endpoint here that
+// accepts markup, at any tier, and there is no raw-HTML provider — if Rob needs
+// something the registry does not cover he adds a provider row, which is the
+// same amount of work and cannot inject a script tag.
+
+app.get("/:slug/site/integrations", async (c) => {
+  const auth = c.get("auth");
+  const slug = c.req.param("slug");
+  const supabase = createSupabaseClient(c.env);
+
+  const business = await getBusinessBySlug(supabase, auth.user_id, slug);
+  if (!business) return c.json(errBody("not_found", `business '${slug}' not found`), 404);
+
+  const { data: siteRow } = await supabase
+    .from("sites").select("id, slug").eq("business_id", business.id)
+    .order("created_at", { ascending: false }).limit(1).maybeSingle();
+  if (!siteRow) return c.json({ site: null, providers: [], integrations: [], conflicts: [] });
+  const site = siteRow as { id: string; slug: string };
+
+  const providers = await loadProviders(supabase);
+  const integrations = await loadSiteIntegrations(supabase, site.id);
+
+  return c.json({
+    site: { id: site.id, slug: site.slug },
+    // The picker's options. Only active providers — a retired one stays
+    // installed where it already is but is not offered again.
+    providers,
+    // STATUS IS REPORTED AS STORED, never inferred. A saved config is
+    // 'unverified' until the integration has actually loaded and said so;
+    // "never verified" must read as unverified, not as connected.
+    integrations: integrations.map((i) => ({
+      ...i,
+      provider_missing: !providers.some((p) => p.provider_key === i.provider),
+    })),
+    // Two active widgets in the same screen corner. Nothing can detect this at
+    // render time — both providers are behaving correctly — so it surfaces here,
+    // where somebody can choose.
+    conflicts: positionConflicts(providers, integrations),
+  });
+});
+
+const IntegrationBody = z.object({
+  provider: z.string().min(1),
+  config: z.record(z.string(), z.unknown()).default({}),
+  is_active: z.boolean().default(true),
+});
+
+app.put("/:slug/site/integrations/:provider", async (c) => {
+  const auth = c.get("auth");
+  const slug = c.req.param("slug");
+  const providerKey = c.req.param("provider");
+  const supabase = createSupabaseClient(c.env);
+
+  const business = await getBusinessBySlug(supabase, auth.user_id, slug);
+  if (!business) return c.json(errBody("not_found", `business '${slug}' not found`), 404);
+
+  const { data: siteRow } = await supabase
+    .from("sites").select("id").eq("business_id", business.id)
+    .order("created_at", { ascending: false }).limit(1).maybeSingle();
+  if (!siteRow) return c.json(errBody("not_found", "this business has no site"), 404);
+  const siteId = (siteRow as { id: string }).id;
+
+  let body: z.infer<typeof IntegrationBody>;
+  try {
+    body = IntegrationBody.parse({ ...(await c.req.json()), provider: providerKey });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return c.json(errBody("bad_request", "integration_invalid",
+        err.issues.map((i) => ({ field: i.path.join("."), message: i.message }))), 400);
+    }
+    return c.json(errBody("bad_request", "body must be valid JSON"), 400);
+  }
+
+  const providers = await loadProviders(supabase);
+  const provider = providers.find((p) => p.provider_key === providerKey);
+  if (!provider) {
+    return c.json(errBody("bad_request",
+      `'${providerKey}' is not an available integration`), 400);
+  }
+
+  // The values-only gate. A value that does not match its field's pattern never
+  // reaches storage, so it can never reach the template.
+  let config: Record<string, string>;
+  try {
+    config = validateIntegrationConfig(provider, body.config);
+  } catch (err) {
+    if (err instanceof IntegrationConfigError) {
+      return c.json(errBody("bad_request", err.message, [{ field: err.field, message: err.message }]), 400);
+    }
+    throw err;
+  }
+
+  // Saving RESETS verification. The operator changed the ID, so whatever was
+  // true about the old one is no longer evidence about this one.
+  const { error } = await supabase
+    .from("site_integrations")
+    .upsert({
+      site_id: siteId, provider: providerKey, config,
+      is_active: body.is_active,
+      status: "unverified", last_verified_at: null,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "site_id,provider" });
+  if (error) {
+    log.error("[site-manage] integration_save_failed", {
+      business_id: business.id, provider: providerKey, err: error.message });
+    return c.json(errBody("internal", `integration_save_failed: ${error.message}`), 500);
+  }
+
+  const integrations = await loadSiteIntegrations(supabase, siteId);
+  log.info("[site-manage] integration_saved", { business_id: business.id, provider: providerKey });
+  return c.json({
+    ok: true,
+    integration: integrations.find((i) => i.provider === providerKey) ?? null,
+    conflicts: positionConflicts(providers, integrations),
+  });
+});
+
+app.delete("/:slug/site/integrations/:provider", async (c) => {
+  const auth = c.get("auth");
+  const slug = c.req.param("slug");
+  const providerKey = c.req.param("provider");
+  const supabase = createSupabaseClient(c.env);
+
+  const business = await getBusinessBySlug(supabase, auth.user_id, slug);
+  if (!business) return c.json(errBody("not_found", `business '${slug}' not found`), 404);
+
+  const { data: siteRow } = await supabase
+    .from("sites").select("id").eq("business_id", business.id)
+    .order("created_at", { ascending: false }).limit(1).maybeSingle();
+  if (!siteRow) return c.json(errBody("not_found", "this business has no site"), 404);
+
+  const { error } = await supabase
+    .from("site_integrations").delete()
+    .eq("site_id", (siteRow as { id: string }).id).eq("provider", providerKey);
+  if (error) return c.json(errBody("internal", `integration_delete_failed: ${error.message}`), 500);
+  log.info("[site-manage] integration_removed", { business_id: business.id, provider: providerKey });
+  return c.json({ ok: true, removed: providerKey });
 });
 
 // ── POST /:slug/site/areas/regenerate-urls ────────────────────────────────

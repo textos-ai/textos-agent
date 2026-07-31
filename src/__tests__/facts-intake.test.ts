@@ -14,7 +14,6 @@ const FORM_PROFILE_FIELDS = [
   "geo_lat", "geo_lng", "license_number", "license_authority",
   "trade_noun", "trade_noun_plural",
   "google_place_id", "google_business_url", "facebook_url", "instagram_url",
-  "analytics_id",
 ];
 
 describe("facts intake accepts what the form sends", () => {

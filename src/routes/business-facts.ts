@@ -136,7 +136,12 @@ const ProfileFields = z.object({
   google_business_url: optionalText,
   facebook_url:        optionalText,
   instagram_url:       optionalText,
-  analytics_id:        optionalText,
+  // analytics_id is GONE (Phase 3A part D). It had a write path here and no
+  // consumer anywhere — the font_family shape, where an operator fills a box
+  // nothing reads. A GA4 measurement ID is a setting for one WEBSITE, not a fact
+  // about a company, so it moved to the GA4 provider's config in
+  // site_integrations. Migration 113 backfills, 114 drops the column; removing
+  // it from the schema first is what makes that drop safe.
   logo_media_id:       z.string().uuid().nullable().optional().transform((v) => v ?? null),
   hero_media_id:       z.string().uuid().nullable().optional().transform((v) => v ?? null),
 });

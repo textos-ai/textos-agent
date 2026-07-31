@@ -19,6 +19,10 @@ import { createAnthropicClient } from "../services/anthropic";
 import { pickVisualChoices, fetchUnsplashPhoto } from "../lib/pick-visual-choices";
 import { loadModelConfig } from "../lib/model-config";
 import { loadFeatureConfig, resolveFeatureModel, FEATURE_REGISTRY, type FeatureKey } from "../lib/non-task-model-config";
+import {
+  loadProviders, validateProviderDefinition, ProviderDefinitionError,
+  PLACEMENTS, POSITIONS,
+} from "../lib/site-render/integrations";
 
 const admin = new Hono<{ Bindings: Env }>();
 
@@ -2913,6 +2917,118 @@ admin.patch("/platforms/:id", async (c) => {
 
   log.info("[admin] platform_updated", { id, patch: Object.keys(patch) });
   return c.json({ platform: data });
+});
+
+// ── Integration providers (Phase 3A part A) ───────────────────────────────
+//
+// THE REGISTRY IS DATA. Rob defines a provider here and an operator can
+// configure it immediately — no deploy, no code change, no new renderer. That is
+// the whole point: the Worker knows how to compose a template, not what Housecall
+// Pro is.
+//
+// Admin-only, because embed_template is the one place markup is written. An
+// operator never reaches this surface; they supply values against the fields
+// defined here and nothing else.
+admin.use("/integration-providers", requireAdmin);
+admin.use("/integration-providers/*", requireAdmin);
+
+const ProviderFieldBody = z.object({
+  key: z.string(),
+  label: z.string(),
+  help: z.string().nullable().optional(),
+  // Presence is checked here; the real rules (anchored, compilable, bounded)
+  // live in validateProviderDefinition so the route and the renderer cannot
+  // disagree about what a valid field is.
+  pattern: z.string(),
+  required: z.boolean().optional(),
+  placeholder: z.string().nullable().optional(),
+});
+
+const ProviderBody = z.object({
+  provider_key: z.string().regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, "provider_key must be kebab-case"),
+  display_name: z.string().trim().min(1),
+  category: z.string().regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, "category must be kebab-case"),
+  embed_template: z.string().trim().min(1),
+  placement: z.enum(["head", "body_end", "inline_mount"]).default("body_end"),
+  fields: z.array(ProviderFieldBody).default([]),
+  position: z.enum(["bottom-right", "bottom-left", "top-right", "top-left", "fullscreen"])
+    .nullable().optional().transform((v) => v ?? null),
+  requires_consent: z.boolean().default(false),
+  provider_domains: z.array(z.string().trim().min(1)).default([]),
+  docs_url: z.string().trim().nullable().optional().transform((v) => v ?? null),
+  active: z.boolean().default(true),
+});
+
+admin.get("/integration-providers", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  // Inactive included: this is the definition surface, and a retired provider
+  // still has to be visible to be un-retired.
+  const providers = await loadProviders(supabase, { includeInactive: true });
+  return c.json({ providers, placements: PLACEMENTS, positions: POSITIONS });
+});
+
+admin.put("/integration-providers/:provider_key", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const key = c.req.param("provider_key");
+
+  let body: z.infer<typeof ProviderBody>;
+  try {
+    body = ProviderBody.parse({ ...(await c.req.json()), provider_key: key });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return c.json(errBody("bad_request", "provider_invalid",
+        err.issues.map((i) => ({ field: i.path.join("."), message: i.message }))), 400);
+    }
+    return c.json(errBody("bad_request", "body must be valid JSON"), 400);
+  }
+
+  // The rules that make the values-only guarantee hold: every field carries an
+  // anchored, compilable pattern, no template placeholder is undefined, and the
+  // template uses no raw-output construct. A provider that fails these would
+  // render an operator's value unescaped onto a public site.
+  let fields;
+  try {
+    fields = validateProviderDefinition(body);
+  } catch (err) {
+    if (err instanceof ProviderDefinitionError) {
+      return c.json(errBody("bad_request", err.message), 400);
+    }
+    throw err;
+  }
+
+  const { data, error } = await supabase
+    .from("site_integration_providers")
+    .upsert({ ...body, fields, updated_at: new Date().toISOString() },
+      { onConflict: "provider_key" })
+    .select("provider_key")
+    .single();
+  if (error) {
+    log.error("[admin] provider_upsert_failed", { provider_key: key, err: error.message });
+    return c.json(errBody("internal", `provider_upsert_failed: ${error.message}`), 500);
+  }
+  log.info("[admin] provider_saved", { provider_key: key, fields: fields.length });
+  return c.json({ ok: true, provider_key: (data as { provider_key: string }).provider_key });
+});
+
+// Retire rather than delete. A provider row is referenced by every site using
+// it (ON DELETE RESTRICT), so removing one would either fail or take working
+// widgets off client sites; `active:false` hides it from the picker and leaves
+// existing installs alone.
+admin.post("/integration-providers/:provider_key/retire", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const key = c.req.param("provider_key");
+  const { error } = await supabase
+    .from("site_integration_providers")
+    .update({ active: false, updated_at: new Date().toISOString() })
+    .eq("provider_key", key);
+  if (error) return c.json(errBody("internal", `provider_retire_failed: ${error.message}`), 500);
+
+  const { count } = await supabase
+    .from("site_integrations")
+    .select("id", { count: "exact", head: true })
+    .eq("provider", key).eq("is_active", true);
+  log.info("[admin] provider_retired", { provider_key: key, still_installed: count ?? 0 });
+  return c.json({ ok: true, provider_key: key, still_installed_on_sites: count ?? 0 });
 });
 
 export default admin;
