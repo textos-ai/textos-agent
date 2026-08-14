@@ -47,6 +47,8 @@ import factoryV2ApiRoutes from "./routes/factory-v2-api"; // STABLE: factory-v2 
 import factoryAssessmentAppRoutes from "./routes/factory-assessment-app"; // TEMP DEV: factory-v2 Assessment app (Phase 3 /dev/ proof)
 import factoryCalculatorAppRoutes from "./routes/factory-calculator-app"; // TEMP DEV: factory-v2 Calculator app (Compute archetype /dev/ proof)
 import appLogsRoutes from "./routes/app-logs";
+import coldcallRoutes from "./routes/coldcall"; // INTERNAL: cold-calling tool (walled off from client-facing code)
+import adminColdcallRoutes from "./routes/admin-coldcall"; // INTERNAL: coldcall caller management + lead assignment
 import { runHeartbeatWatchdog } from "./cron/heartbeatWatchdog";
 import { runGenAppStaleSweep } from "./cron/genAppStaleSweep";
 import { runScheduledReconcile } from "./cron/reconcileScheduledPosts";
@@ -136,6 +138,11 @@ app.route("/dev/factory-calculator-app", factoryCalculatorAppRoutes); // TEMP DE
 // reason it lives outside /api/businesses (multi-sub-app mount fall-
 // through wasn't reliably matching the new handler).
 app.route("/api/app-logs", appLogsRoutes);
+// INTERNAL cold-calling tool. /api/coldcall/* is gated on coldcall_callers
+// membership; /api/admin/coldcall-* is gated on users.is_admin. Neither is
+// reachable from any client-facing route or nav.
+app.route("/api/coldcall", coldcallRoutes);
+app.route("/api/admin", adminColdcallRoutes);
 
 
 app.notFound((c) =>
