@@ -4,6 +4,8 @@
 //
 //   GET  /api/admin/coldcall-callers                   list the access list
 //   POST /api/admin/users/:id/coldcall-access          grant/revoke for one user
+//   GET  /api/admin/coldcall-leads                     browse/filter leads
+//   POST /api/admin/coldcall-leads/assign              hand-pick assign/reassign/unassign
 //   POST /api/admin/coldcall-leads/assign-split        even split across callers
 //
 // Access is granted from ONE place: the checkbox on /admin/users, which calls
@@ -40,6 +42,22 @@ const UPDATE_CHUNK = 100;
 function isEmailish(v: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
 }
+
+// Lead-browser page size, and the ceiling on one hand-pick assignment.
+const BROWSE_PAGE = 100;
+const BROWSE_PAGE_MAX = 200;
+const ASSIGN_MAX = 5000;
+
+const LEAD_STATUSES = [
+  "new", "contacted", "callback", "meeting", "not_interested", "bad_number",
+] as const;
+
+// Columns the admin lead browser renders. Includes the enrichment signals that
+// are the actual reason to hand-pick — a hijacked domain or a missing website
+// is a "call this one now" flag independent of call_score.
+const BROWSE_COLS =
+  "id, name, phone, category, parish, market, rating, review_count, call_score, " +
+  "status, callable, assigned_to, hijack_flag, has_website, site_state, ai_voice_agent";
 
 // ── GET /api/admin/coldcall-callers ────────────────────────────────────────
 // The full access list. `signed_in` reports whether user_id has been
@@ -226,6 +244,308 @@ app.post("/users/:id/coldcall-access", async (c) => {
 
   log.info("[coldcall-admin] access_toggled", { user_id: userId, caller_id: callerId, active, released });
   return c.json({ caller_id: callerId, email, active, released_leads: released });
+});
+
+// ── GET /api/admin/coldcall-leads ──────────────────────────────────────────
+// The hand-pick browser. Filters: q (name), market, parish, category, status,
+// assigned (unassigned | any | <caller_id>), callable (all | only | not), and
+// the enrichment chips: hijack, no_website, dead_site, no_voice.
+//
+// Non-callable leads are RETURNED, not hidden — the point is to be able to see
+// why a lead is in nobody's book. The assign endpoint refuses them, and the UI
+// renders their checkbox disabled.
+app.get("/coldcall-leads", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+
+  const pageRaw = parseInt(c.req.query("page") ?? "1", 10);
+  const sizeRaw = parseInt(c.req.query("page_size") ?? String(BROWSE_PAGE), 10);
+  const page = Number.isFinite(pageRaw) && pageRaw > 0 ? pageRaw : 1;
+  const pageSize = Math.min(
+    BROWSE_PAGE_MAX,
+    Number.isFinite(sizeRaw) && sizeRaw > 0 ? sizeRaw : BROWSE_PAGE,
+  );
+
+  const status = c.req.query("status");
+  if (status && !LEAD_STATUSES.includes(status as (typeof LEAD_STATUSES)[number])) {
+    return c.json(errBody("bad_request", `unknown status '${status}'`), 400);
+  }
+
+  // Free-text name match. Strip the characters that would break PostgREST's
+  // filter grammar rather than interpolating them into the query.
+  const search = (c.req.query("q") ?? "").trim().replace(/[%,()]/g, "");
+  const assigned = c.req.query("assigned");
+  const callable = c.req.query("callable");
+
+  // Every filter lives here so the row query and the ids_only query can never
+  // drift apart — "select all N matching" must mean the same N the table shows.
+  const withFilters = <T extends { ilike: Function; eq: Function; is: Function }>(qq: T): T => {
+    let x = qq as T & Record<string, Function>;
+    if (search) x = x.ilike("name", `%${search}%`);
+    for (const [param, col] of [
+      ["market", "market"], ["parish", "parish"],
+      ["category", "category"], ["status", "status"],
+    ] as const) {
+      const v = c.req.query(param);
+      if (v) x = x.eq(col, v);
+    }
+    // assigned: 'unassigned' | 'any' | a caller id
+    if (assigned === "unassigned") x = x.is("assigned_to", null);
+    else if (assigned && assigned !== "any") x = x.eq("assigned_to", assigned);
+
+    if (callable === "only") x = x.eq("callable", true);
+    else if (callable === "not") x = x.eq("callable", false);
+
+    // Enrichment chips. Each tests for a VERIFIED value, never NULL — NULL
+    // means the lead was never probed, which is not evidence of anything.
+    if (c.req.query("hijack") === "1") x = x.eq("hijack_flag", true);
+    if (c.req.query("no_website") === "1") x = x.eq("has_website", false);
+    if (c.req.query("dead_site") === "1") x = x.eq("site_state", "dead_http_error");
+    if (c.req.query("no_voice") === "1") x = x.eq("ai_voice_agent", false);
+    return x as T;
+  };
+
+  // facets=1 returns the distinct market / parish / category values so the UI
+  // can build real dropdowns. PostgREST has no DISTINCT, so this pages the
+  // three columns and dedupes here. Deliberately IGNORES the current filters —
+  // the option lists must not shrink as you narrow the search — and the UI
+  // requests it once per page load, not on every filter change.
+  if (c.req.query("facets") === "1") {
+    const markets = new Set<string>();
+    const parishes = new Set<string>();
+    const categories = new Set<string>();
+    for (let from = 0; ; from += PAGE_SIZE) {
+      const { data, error } = await supabase
+        .from("coldcall_leads")
+        .select("market, parish, category")
+        .order("id", { ascending: true })
+        .range(from, from + PAGE_SIZE - 1);
+      if (error) {
+        log.error("[coldcall-admin] facets_failed", { err: error.message });
+        return c.json(errBody("internal", "facets_failed"), 500);
+      }
+      const rows = (data ?? []) as Array<{ market: string | null; parish: string | null; category: string | null }>;
+      for (const r of rows) {
+        if (r.market) markets.add(r.market);
+        if (r.parish) parishes.add(r.parish);
+        if (r.category) categories.add(r.category);
+      }
+      if (rows.length < PAGE_SIZE) break;
+    }
+    const sorted = (s: Set<string>) => [...s].sort();
+    return c.json({
+      markets: sorted(markets),
+      parishes: sorted(parishes),
+      categories: sorted(categories),
+      statuses: LEAD_STATUSES,
+    });
+  }
+
+  // ids_only powers "select all N matching": same filters, ids only, paged
+  // server-side up to ASSIGN_MAX (which is also the assign ceiling).
+  if (c.req.query("ids_only") === "1") {
+    const ids: string[] = [];
+    let total = 0;
+    for (let from = 0; from < ASSIGN_MAX; from += PAGE_SIZE) {
+      const base = supabase
+        .from("coldcall_leads")
+        .select("id", { count: "exact" })
+        .order("call_score", { ascending: false })
+        .order("id", { ascending: true })
+        .range(from, Math.min(from + PAGE_SIZE, ASSIGN_MAX) - 1);
+      const { data, count, error } = await withFilters(base);
+      if (error) {
+        log.error("[coldcall-admin] browse_ids_failed", { err: error.message });
+        return c.json(errBody("internal", "browse_ids_failed"), 500);
+      }
+      total = count ?? 0;
+      const rows = (data ?? []) as Array<{ id: string }>;
+      ids.push(...rows.map((r) => r.id));
+      if (rows.length < PAGE_SIZE) break;
+    }
+    return c.json({ ids, total, capped: total > ids.length });
+  }
+
+  const from = (page - 1) * pageSize;
+  const base = supabase
+    .from("coldcall_leads")
+    .select(BROWSE_COLS, { count: "exact" })
+    .order("call_score", { ascending: false })
+    .order("id", { ascending: true }) // stable across pages
+    .range(from, from + pageSize - 1);
+
+  const { data, count, error } = await withFilters(base);
+  if (error) {
+    log.error("[coldcall-admin] browse_failed", { err: error.message });
+    return c.json(errBody("internal", "browse_failed"), 500);
+  }
+
+  const total = count ?? 0;
+  return c.json({
+    leads: data ?? [],
+    total,
+    page,
+    page_size: pageSize,
+    has_more: from + (data ?? []).length < total,
+  });
+});
+
+// ── POST /api/admin/coldcall-leads/assign ──────────────────────────────────
+// Hand-pick assignment. One endpoint covers all three moves:
+//   caller_id: "<uuid>"  → assign / reassign
+//   caller_id: null      → unassign
+//
+// Unlike assign-split this does NOT re-assert `assigned_to IS NULL`, because
+// moving a lead off another caller is the whole point. It reports what it
+// moved instead, so taking work off someone is visible rather than silent.
+//
+// Pass dry_run: true to get the same report WITHOUT writing — that is how the
+// UI warns "3 of these have logged calls" before the admin commits.
+app.post("/coldcall-leads/assign", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+
+  let body: { lead_ids?: unknown; caller_id?: unknown; dry_run?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json(errBody("bad_request", "body must be JSON"), 400);
+  }
+
+  if (
+    !Array.isArray(body.lead_ids) ||
+    body.lead_ids.length === 0 ||
+    !body.lead_ids.every((v) => typeof v === "string" && v.length > 0)
+  ) {
+    return c.json(errBody("bad_request", "lead_ids must be a non-empty array of ids"), 400);
+  }
+  const leadIds = [...new Set(body.lead_ids as string[])];
+  if (leadIds.length > ASSIGN_MAX) {
+    return c.json(
+      errBody("bad_request", `too many leads in one call (${leadIds.length} > ${ASSIGN_MAX})`),
+      400,
+    );
+  }
+
+  if (body.caller_id !== null && typeof body.caller_id !== "string") {
+    return c.json(errBody("bad_request", "caller_id must be a caller id, or null to unassign"), 400);
+  }
+  const callerId = (body.caller_id as string | null) || null;
+  const dryRun = body.dry_run === true;
+
+  // Target caller must exist AND be active — same rule assign-split enforces.
+  let caller: { id: string; email: string; name: string | null } | null = null;
+  if (callerId) {
+    const { data: cr, error: cErr } = await supabase
+      .from("coldcall_callers")
+      .select("id, email, name, active")
+      .eq("id", callerId)
+      .maybeSingle();
+    if (cErr) {
+      log.error("[coldcall-admin] assign_caller_failed", { err: cErr.message });
+      return c.json(errBody("internal", "assign_caller_failed"), 500);
+    }
+    const row = cr as { id: string; email: string; name: string | null; active: boolean } | null;
+    if (!row) return c.json(errBody("bad_request", `unknown caller id: ${callerId}`), 400);
+    if (!row.active) {
+      return c.json(errBody("bad_request", `inactive callers cannot be assigned: ${row.email}`), 400);
+    }
+    caller = { id: row.id, email: row.email, name: row.name };
+  }
+
+  // Load the leads so the report is built from real state, not assumptions.
+  const leads: Array<{ id: string; callable: boolean; assigned_to: string | null; status: string; name: string }> = [];
+  for (let i = 0; i < leadIds.length; i += UPDATE_CHUNK) {
+    const chunk = leadIds.slice(i, i + UPDATE_CHUNK);
+    const { data, error } = await supabase
+      .from("coldcall_leads")
+      .select("id, callable, assigned_to, status, name")
+      .in("id", chunk);
+    if (error) {
+      log.error("[coldcall-admin] assign_lookup_failed", { err: error.message });
+      return c.json(errBody("internal", "assign_lookup_failed"), 500);
+    }
+    leads.push(...((data ?? []) as typeof leads));
+  }
+
+  const missing = leadIds.filter((id) => !leads.some((l) => l.id === id));
+  if (missing.length) {
+    return c.json(errBody("bad_request", `unknown lead ids: ${missing.slice(0, 5).join(", ")}${missing.length > 5 ? ` (+${missing.length - 5} more)` : ""}`), 400);
+  }
+
+  // Callable-only, consistent with assign-split. Checked ONLY when assigning —
+  // pulling a non-callable lead back out of a book is always allowed.
+  if (callerId) {
+    const notCallable = leads.filter((l) => !l.callable);
+    if (notCallable.length) {
+      return c.json(
+        errBody(
+          "bad_request",
+          `${notCallable.length} of these are not callable and cannot be assigned: ` +
+            notCallable.slice(0, 3).map((l) => l.name).join(", ") +
+            (notCallable.length > 3 ? `, +${notCallable.length - 3} more` : ""),
+        ),
+        400,
+      );
+    }
+  }
+
+  // How many carry logged calls — surfaced before an unassign/reassign so the
+  // admin knows they are moving worked leads, not just fresh ones.
+  const withHistory = new Set<string>();
+  for (let i = 0; i < leadIds.length; i += UPDATE_CHUNK) {
+    const chunk = leadIds.slice(i, i + UPDATE_CHUNK);
+    const { data, error } = await supabase
+      .from("coldcall_call_activity")
+      .select("lead_id")
+      .in("lead_id", chunk);
+    if (error) {
+      log.error("[coldcall-admin] assign_history_failed", { err: error.message });
+      return c.json(errBody("internal", "assign_history_failed"), 500);
+    }
+    for (const r of (data ?? []) as Array<{ lead_id: string }>) withHistory.add(r.lead_id);
+  }
+
+  const report = {
+    caller: caller ? { id: caller.id, email: caller.email, name: caller.name } : null,
+    requested: leadIds.length,
+    from_unassigned: leads.filter((l) => l.assigned_to === null).length,
+    reassigned_from_other: leads.filter((l) => l.assigned_to !== null && l.assigned_to !== callerId).length,
+    already_on_target: callerId ? leads.filter((l) => l.assigned_to === callerId).length : 0,
+    with_call_history: withHistory.size,
+    dry_run: dryRun,
+    assigned: 0,
+  };
+
+  if (dryRun) return c.json(report);
+
+  let done = 0;
+  for (let i = 0; i < leadIds.length; i += UPDATE_CHUNK) {
+    const chunk = leadIds.slice(i, i + UPDATE_CHUNK);
+    const { data, error } = await supabase
+      .from("coldcall_leads")
+      .update({ assigned_to: callerId })
+      .in("id", chunk)
+      .select("id");
+    if (error) {
+      log.error("[coldcall-admin] assign_update_failed", {
+        caller_id: callerId, assigned_so_far: done, err: error.message,
+      });
+      return c.json(
+        errBody("internal", "assign_update_failed", { partial: true, assigned_before_failure: done }),
+        500,
+      );
+    }
+    done += (data ?? []).length;
+  }
+  report.assigned = done;
+
+  log.info("[coldcall-admin] hand_assign", {
+    caller_id: callerId,
+    assigned: done,
+    reassigned_from_other: report.reassigned_from_other,
+    with_call_history: report.with_call_history,
+  });
+
+  return c.json(report);
 });
 
 // ── POST /api/admin/coldcall-leads/assign-split ────────────────────────────
