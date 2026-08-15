@@ -27,6 +27,11 @@ import { requireAdmin } from "../lib/admin";
 import { errBody } from "../lib/errors";
 import { log } from "../lib/logger";
 import { createSupabaseClient } from "../services/supabase";
+// One logging path, shared with the caller worklist.
+import {
+  logCallAttempt, CALL_OUTCOMES, LEAD_STATUSES, STATUS_FOR_OUTCOME,
+  type CallOutcome, type LeadStatus,
+} from "../lib/coldcall-log";
 
 const app = new Hono<{ Bindings: Env }>();
 app.use("*", requireAuth);
@@ -48,9 +53,6 @@ const BROWSE_PAGE = 100;
 const BROWSE_PAGE_MAX = 200;
 const ASSIGN_MAX = 5000;
 
-const LEAD_STATUSES = [
-  "new", "contacted", "callback", "meeting", "not_interested", "bad_number",
-] as const;
 
 // Columns the admin lead browser renders. Includes the enrichment signals that
 // are the actual reason to hand-pick — a hijacked domain or a missing website
@@ -414,12 +416,32 @@ app.get("/coldcall-leads/:id", async (c) => {
   // "who called this" rather than showing a bare uuid.
   const { data: activity, error: actErr } = await supabase
     .from("coldcall_call_activity")
-    .select("id, outcome, note, created_at, caller_id, coldcall_callers(name, email)")
+    .select("id, outcome, note, created_at, caller_id, logged_by_user_id, coldcall_callers(name, email)")
     .eq("lead_id", id)
     .order("created_at", { ascending: false });
   if (actErr) {
     log.error("[coldcall-admin] lead_activity_failed", { lead_id: id, err: actErr.message });
     return c.json(errBody("internal", "lead_activity_failed"), 500);
+  }
+
+  // Resolve the on-behalf-of typists. Rare rows, so one small lookup rather
+  // than a join on every activity read.
+  const acts = (activity ?? []) as Array<Record<string, unknown>>;
+  const typistIds = [...new Set(
+    acts.map((a) => a.logged_by_user_id).filter((v): v is string => typeof v === "string"),
+  )];
+  if (typistIds.length) {
+    const { data: typists } = await supabase
+      .from("users").select("id, email, name").in("id", typistIds);
+    const byId = Object.fromEntries(
+      ((typists ?? []) as Array<{ id: string; email: string | null; name: string | null }>)
+        .map((u) => [u.id, u.name || u.email || u.id]),
+    );
+    for (const a of acts) {
+      if (typeof a.logged_by_user_id === "string") {
+        a.logged_by_label = byId[a.logged_by_user_id] ?? "unknown";
+      }
+    }
   }
 
   // Who currently holds it, if anyone.
@@ -434,7 +456,125 @@ app.get("/coldcall-leads/:id", async (c) => {
     assignee = (a as typeof assignee) ?? null;
   }
 
-  return c.json({ lead, activity: activity ?? [], assignee });
+  return c.json({ lead, activity: acts, assignee });
+});
+
+// ── POST /api/admin/coldcall-leads/:id/log ─────────────────────────────────
+// Log a call attempt from the admin lead modal. Writes through the SAME
+// insert-then-patch helper the caller worklist uses (lib/coldcall-log), so
+// there is one logging path, not two.
+//
+// Two things this surface does that the caller worklist does not:
+//   - derives a default lead status from the outcome (STATUS_FOR_OUTCOME),
+//     overridable by passing an explicit status
+//   - records logged_by_user_id when the admin typing is not the caller who
+//     made the call
+//
+// caller_id is NOT NULL and FKs to coldcall_callers, so every attempt names a
+// real caller. An admin without a caller row must pick one — there is no
+// fabricated "system" caller to fall back on.
+app.post("/coldcall-leads/:id/log", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const auth = c.get("auth");
+  const id = c.req.param("id");
+
+  let body: {
+    outcome?: unknown; note?: unknown; status?: unknown;
+    followup_at?: unknown; caller_id?: unknown;
+  };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json(errBody("bad_request", "body must be JSON"), 400);
+  }
+
+  // No-fallbacks: outcome IS the history record. Unknown values halt.
+  const outcome = body.outcome;
+  if (typeof outcome !== "string" || !CALL_OUTCOMES.includes(outcome as CallOutcome)) {
+    return c.json(errBody("bad_request", `outcome must be one of: ${CALL_OUTCOMES.join(", ")}`), 400);
+  }
+
+  if (typeof body.caller_id !== "string" || !body.caller_id) {
+    return c.json(errBody("bad_request", "caller_id is required — pick which caller made this call"), 400);
+  }
+  const callerId = body.caller_id;
+
+  const { data: callerRow, error: cErr } = await supabase
+    .from("coldcall_callers")
+    .select("id, email, name, active, user_id")
+    .eq("id", callerId)
+    .maybeSingle();
+  if (cErr) {
+    log.error("[coldcall-admin] log_caller_failed", { err: cErr.message });
+    return c.json(errBody("internal", "log_caller_failed"), 500);
+  }
+  const caller = callerRow as
+    { id: string; email: string; name: string | null; active: boolean; user_id: string | null } | null;
+  if (!caller) return c.json(errBody("bad_request", `unknown caller id: ${callerId}`), 400);
+  if (!caller.active) {
+    return c.json(errBody("bad_request", `${caller.email} is not an active caller`), 400);
+  }
+
+  // Status: derived from the outcome unless explicitly overridden.
+  let status: LeadStatus = STATUS_FOR_OUTCOME[outcome as CallOutcome];
+  if (body.status !== undefined && body.status !== null) {
+    if (typeof body.status !== "string" || !LEAD_STATUSES.includes(body.status as LeadStatus)) {
+      return c.json(errBody("bad_request", `status must be one of: ${LEAD_STATUSES.join(", ")}`), 400);
+    }
+    status = body.status as LeadStatus;
+  }
+
+  const followupAt = body.followup_at;
+  if (followupAt !== undefined && followupAt !== null) {
+    if (typeof followupAt !== "string" || Number.isNaN(Date.parse(followupAt))) {
+      return c.json(errBody("bad_request", "followup_at must be an ISO timestamp or null"), 400);
+    }
+  }
+
+  const note = body.note;
+  if (note !== undefined && note !== null && typeof note !== "string") {
+    return c.json(errBody("bad_request", "note must be a string"), 400);
+  }
+
+  const { data: lead, error: leadErr } = await supabase
+    .from("coldcall_leads").select("id").eq("id", id).maybeSingle();
+  if (leadErr) {
+    log.error("[coldcall-admin] log_lead_lookup_failed", { lead_id: id, err: leadErr.message });
+    return c.json(errBody("internal", "log_lead_lookup_failed"), 500);
+  }
+  if (!lead) return c.json(errBody("not_found", "lead not found"), 404);
+
+  // Only stamp logged_by when the typist is NOT the caller — otherwise NULL,
+  // which already reads as "the caller entered this themselves".
+  const loggedBy = caller.user_id === auth.user_id ? null : auth.user_id;
+
+  const res = await logCallAttempt(supabase, {
+    leadId: id,
+    callerId: caller.id,
+    outcome: outcome as CallOutcome,
+    note: typeof note === "string" ? note : null,
+    status,
+    followupAt: followupAt as string | null | undefined,
+    loggedByUserId: loggedBy,
+    leadCols: "id, status, followup_at, last_touched_at",
+  });
+
+  if (!res.ok) {
+    if (res.stage === "activity") {
+      log.error("[coldcall-admin] activity_insert_failed", { lead_id: id, err: res.message });
+      return c.json(errBody("internal", "activity_insert_failed"), 500);
+    }
+    log.error("[coldcall-admin] lead_update_failed", {
+      lead_id: id, activity_id: res.activityId, err: res.message,
+    });
+    return c.json(errBody("internal", "lead_update_failed"), 500);
+  }
+
+  log.info("[coldcall-admin] attempt_logged", {
+    lead_id: id, caller_id: caller.id, outcome, status, on_behalf: loggedBy !== null,
+  });
+
+  return c.json({ activity: res.activity, lead: res.lead }, 201);
 });
 
 // ── PATCH /api/admin/coldcall-leads/:id/settings ───────────────────────────

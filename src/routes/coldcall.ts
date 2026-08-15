@@ -22,6 +22,12 @@ import { requireColdcaller } from "../lib/coldcall-auth";
 import { errBody } from "../lib/errors";
 import { log } from "../lib/logger";
 import { createSupabaseClient } from "../services/supabase";
+// Vocabularies and the insert-then-patch sequence are shared with the admin
+// modal so the two surfaces can never disagree about what a valid outcome is.
+import {
+  logCallAttempt, CALL_OUTCOMES, LEAD_STATUSES,
+  type CallOutcome, type LeadStatus,
+} from "../lib/coldcall-log";
 
 const app = new Hono<{ Bindings: Env }>();
 app.use("*", requireAuth);
@@ -39,25 +45,6 @@ const LEAD_DETAIL_COLS =
   "digital_gap, callable, opening_angle, assigned_to, status, followup_at, " +
   "last_touched_at, created_at, updated_at";
 
-const LEAD_STATUSES = [
-  "new",
-  "contacted",
-  "callback",
-  "meeting",
-  "not_interested",
-  "bad_number",
-] as const;
-
-const CALL_OUTCOMES = [
-  "no_answer",
-  "voicemail_left",
-  "gatekeeper",
-  "not_interested",
-  "interested_followup",
-  "meeting_booked",
-  "wrong_number",
-  "do_not_call",
-] as const;
 
 // ── GET /api/coldcall/me ───────────────────────────────────────────────────
 // Identity for the page header. Reaching this at all proves the gate passed.
@@ -254,45 +241,31 @@ app.post("/leads/:id/log", async (c) => {
   }
   if (!lead) return c.json(errBody("not_found", "lead not found"), 404);
 
-  // History first — if the lead update fails we still have the record of the
-  // attempt, which is the append-only half of the contract.
-  const { data: actRow, error: actErr } = await supabase
-    .from("coldcall_call_activity")
-    .insert({
-      lead_id: id,
-      caller_id: caller.id,
-      outcome,
-      note: typeof note === "string" && note.trim() ? note.trim() : null,
-    })
-    .select("id, outcome, note, created_at")
-    .single();
+  // Insert-then-patch lives in ONE place for both surfaces (lib/coldcall-log).
+  // The ordering guarantee — activity first, lead second — is the part that
+  // must never drift between the caller worklist and the admin modal.
+  //
+  // status is passed through exactly as supplied: this surface leaves the
+  // lead's status alone unless the caller explicitly picks one. The admin
+  // modal derives a default from the outcome; that difference is deliberate
+  // and belongs in the caller, not in the shared helper.
+  const res = await logCallAttempt(supabase, {
+    leadId: id,
+    callerId: caller.id,
+    outcome: outcome as CallOutcome,
+    note: typeof note === "string" ? note : null,
+    status: typeof status === "string" ? (status as LeadStatus) : undefined,
+    followupAt: followupAt as string | null | undefined,
+    leadCols: LEAD_DETAIL_COLS,
+  });
 
-  if (actErr || !actRow) {
-    log.error("[coldcall] activity_insert_failed", { lead_id: id, err: actErr?.message });
-    return c.json(errBody("internal", "activity_insert_failed"), 500);
-  }
-
-  // Then advance the lead. status and followup_at are only touched when the
-  // caller actually supplied them; last_touched_at always moves.
-  const patch: Record<string, unknown> = {
-    last_touched_at: new Date().toISOString(),
-  };
-  if (typeof status === "string") patch.status = status;
-  // An explicit null clears a scheduled callback; undefined leaves it alone.
-  if (followupAt !== undefined) patch.followup_at = followupAt;
-
-  const { data: updated, error: updErr } = await supabase
-    .from("coldcall_leads")
-    .update(patch)
-    .eq("id", id)
-    .select(LEAD_DETAIL_COLS)
-    .single();
-
-  if (updErr || !updated) {
+  if (!res.ok) {
+    if (res.stage === "activity") {
+      log.error("[coldcall] activity_insert_failed", { lead_id: id, err: res.message });
+      return c.json(errBody("internal", "activity_insert_failed"), 500);
+    }
     log.error("[coldcall] lead_update_failed", {
-      lead_id: id,
-      activity_id: (actRow as { id: string }).id,
-      err: updErr?.message,
+      lead_id: id, activity_id: res.activityId, err: res.message,
     });
     return c.json(errBody("internal", "lead_update_failed"), 500);
   }
@@ -304,7 +277,7 @@ app.post("/leads/:id/log", async (c) => {
     status: typeof status === "string" ? status : null,
   });
 
-  return c.json({ activity: actRow, lead: updated }, 201);
+  return c.json({ activity: res.activity, lead: res.lead }, 201);
 });
 
 export default app;
