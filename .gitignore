@@ -21,3 +21,9 @@ fb.mjs
 
 # local demo / customer preview files
 docs/trustlight-south-louisiana-mission.html
+
+# LeadScout exports — third-party prospect PII (business names, phone numbers,
+# addresses). Read in place for the coldcall import; the data lives in Supabase.
+# NEVER commit these.
+victora_leads*.csv
+*_COLUMN_MAP.csv
