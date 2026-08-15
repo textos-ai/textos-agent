@@ -389,6 +389,114 @@ app.get("/coldcall-leads", async (c) => {
   });
 });
 
+// ── GET /api/admin/coldcall-leads/:id ──────────────────────────────────────
+// Everything on one lead, for the admin detail modal. Returns the FULL row
+// (select *) rather than a column list, so a future migration's columns show
+// up in the modal without a code change here.
+//
+// Read-only. The modal never writes; assignment stays with the assign endpoint.
+app.get("/coldcall-leads/:id", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const id = c.req.param("id");
+
+  const { data: lead, error } = await supabase
+    .from("coldcall_leads")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle();
+  if (error) {
+    log.error("[coldcall-admin] lead_detail_failed", { lead_id: id, err: error.message });
+    return c.json(errBody("internal", "lead_detail_failed"), 500);
+  }
+  if (!lead) return c.json(errBody("not_found", "lead not found"), 404);
+
+  // Call history, newest first, with the caller resolved so the modal reads
+  // "who called this" rather than showing a bare uuid.
+  const { data: activity, error: actErr } = await supabase
+    .from("coldcall_call_activity")
+    .select("id, outcome, note, created_at, caller_id, coldcall_callers(name, email)")
+    .eq("lead_id", id)
+    .order("created_at", { ascending: false });
+  if (actErr) {
+    log.error("[coldcall-admin] lead_activity_failed", { lead_id: id, err: actErr.message });
+    return c.json(errBody("internal", "lead_activity_failed"), 500);
+  }
+
+  // Who currently holds it, if anyone.
+  let assignee: { id: string; name: string | null; email: string; active: boolean } | null = null;
+  const assignedTo = (lead as { assigned_to: string | null }).assigned_to;
+  if (assignedTo) {
+    const { data: a } = await supabase
+      .from("coldcall_callers")
+      .select("id, name, email, active")
+      .eq("id", assignedTo)
+      .maybeSingle();
+    assignee = (a as typeof assignee) ?? null;
+  }
+
+  return c.json({ lead, activity: activity ?? [], assignee });
+});
+
+// ── PATCH /api/admin/coldcall-leads/:id/settings ───────────────────────────
+// Per-lead script settings: the monthly price and which of the three services
+// the pitch mentions. The script is generated from these, so changing them
+// here changes what the caller reads — no script text is ever edited.
+//
+// Partial update: only the keys present in the body are written, so toggling
+// one service cannot silently reset the price.
+app.patch("/coldcall-leads/:id/settings", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const id = c.req.param("id");
+
+  let body: Record<string, unknown>;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json(errBody("bad_request", "body must be JSON"), 400);
+  }
+
+  const patch: Record<string, unknown> = {};
+
+  if ("script_price_monthly" in body) {
+    const raw = body.script_price_monthly;
+    const n = typeof raw === "number" ? raw : Number(String(raw ?? "").trim());
+    // No-fallbacks: a price a caller reads out loud must never be guessed.
+    // Anything unparseable, zero or negative halts rather than defaulting.
+    if (!Number.isFinite(n) || n <= 0) {
+      return c.json(errBody("bad_request", "script_price_monthly must be a number greater than 0"), 400);
+    }
+    patch.script_price_monthly = Math.round(n * 100) / 100;
+  }
+
+  for (const key of ["svc_website", "svc_ai_automation", "svc_fb_ads"] as const) {
+    if (key in body) {
+      if (typeof body[key] !== "boolean") {
+        return c.json(errBody("bad_request", `${key} must be a boolean`), 400);
+      }
+      patch[key] = body[key];
+    }
+  }
+
+  if (Object.keys(patch).length === 0) {
+    return c.json(errBody("bad_request", "nothing to update"), 400);
+  }
+
+  const { data, error } = await supabase
+    .from("coldcall_leads")
+    .update(patch)
+    .eq("id", id)
+    .select("id, script_price_monthly, svc_website, svc_ai_automation, svc_fb_ads")
+    .maybeSingle();
+  if (error) {
+    log.error("[coldcall-admin] settings_update_failed", { lead_id: id, err: error.message });
+    return c.json(errBody("internal", "settings_update_failed"), 500);
+  }
+  if (!data) return c.json(errBody("not_found", "lead not found"), 404);
+
+  log.info("[coldcall-admin] script_settings_saved", { lead_id: id, fields: Object.keys(patch) });
+  return c.json({ settings: data });
+});
+
 // ── POST /api/admin/coldcall-leads/assign ──────────────────────────────────
 // Hand-pick assignment. One endpoint covers all three moves:
 //   caller_id: "<uuid>"  → assign / reassign
