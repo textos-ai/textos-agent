@@ -63,6 +63,24 @@ const BROWSE_COLS =
   "id, name, phone, category, parish, market, rating, review_count, call_score, " +
   "status, callable, assigned_to, hijack_flag, has_website, site_state, ai_voice_agent";
 
+// Demo site embed. coldcall_demo_sites.lead_id is UNIQUE, so PostgREST returns
+// an OBJECT (or null) here, not an array — verified against the live schema.
+//
+// Three shapes because the join type IS the filter:
+//   all   — left join, every lead, demo may be null   (demo=all / absent)
+//   has   — inner join, only leads that have a demo row
+//   none  — left join, then `is null` in withFilters
+//
+// Keys MUST match DEMO_FILTERS exactly: a miss yields undefined, which string
+// -concatenates into the column list as "ai_voice_agentundefined" and 500s.
+const DEMO_FILTERS = ["all", "has", "none"] as const;
+type DemoFilter = (typeof DEMO_FILTERS)[number];
+const DEMO_EMBED: Record<DemoFilter, string> = {
+  all:  ", coldcall_demo_sites(slug, status)",
+  has:  ", coldcall_demo_sites!inner(slug, status)",
+  none: ", coldcall_demo_sites!left(slug, status)",
+};
+
 // ── GET /api/admin/coldcall-callers ────────────────────────────────────────
 // The full access list. `signed_in` reports whether user_id has been
 // backfilled yet — INFORMATIONAL ONLY, never a gate on access.
@@ -350,8 +368,12 @@ app.get("/coldcall-activity", async (c) => {
 
 // ── GET /api/admin/coldcall-leads ──────────────────────────────────────────
 // The hand-pick browser. Filters: q (name), market, parish, category, status,
-// assigned (unassigned | any | <caller_id>), callable (all | only | not), and
-// the enrichment chips: hijack, no_website, dead_site, no_voice.
+// assigned (unassigned | any | <caller_id>), callable (all | only | not),
+// demo (all | has | none), and the enrichment chips: hijack, no_website,
+// dead_site, no_voice.
+//
+// Each row carries its demo site (slug + status) or null, so the list can link
+// straight to /demo/{slug} without a second round trip per lead.
 //
 // Non-callable leads are RETURNED, not hidden — the point is to be able to see
 // why a lead is in nobody's book. The assign endpoint refuses them, and the UI
@@ -378,6 +400,14 @@ app.get("/coldcall-leads", async (c) => {
   const assigned = c.req.query("assigned");
   const callable = c.req.query("callable");
 
+  // demo: all | has | none. Halt loudly on an unknown value rather than
+  // silently showing an unfiltered list the caller did not ask for.
+  const demo = (c.req.query("demo") ?? "all") as DemoFilter;
+  if (!DEMO_FILTERS.includes(demo)) {
+    return c.json(errBody("bad_request", `unknown demo filter '${demo}'`), 400);
+  }
+  const demoEmbed = DEMO_EMBED[demo];
+
   // Every filter lives here so the row query and the ids_only query can never
   // drift apart — "select all N matching" must mean the same N the table shows.
   const withFilters = <T extends { ilike: Function; eq: Function; is: Function }>(qq: T): T => {
@@ -403,6 +433,10 @@ app.get("/coldcall-leads", async (c) => {
     if (c.req.query("no_website") === "1") x = x.eq("has_website", false);
     if (c.req.query("dead_site") === "1") x = x.eq("site_state", "dead_http_error");
     if (c.req.query("no_voice") === "1") x = x.eq("ai_voice_agent", false);
+
+    // demo=has is already enforced by the !inner join in the select string.
+    // demo=none needs the explicit "the left join produced nothing" test.
+    if (demo === "none") x = x.is("coldcall_demo_sites", null);
     return x as T;
   };
 
@@ -450,7 +484,10 @@ app.get("/coldcall-leads", async (c) => {
     for (let from = 0; from < ASSIGN_MAX; from += PAGE_SIZE) {
       const base = supabase
         .from("coldcall_leads")
-        .select("id", { count: "exact" })
+        // The embed must be here too: with demo=has the !inner join IS the
+        // filter, so omitting it would make "select all N matching" select a
+        // different N from the one the table is showing.
+        .select(`id${demoEmbed}`, { count: "exact" })
         .order("call_score", { ascending: false })
         .order("id", { ascending: true })
         .range(from, Math.min(from + PAGE_SIZE, ASSIGN_MAX) - 1);
@@ -470,7 +507,7 @@ app.get("/coldcall-leads", async (c) => {
   const from = (page - 1) * pageSize;
   const base = supabase
     .from("coldcall_leads")
-    .select(BROWSE_COLS, { count: "exact" })
+    .select(`${BROWSE_COLS}${demoEmbed}`, { count: "exact" })
     .order("call_score", { ascending: false })
     .order("id", { ascending: true }) // stable across pages
     .range(from, from + pageSize - 1);
