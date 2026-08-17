@@ -6,6 +6,7 @@
 //   POST /api/admin/users/:id/coldcall-access          grant/revoke for one user
 //   GET  /api/admin/coldcall-leads                     browse/filter leads
 //   POST /api/admin/coldcall-leads/assign              hand-pick assign/reassign/unassign
+//   GET  /api/admin/coldcall-activity                  call metrics for the dashboard
 //   POST /api/admin/coldcall-leads/assign-split        even split across callers
 //
 // Access is granted from ONE place: the checkbox on /admin/users, which calls
@@ -27,6 +28,7 @@ import { requireAdmin } from "../lib/admin";
 import { errBody } from "../lib/errors";
 import { log } from "../lib/logger";
 import { createSupabaseClient } from "../services/supabase";
+import { parseSettingsPatch, SETTINGS_COLS } from "../lib/coldcall-settings";
 // One logging path, shared with the caller worklist.
 import {
   logCallAttempt, CALL_OUTCOMES, LEAD_STATUSES, STATUS_FOR_OUTCOME,
@@ -246,6 +248,104 @@ app.post("/users/:id/coldcall-access", async (c) => {
 
   log.info("[coldcall-admin] access_toggled", { user_id: userId, caller_id: callerId, active, released });
   return c.json({ caller_id: callerId, email, active, released_leads: released });
+});
+
+// ── GET /api/admin/coldcall-activity ───────────────────────────────────────
+// Call metrics for the dashboard. Params: since / until (ISO), caller_id.
+//
+// `since` is computed BY THE BROWSER from local midnight, not here. The
+// callers are in New Orleans (UTC-5); a UTC "today" would roll over at 7pm
+// local and push the evening shift into tomorrow's count.
+//
+// Aggregation happens in the Worker because PostgREST has no GROUP BY. Fine
+// to ~10k calls per period at 1000 rows a page; past that this wants a
+// Postgres RPC. Logged at 13 calls/day, so that ceiling is years out.
+app.get("/coldcall-activity", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+
+  const since = c.req.query("since");
+  const until = c.req.query("until");
+  for (const [name, v] of [["since", since], ["until", until]] as const) {
+    if (v && Number.isNaN(Date.parse(v))) {
+      return c.json(errBody("bad_request", `${name} must be an ISO timestamp`), 400);
+    }
+  }
+  const callerId = c.req.query("caller_id");
+
+  type Row = { lead_id: string; caller_id: string; outcome: string; created_at: string; logged_by_user_id: string | null };
+  const rows: Row[] = [];
+  for (let from = 0; ; from += PAGE_SIZE) {
+    let q = supabase
+      .from("coldcall_call_activity")
+      .select("lead_id, caller_id, outcome, created_at, logged_by_user_id")
+      .order("created_at", { ascending: true })
+      .range(from, from + PAGE_SIZE - 1);
+    if (since) q = q.gte("created_at", since);
+    if (until) q = q.lt("created_at", until);
+    if (callerId) q = q.eq("caller_id", callerId);
+
+    const { data, error } = await q;
+    if (error) {
+      log.error("[coldcall-admin] activity_failed", { err: error.message });
+      return c.json(errBody("internal", "activity_failed"), 500);
+    }
+    const page = (data ?? []) as Row[];
+    rows.push(...page);
+    if (page.length < PAGE_SIZE) break;
+  }
+
+  // Every active caller appears even at zero — a caller who has not started
+  // is exactly what the dashboard needs to surface.
+  const { data: callerRows, error: cErr } = await supabase
+    .from("coldcall_callers")
+    .select("id, name, email, active")
+    .order("created_at", { ascending: true });
+  if (cErr) {
+    log.error("[coldcall-admin] activity_callers_failed", { err: cErr.message });
+    return c.json(errBody("internal", "activity_callers_failed"), 500);
+  }
+  const callers = (callerRows ?? []) as Array<{ id: string; name: string | null; email: string; active: boolean }>;
+
+  const byCallerCount: Record<string, number> = {};
+  const byOutcome: Record<string, number> = {};
+  for (const o of CALL_OUTCOMES) byOutcome[o] = 0;
+  const leads = new Set<string>();
+  let onBehalf = 0;
+
+  for (const r of rows) {
+    byCallerCount[r.caller_id] = (byCallerCount[r.caller_id] ?? 0) + 1;
+    if (r.outcome in byOutcome) byOutcome[r.outcome] += 1;
+    leads.add(r.lead_id);
+    if (r.logged_by_user_id) onBehalf += 1;
+  }
+
+  // Per-caller outcome splits too — "who booked the meetings" is the question
+  // a by-caller total alone cannot answer.
+  const perCaller = callers.map((c) => {
+    const mine = rows.filter((r) => r.caller_id === c.id);
+    const oc: Record<string, number> = {};
+    for (const o of CALL_OUTCOMES) oc[o] = 0;
+    for (const r of mine) if (r.outcome in oc) oc[r.outcome] += 1;
+    return {
+      caller_id: c.id,
+      name: c.name || c.email,
+      active: c.active,
+      calls: byCallerCount[c.id] ?? 0,
+      businesses: new Set(mine.map((r) => r.lead_id)).size,
+      by_outcome: oc,
+    };
+  }).sort((a, b) => b.calls - a.calls);
+
+  return c.json({
+    total: rows.length,
+    businesses_touched: leads.size,
+    on_behalf: onBehalf,
+    by_caller: perCaller,
+    by_outcome: byOutcome,
+    outcomes: CALL_OUTCOMES,
+    first_call: rows[0]?.created_at ?? null,
+    last_call: rows[rows.length - 1]?.created_at ?? null,
+  });
 });
 
 // ── GET /api/admin/coldcall-leads ──────────────────────────────────────────
@@ -595,37 +695,15 @@ app.patch("/coldcall-leads/:id/settings", async (c) => {
     return c.json(errBody("bad_request", "body must be JSON"), 400);
   }
 
-  const patch: Record<string, unknown> = {};
-
-  if ("script_price_monthly" in body) {
-    const raw = body.script_price_monthly;
-    const n = typeof raw === "number" ? raw : Number(String(raw ?? "").trim());
-    // No-fallbacks: a price a caller reads out loud must never be guessed.
-    // Anything unparseable, zero or negative halts rather than defaulting.
-    if (!Number.isFinite(n) || n <= 0) {
-      return c.json(errBody("bad_request", "script_price_monthly must be a number greater than 0"), 400);
-    }
-    patch.script_price_monthly = Math.round(n * 100) / 100;
-  }
-
-  for (const key of ["svc_website", "svc_ai_automation", "svc_fb_ads"] as const) {
-    if (key in body) {
-      if (typeof body[key] !== "boolean") {
-        return c.json(errBody("bad_request", `${key} must be a boolean`), 400);
-      }
-      patch[key] = body[key];
-    }
-  }
-
-  if (Object.keys(patch).length === 0) {
-    return c.json(errBody("bad_request", "nothing to update"), 400);
-  }
+  const parsed = parseSettingsPatch(body as Record<string, unknown>);
+  if (!parsed.ok) return c.json(errBody("bad_request", parsed.message), 400);
+  const patch = parsed.patch;
 
   const { data, error } = await supabase
     .from("coldcall_leads")
     .update(patch)
     .eq("id", id)
-    .select("id, script_price_monthly, svc_website, svc_ai_automation, svc_fb_ads")
+    .select(SETTINGS_COLS)
     .maybeSingle();
   if (error) {
     log.error("[coldcall-admin] settings_update_failed", { lead_id: id, err: error.message });

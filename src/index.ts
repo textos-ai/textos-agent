@@ -49,6 +49,7 @@ import factoryCalculatorAppRoutes from "./routes/factory-calculator-app"; // TEM
 import appLogsRoutes from "./routes/app-logs";
 import coldcallRoutes from "./routes/coldcall"; // INTERNAL: cold-calling tool (walled off from client-facing code)
 import adminColdcallRoutes from "./routes/admin-coldcall"; // INTERNAL: coldcall caller management + lead assignment
+import coldcallDemoRoutes from "./routes/coldcall-demo"; // PUBLIC: prospect-facing demo landing page
 import { runHeartbeatWatchdog } from "./cron/heartbeatWatchdog";
 import { runGenAppStaleSweep } from "./cron/genAppStaleSweep";
 import { runScheduledReconcile } from "./cron/reconcileScheduledPosts";
@@ -143,6 +144,10 @@ app.route("/api/app-logs", appLogsRoutes);
 // reachable from any client-facing route or nav.
 app.route("/api/coldcall", coldcallRoutes);
 app.route("/api/admin", adminColdcallRoutes);
+// PUBLIC and unauthenticated by necessity — the prospect opens the demo link on
+// their own phone during the call. A SEPARATE router precisely so coldcall.ts's
+// blanket requireAuth guard does not apply to it. Serves only status='ready'.
+app.route("/api/coldcall-demo", coldcallDemoRoutes);
 
 
 app.notFound((c) =>

@@ -19,6 +19,10 @@
 --
 -- Postgres 11+ adds a NOT NULL column with a constant default without
 -- rewriting the table, so this is cheap across all 15,822 rows.
+--
+-- SUPERSEDED IN PART: migration 119 changes this default from 279 to 297
+-- and sweeps the rows still holding 279. This file is left as the record
+-- of what was actually applied; do not edit the value below.
 -- =====================================================================
 
 ALTER TABLE public.coldcall_leads

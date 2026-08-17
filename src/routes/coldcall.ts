@@ -22,6 +22,10 @@ import { requireColdcaller } from "../lib/coldcall-auth";
 import { errBody } from "../lib/errors";
 import { log } from "../lib/logger";
 import { createSupabaseClient } from "../services/supabase";
+import { parseSettingsPatch, SETTINGS_COLS } from "../lib/coldcall-settings";
+import {
+  generateDemoContent, slugifyName, hex6, type DemoLead,
+} from "../lib/coldcall-demo";
 // Vocabularies and the insert-then-patch sequence are shared with the admin
 // modal so the two surfaces can never disagree about what a valid outcome is.
 import {
@@ -39,11 +43,11 @@ const LEAD_LIST_COLS =
   "id, name, phone, category, parish, market, rating, review_count, " +
   "call_score, status, followup_at, last_touched_at";
 
-const LEAD_DETAIL_COLS =
-  "id, place_id, name, phone, address, address_flag, category, category_raw, " +
-  "parish, market, rating, review_count, call_score, adoption_mindset, " +
-  "digital_gap, callable, opening_angle, assigned_to, status, followup_at, " +
-  "last_touched_at, created_at, updated_at";
+// The caller lead page renders the generated script, which reads the
+// enrichment signals and the per-lead script settings — so it needs the whole
+// row, not the hand-picked subset this used to return. "*" also means a later
+// migration's columns reach the script without a change here.
+const LEAD_DETAIL_COLS = "*";
 
 
 // ── GET /api/coldcall/me ───────────────────────────────────────────────────
@@ -278,6 +282,227 @@ app.post("/leads/:id/log", async (c) => {
   });
 
   return c.json({ activity: res.activity, lead: res.lead }, 201);
+});
+
+// ── PATCH /api/coldcall/leads/:id/settings ─────────────────────────────────
+// Per-lead script settings from the caller page. Same validation as the admin
+// modal (lib/coldcall-settings), so the two surfaces cannot disagree.
+//
+// Callers may adjust these: the price and service mix are per-client sales
+// decisions made on the call, and the script reads straight off them.
+app.patch("/leads/:id/settings", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const id = c.req.param("id");
+
+  let body: Record<string, unknown>;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json(errBody("bad_request", "body must be JSON"), 400);
+  }
+
+  const parsed = parseSettingsPatch(body);
+  if (!parsed.ok) return c.json(errBody("bad_request", parsed.message), 400);
+
+  const { data, error } = await supabase
+    .from("coldcall_leads")
+    .update(parsed.patch)
+    .eq("id", id)
+    .select(SETTINGS_COLS)
+    .maybeSingle();
+  if (error) {
+    log.error("[coldcall] settings_update_failed", { lead_id: id, err: error.message });
+    return c.json(errBody("internal", "settings_update_failed"), 500);
+  }
+  if (!data) return c.json(errBody("not_found", "lead not found"), 404);
+
+  return c.json({ settings: data });
+});
+
+// ── demo landing page ──────────────────────────────────────────────────────
+// A sales prop generated from the lead and shown to the prospect on the call.
+// Fully isolated from the client business system — see lib/coldcall-demo.ts.
+//
+// The coldcall_demo_sites row (UNIQUE on lead_id) IS the link record. There is
+// deliberately no url column on coldcall_leads, so there is no second place to
+// keep in sync.
+
+const DEMO_COLS = "id, slug, status, error, hero_folder, created_at";
+const demoUrl = (slug: string) => `/demo/${slug}`;
+
+// ── GET /api/coldcall/leads/:id/demo-site ──────────────────────────────────
+// Tells the modal whether to show "Open demo" or "Generate".
+app.get("/leads/:id/demo-site", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const id = c.req.param("id");
+
+  const { data, error } = await supabase
+    .from("coldcall_demo_sites").select(DEMO_COLS).eq("lead_id", id).maybeSingle();
+  if (error) {
+    log.error("[coldcall] demo_lookup_failed", { lead_id: id, err: error.message });
+    return c.json(errBody("internal", "demo_lookup_failed"), 500);
+  }
+  if (!data) return c.json({ exists: false });
+
+  const row = data as { slug: string; status: string; error: string | null; hero_folder: string | null };
+  return c.json({
+    exists: true,
+    status: row.status,
+    slug: row.slug,
+    url: demoUrl(row.slug),
+    error: row.error,
+    hero_folder: row.hero_folder,
+  });
+});
+
+// ── POST /api/coldcall/leads/:id/demo-site ─────────────────────────────────
+// Idempotent BY DEFAULT: an existing row is RETURNED, never regenerated. A
+// second Generate click mid-call must open the same page the prospect is
+// already looking at.
+//
+// `{ force: true }` (the Regenerate action) is the ONLY way to rebuild. It
+// reuses the existing slug, so the link already sent to the prospect keeps
+// working and simply serves the new content.
+app.post("/leads/:id/demo-site", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const id = c.req.param("id");
+
+  // { force: true } rebuilds an existing demo instead of returning it. Used by
+  // the Regenerate action so a demo made before a content change (new hero
+  // video, new subtext, a reworded prompt) can pick it up.
+  let force = false;
+  try {
+    const body = await c.req.json<{ force?: unknown }>();
+    force = body?.force === true;
+  } catch { /* no body is the normal Generate case */ }
+
+  const existing = await supabase
+    .from("coldcall_demo_sites").select(DEMO_COLS).eq("lead_id", id).maybeSingle();
+  if (existing.error) {
+    log.error("[coldcall] demo_lookup_failed", { lead_id: id, err: existing.error.message });
+    return c.json(errBody("internal", "demo_lookup_failed"), 500);
+  }
+  if (existing.data && !force) {
+    const row = existing.data as { slug: string; status: string; error: string | null };
+    return c.json({
+      status: row.status, slug: row.slug, url: demoUrl(row.slug),
+      error: row.error, reused: true,
+    });
+  }
+
+  const { data: leadRow, error: leadErr } = await supabase
+    .from("coldcall_leads")
+    .select("id, name, category, phone, address, city, state, zip, parish, rating, review_count, website_url")
+    .eq("id", id)
+    .maybeSingle();
+  if (leadErr) {
+    log.error("[coldcall] demo_lead_lookup_failed", { lead_id: id, err: leadErr.message });
+    return c.json(errBody("internal", "demo_lead_lookup_failed"), 500);
+  }
+  if (!leadRow) return c.json(errBody("not_found", "lead not found"), 404);
+  const lead = leadRow as unknown as DemoLead;
+
+  // No-fallbacks, checked BEFORE a row is created so a lead that cannot produce
+  // a demo never leaves a 'generating' shell behind.
+  if (!lead.name?.trim()) {
+    return c.json(errBody("bad_request", "lead has no business name — cannot build a demo"), 400);
+  }
+  if (!lead.category?.trim()) {
+    return c.json(errBody("bad_request", "lead has no category — cannot build a demo"), 400);
+  }
+
+  // REGENERATE keeps the existing row and its SLUG. The caller may already
+  // have texted the link to the prospect mid-call — changing the URL under
+  // them would be worse than the stale content we are replacing.
+  if (existing.data && force) {
+    const row = existing.data as { slug: string };
+    const { error: markErr } = await supabase
+      .from("coldcall_demo_sites")
+      .update({ status: "generating", error: null })
+      .eq("lead_id", id);
+    if (markErr) {
+      log.error("[coldcall] demo_regen_mark_failed", { lead_id: id, err: markErr.message });
+      return c.json(errBody("internal", "demo_regen_mark_failed"), 500);
+    }
+    try {
+      const { content, heroFolder, ms, perSectionMs } = await generateDemoContent(supabase, c.env, lead);
+      const { error: updErr } = await supabase
+        .from("coldcall_demo_sites")
+        .update({ content, hero_folder: heroFolder, status: "ready", error: null })
+        .eq("lead_id", id);
+      if (updErr) throw new Error(`demo_write_failed: ${updErr.message}`);
+      log.info("[coldcall] demo_regenerated", {
+        lead_id: id, slug: row.slug, total_ms: ms, per_section_ms: perSectionMs,
+      });
+      return c.json({
+        status: "ready", slug: row.slug, url: demoUrl(row.slug),
+        generation_ms: ms, reused: false, regenerated: true,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await supabase
+        .from("coldcall_demo_sites")
+        .update({ status: "failed", error: message.slice(0, 800) })
+        .eq("lead_id", id);
+      log.error("[coldcall] demo_regen_failed", { lead_id: id, slug: row.slug, err: message });
+      return c.json(errBody("internal", "demo_generation_failed", { slug: row.slug, message }), 500);
+    }
+  }
+
+  // Claim the slug first. UNIQUE(slug) is the collision guard; retry with a
+  // fresh hex rather than failing the caller's click.
+  let slug = "";
+  let lastErr = "";
+  for (let attempt = 0; attempt < 5 && !slug; attempt++) {
+    const candidate = `${slugifyName(lead.name)}-${hex6()}`;
+    const ins = await supabase
+      .from("coldcall_demo_sites")
+      .insert({ lead_id: lead.id, slug: candidate, status: "generating" })
+      .select("slug")
+      .single();
+    if (!ins.error) { slug = candidate; break; }
+    lastErr = ins.error.message;
+    // A lead_id clash means a concurrent click won — return that row.
+    if (ins.error.code === "23505" && /lead_id/.test(ins.error.message)) {
+      const again = await supabase
+        .from("coldcall_demo_sites").select(DEMO_COLS).eq("lead_id", id).maybeSingle();
+      const row = again.data as { slug: string; status: string; error: string | null } | null;
+      if (row) {
+        return c.json({ status: row.status, slug: row.slug, url: demoUrl(row.slug), error: row.error, reused: true });
+      }
+    }
+    if (ins.error.code !== "23505") break;   // anything else is fatal
+  }
+  if (!slug) {
+    log.error("[coldcall] demo_insert_failed", { lead_id: id, err: lastErr });
+    return c.json(errBody("internal", `demo_insert_failed: ${lastErr}`), 500);
+  }
+
+  // Generation is SYNCHRONOUS on purpose: the four section prompts run in
+  // parallel and the measured total sits inside the request budget. If that
+  // stops holding, the fix is a DEDICATED coldcall queue — never the shared
+  // TASK_QUEUE, whose consumer hard-requires a business row.
+  try {
+    const { content, heroFolder, ms, perSectionMs } = await generateDemoContent(supabase, c.env, lead);
+    const { error: updErr } = await supabase
+      .from("coldcall_demo_sites")
+      .update({ content, hero_folder: heroFolder, status: "ready", error: null })
+      .eq("slug", slug);
+    if (updErr) throw new Error(`demo_write_failed: ${updErr.message}`);
+
+    log.info("[coldcall] demo_ready", { lead_id: id, slug, total_ms: ms, per_section_ms: perSectionMs });
+    return c.json({ status: "ready", slug, url: demoUrl(slug), generation_ms: ms, reused: false }, 201);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    // Record the failure ON the row so the caller sees why. The prospect still
+    // gets a 404 rather than a broken page.
+    await supabase
+      .from("coldcall_demo_sites")
+      .update({ status: "failed", error: message.slice(0, 800) })
+      .eq("slug", slug);
+    log.error("[coldcall] demo_failed", { lead_id: id, slug, err: message });
+    return c.json(errBody("internal", "demo_generation_failed", { slug, message }), 500);
+  }
 });
 
 export default app;

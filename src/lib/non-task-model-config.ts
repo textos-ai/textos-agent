@@ -31,6 +31,10 @@ export const FEATURE_REGISTRY = [
   { key: "feature-app-result",          label: "Generated App Runtime Result" },
   { key: "feature-hook-generator",      label: "Hook Generator" },
   { key: "feature-shorten",             label: "Post Shortener" },
+  // Cold-call demo landing page. Four parallel section prompts, generated from
+  // a coldcall_leads row — no task row and no business, so it resolves its
+  // model here rather than through task_apis. Row seeded in migration 121.
+  { key: "feature-coldcall-demo",       label: "Cold-call Demo Site" },
 ] as const;
 
 export type FeatureKey = typeof FEATURE_REGISTRY[number]["key"];
