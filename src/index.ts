@@ -50,6 +50,7 @@ import appLogsRoutes from "./routes/app-logs";
 import coldcallRoutes from "./routes/coldcall"; // INTERNAL: cold-calling tool (walled off from client-facing code)
 import adminColdcallRoutes from "./routes/admin-coldcall"; // INTERNAL: coldcall caller management + lead assignment
 import coldcallDemoRoutes from "./routes/coldcall-demo"; // PUBLIC: prospect-facing demo landing page
+import trustlightRoutes from "./routes/trustlight"; // PUBLIC: trustlight.com directory API
 import { runHeartbeatWatchdog } from "./cron/heartbeatWatchdog";
 import { runGenAppStaleSweep } from "./cron/genAppStaleSweep";
 import { runScheduledReconcile } from "./cron/reconcileScheduledPosts";
@@ -148,6 +149,12 @@ app.route("/api/admin", adminColdcallRoutes);
 // their own phone during the call. A SEPARATE router precisely so coldcall.ts's
 // blanket requireAuth guard does not apply to it. Serves only status='ready'.
 app.route("/api/coldcall-demo", coldcallDemoRoutes);
+// PUBLIC and unauthenticated by necessity — trustlight.com is a static site
+// read by storm-affected families; there is no login. Mounted at /api so the
+// live paths are /api/directory and /api/contractor/:slug, which is what the
+// trustlight.com/api/* zone route delivers. Every read uses an explicit column
+// whitelist: coldcall_leads holds third-party PII that must never leave.
+app.route("/api", trustlightRoutes);
 
 
 app.notFound((c) =>
