@@ -246,3 +246,74 @@ export async function enterVetting(
     audit_recorded: audit.ok,
   };
 }
+
+/**
+ * The plans that mean "this business is paying for vetting".
+ *
+ * Decision 1a made coldcall_leads.plan the single source of truth for a paid
+ * vetting subscription, replacing the retired trustlight row in
+ * coldcall_lead_signups. So THIS is what opens the queue — not a signup row,
+ * which can no longer exist for trustlight.
+ */
+export const PAID_VETTING_PLANS = ["verification", "exclusive"] as const;
+export const PLANS = ["none", ...PAID_VETTING_PLANS] as const;
+export type Plan = (typeof PLANS)[number];
+
+export const isPaidVettingPlan = (p: unknown): boolean =>
+  typeof p === "string" && (PAID_VETTING_PLANS as readonly string[]).includes(p);
+
+/**
+ * Set a lead's commercial plan, and open the vetting queue when that plan
+ * becomes a paid one.
+ *
+ * EVERY path that sets `plan` must go through here rather than writing the
+ * column directly — that is the whole point of the helper. The trigger lives
+ * with the write so a future commercial UI cannot add a call site that
+ * silently skips the queue entry.
+ *
+ * The queue entry is NON-FATAL and idempotent: enterVetting() only moves a
+ * lead still at 'lead', so upgrading verification -> exclusive on a business
+ * already being worked changes the plan and leaves the vetting alone.
+ */
+export async function setPlan(
+  supabase: { from: Function },
+  leadId: string,
+  plan: Plan,
+  actor?: { user_id?: string | null; email?: string | null },
+  reason?: string | null,
+): Promise<
+  | { ok: true; plan: Plan; previous: string; vetting: Awaited<ReturnType<typeof enterVetting>> | null }
+  | { ok: false; message: string }
+> {
+  const { data, error } = await supabase
+    .from("coldcall_leads").select("id, plan, vetting_status").eq("id", leadId).maybeSingle();
+  if (error) return { ok: false, message: `lead_lookup_failed: ${error.message}` };
+  if (!data) return { ok: false, message: "lead not found" };
+  const previous = String((data as { plan: string | null }).plan ?? "none");
+
+  const { error: uErr } = await supabase
+    .from("coldcall_leads").update({ plan }).eq("id", leadId);
+  if (uErr) return { ok: false, message: `plan_update_failed: ${uErr.message}` };
+
+  if (previous !== plan) {
+    await writeAudit(supabase, {
+      lead_id: leadId,
+      actor_user_id: actor?.user_id ?? null,
+      actor_email: actor?.email ?? null,
+      field: "plan", old_value: previous, new_value: plan,
+      reason: reason ?? null,
+    });
+  }
+
+  // Only a TRANSITION into a paid plan opens the queue. Re-saving the same
+  // paid plan is not a new signup and must not read as one in the audit log.
+  let vetting = null;
+  if (isPaidVettingPlan(plan) && !isPaidVettingPlan(previous)) {
+    vetting = await enterVetting(
+      supabase, leadId, `auto: plan set to ${plan}`,
+      { user_id: actor?.user_id ?? null, email: actor?.email ?? null },
+    );
+  }
+
+  return { ok: true, plan, previous, vetting };
+}

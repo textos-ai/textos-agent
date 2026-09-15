@@ -8,6 +8,7 @@
 //   POST  /api/admin/vetting/:id/status     change vetting_status (GATED)
 //   POST  /api/admin/vetting/:id/publish    the separate publish toggle
 //   POST  /api/admin/vetting/:id/enter      manual "Send for verification"
+//   POST  /api/admin/vetting/:id/plan       set the commercial plan (auto-enters)
 //   PATCH /api/admin/vetting/:id/profile    edit the published profile fields
 //   GET   /api/admin/vetting/:id/preview    exactly what the public API returns
 //
@@ -31,7 +32,7 @@ import {
   VETTING_STATUSES, CHECK_KEYS, CHECK_LABELS, CHECK_RESULTS,
   VETTING_DETAIL_COLS, VETTING_QUEUE_COLS,
   countPasses, allNinePass, failingChecks, buildUniqueSlug, writeAudit, verificationStamps,
-  enterVetting, VETTING_ENTRY_STATUS,
+  enterVetting, VETTING_ENTRY_STATUS, setPlan, PLANS, type Plan,
   type VettingStatus, type CheckKey,
 } from "../lib/trustlight-vetting";
 // The SAME shaping the public API uses. Importing it is what makes the preview
@@ -446,6 +447,46 @@ app.post("/vetting/:id/enter", async (c) => {
     id, vetting_status: entered.to, moved: true,
     audit_recorded: entered.audit_recorded,
   });
+});
+
+// ── POST /api/admin/vetting/:id/plan ───────────────────────────────────────
+// Set the commercial plan. THE AUTOMATIC ENTRY TRIGGER.
+//
+// Decision 1a made coldcall_leads.plan the single source of truth for a paid
+// vetting subscription, so becoming 'verification' or 'exclusive' is what puts
+// a business into the queue — audited as "auto: plan set to <plan>".
+//
+// This endpoint exists now, ahead of the full commercial UI, so the trigger
+// has a real call site and is reachable and tested rather than dormant code
+// waiting to be wired. The write goes through setPlan() precisely so a later
+// UI cannot add a path that sets `plan` and skips the queue entry.
+app.post("/vetting/:id/plan", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const auth = c.get("auth");
+  const id = c.req.param("id");
+
+  let body: { plan?: unknown; reason?: unknown };
+  try { body = await c.req.json(); } catch {
+    return c.json(errBody("bad_request", "body must be JSON"), 400);
+  }
+  const plan = String(body.plan ?? "");
+  if (!PLANS.includes(plan as Plan)) {
+    return c.json(errBody("bad_request", `plan must be one of ${PLANS.join("|")}`), 400);
+  }
+  const reason = typeof body.reason === "string" && body.reason.trim() ? body.reason.trim() : null;
+
+  const res = await setPlan(supabase, id, plan as Plan, { user_id: auth.user_id, email: auth.email }, reason);
+  if (!res.ok) {
+    if (res.message === "lead not found") return c.json(errBody("not_found", "lead not found"), 404);
+    log.error("[vetting] plan_set_failed", { lead_id: id, err: res.message });
+    return c.json(errBody("internal", "plan_set_failed"), 500);
+  }
+
+  log.info("[vetting] plan_set", {
+    lead_id: id, from: res.previous, to: res.plan,
+    entered_vetting: res.vetting?.ok === true && res.vetting.moved === true, by: auth.email,
+  });
+  return c.json({ id, plan: res.plan, previous: res.previous, vetting: res.vetting });
 });
 
 // ── The published profile ──────────────────────────────────────────────────
