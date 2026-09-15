@@ -4,6 +4,8 @@
 //   GET /api/directory/featured    homepage teaser, verified only
 //   GET /api/directory/search      the search page, paginated
 //   GET /api/contractor/:slug      one verified public profile
+//   GET /api/removal/:token        who a removal link belongs to (read-only)
+//   POST /api/removal/:token       one-click removal, no login
 // trustlight.com/api/* routes here.
 //
 // PUBLIC AND UNAUTHENTICATED BY NECESSITY, exactly like routes/sites.ts and
@@ -318,6 +320,87 @@ app.get("/contractor/:slug", async (c) => {
   return c.json({
     generated_at: nowIso,
     contractor: shapeProfile(data as unknown as ProfileRow),
+  });
+});
+
+// ── One-click removal ───────────────────────────────────────────────────────
+// A comped business is listed without ever asking to be, so leaving must be
+// trivial: a link in the email, no login, no reply.
+//
+// SPLIT INTO GET + POST DELIBERATELY. The obvious design — a GET link that
+// removes on click — is unsafe in email: Gmail, Outlook and corporate security
+// scanners fetch links in messages to check them, which would silently delete
+// listings nobody asked to remove. So the GET is read-only and safe to
+// prefetch, and the POST behind a single button does the work. It is still one
+// click for the recipient.
+app.get("/removal/:token", async (c) => {
+  const token = c.req.param("token");
+  if (!token || !/^[a-f0-9]{48}$/.test(token)) {
+    return c.json(errBody("not_found", "not found"), 404);
+  }
+  const supabase = createSupabaseClient(c.env);
+  const { data, error } = await supabase
+    .from("coldcall_leads")
+    .select("trading_name, legal_name, name, city, state, vetting_status, removal_requested_at")
+    .eq("removal_token", token).maybeSingle();
+  if (error) {
+    log.error("[trustlight] removal_lookup_failed", { err: error.message });
+    return c.json(errBody("internal", "removal_unavailable"), 500);
+  }
+  if (!data) return c.json(errBody("not_found", "not found"), 404);
+
+  const r = data as unknown as Record<string, unknown>;
+  // Only what the page needs to say "Remove <name>?" — no internal fields.
+  return c.json({
+    name: r.trading_name || r.legal_name || r.name,
+    city: r.city, state: r.state,
+    already_removed: r.vetting_status === "removed",
+    removed_at: r.removal_requested_at ?? null,
+  });
+});
+
+app.post("/removal/:token", async (c) => {
+  const token = c.req.param("token");
+  if (!token || !/^[a-f0-9]{48}$/.test(token)) {
+    return c.json(errBody("not_found", "not found"), 404);
+  }
+  const supabase = createSupabaseClient(c.env);
+  const { data, error } = await supabase
+    .from("coldcall_leads")
+    .select("id, trading_name, legal_name, name, vetting_status")
+    .eq("removal_token", token).maybeSingle();
+  if (error) {
+    log.error("[trustlight] removal_read_failed", { err: error.message });
+    return c.json(errBody("internal", "removal_unavailable"), 500);
+  }
+  if (!data) return c.json(errBody("not_found", "not found"), 404);
+  const r = data as unknown as { id: string; vetting_status: string; trading_name: string | null; legal_name: string | null; name: string | null };
+
+  const nowIso = new Date().toISOString();
+  const { error: uErr } = await supabase.from("coldcall_leads").update({
+    vetting_status: "removed",
+    is_published: false,
+    listing_consent: "declined",
+    removal_requested_at: nowIso,
+  }).eq("id", r.id);
+  if (uErr) {
+    log.error("[trustlight] removal_failed", { lead_id: r.id, err: uErr.message });
+    return c.json(errBody("internal", "removal_failed"), 500);
+  }
+
+  // Audited like any other status change, with no actor: this was the business
+  // itself, not an operator.
+  await supabase.from("coldcall_vetting_audit").insert({
+    lead_id: r.id, field: "vetting_status",
+    old_value: r.vetting_status, new_value: "removed",
+    reason: "self-service: removal link in the notify email",
+  });
+
+  log.info("[trustlight] self_removed", { lead_id: r.id });
+  return c.json({
+    removed: true,
+    name: r.trading_name || r.legal_name || r.name,
+    removed_at: nowIso,
   });
 });
 

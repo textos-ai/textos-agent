@@ -11,6 +11,11 @@
 //   POST  /api/admin/vetting/:id/plan       set the commercial plan (auto-enters)
 //   PATCH /api/admin/vetting/:id/profile    edit the published profile fields
 //   GET   /api/admin/vetting/:id/preview    exactly what the public API returns
+//   GET   /api/admin/vetting/campaign       the free-vetting campaign board
+//   POST  /api/admin/vetting/:id/comp       mark comped / un-comp
+//   POST  /api/admin/vetting/:id/comp-offer record conversion progress
+//   POST  /api/admin/vetting/:id/notify     notify-before-publish (DRY RUN by default)
+//   POST  /api/admin/vetting/comp-sweep     drop comps past their grace period
 //
 // Separate file from admin-coldcall.ts (already 1,185 lines) so the vetting
 // surface stays grep-able as one unit. The rules themselves live in
@@ -42,6 +47,11 @@ import {
   PROFILE_COLS, shapeVerified, shapeProfile, shapeUnvetted, visibilityOf,
   type VerifiedRow, type ProfileRow,
 } from "../lib/trustlight-public";
+import {
+  COMP_OFFER_STATUSES, CONFIG_KEYS, readConfig, removalToken,
+  renderNotifyEmail, sendEmail, compGraceDeadline,
+  type CompOfferStatus, type NotifyLead,
+} from "../lib/trustlight-campaign";
 
 const app = new Hono<{ Bindings: Env }>();
 app.use("*", requireAuth);
@@ -142,6 +152,66 @@ app.get("/vetting-queue", async (c) => {
     page_size: pageSize,
     has_more: from + leads.length < (count ?? 0),
     statuses: VETTING_STATUSES,
+  });
+});
+
+// NOTE: registered BEFORE /vetting/:id. Hono matches routes in
+// registration order, so a literal path segment has to come first or the
+// parameterised route swallows it and 'campaign' arrives as a lead id.
+// ── GET /api/admin/vetting/campaign ────────────────────────────────────────
+// The free-vetting campaign board: every comped record, how far through the
+// nine checks it is, and where it stands on converting to paid.
+app.get("/vetting/campaign", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+
+  const { data, error } = await supabase
+    .from("coldcall_leads")
+    .select(VETTING_DETAIL_COLS + ", comp_offer_status, comp_offered_at, comp_decided_at, removal_requested_at")
+    .eq("is_comped", true)
+    .order("updated_at", { ascending: true });
+  if (error) {
+    log.error("[campaign] list_failed", { err: error.message });
+    return c.json(errBody("internal", "campaign_list_failed"), 500);
+  }
+
+  const cfg = await readConfig(supabase, [CONFIG_KEYS.graceDays]);
+  const graceDays = cfg.ok ? parseInt(cfg.values[CONFIG_KEYS.graceDays], 10) : 30;
+  const now = new Date();
+
+  const rows = (data ?? []) as unknown as Array<Record<string, unknown>>;
+  const leads = rows.map((r) => {
+    const deadline = compGraceDeadline(r as { comp_offered_at: string | null }, graceDays);
+    return {
+      id: r.id,
+      name: r.trading_name || r.legal_name || r.name,
+      trade: r.trade || r.category,
+      city: r.city, state: r.state,
+      vetting_status: r.vetting_status,
+      is_published: r.is_published,
+      slug: r.slug,
+      comp_reason: r.comp_reason,
+      checks_passed: countPasses(r as Record<CheckKey, string | null>),
+      checks_total: CHECK_KEYS.length,
+      // Consent pipeline
+      notified_at: r.notified_at,
+      listing_consent: r.listing_consent,
+      removal_requested_at: r.removal_requested_at,
+      // Conversion pipeline: comped -> offered -> accepted/declined
+      comp_offer_status: r.comp_offer_status ?? null,
+      comp_offered_at: r.comp_offered_at ?? null,
+      comp_decided_at: r.comp_decided_at ?? null,
+      plan: r.plan,
+      grace_deadline: deadline ? deadline.toISOString() : null,
+      grace_days_left: deadline ? Math.ceil((deadline.getTime() - now.getTime()) / 86400000) : null,
+      grace_expired: !!deadline && deadline <= now && r.comp_offer_status === "offered",
+    };
+  });
+
+  return c.json({
+    leads,
+    total: leads.length,
+    grace_days: graceDays,
+    offer_statuses: COMP_OFFER_STATUSES,
   });
 });
 
@@ -489,6 +559,276 @@ app.post("/vetting/:id/plan", async (c) => {
   return c.json({ id, plan: res.plan, previous: res.previous, vetting: res.vetting });
 });
 
+// ── POST /api/admin/vetting/:id/comp ───────────────────────────────────────
+// Mark a business as comped (or un-comp it). A comp reason is REQUIRED when
+// switching it on: "why is this one free" is exactly the question an audit of
+// the campaign has to answer later.
+//
+// This changes nothing about verification. The nine checks still have to pass
+// the same gate; comping only records that no money changed hands.
+app.post("/vetting/:id/comp", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const auth = c.get("auth");
+  const id = c.req.param("id");
+
+  let body: { is_comped?: unknown; comp_reason?: unknown };
+  try { body = await c.req.json(); } catch {
+    return c.json(errBody("bad_request", "body must be JSON"), 400);
+  }
+  if (typeof body.is_comped !== "boolean") {
+    return c.json(errBody("bad_request", "is_comped must be a boolean"), 400);
+  }
+  const reason = typeof body.comp_reason === "string" ? body.comp_reason.trim() : "";
+  if (body.is_comped && !reason) {
+    return c.json(errBody("bad_request", "comp_reason is required when comping a business"), 400);
+  }
+
+  const { data: current } = await supabase
+    .from("coldcall_leads").select("id, is_comped").eq("id", id).maybeSingle();
+  if (!current) return c.json(errBody("not_found", "lead not found"), 404);
+  const was = (current as { is_comped: boolean }).is_comped;
+
+  const { error } = await supabase.from("coldcall_leads")
+    .update({ is_comped: body.is_comped, comp_reason: body.is_comped ? reason : null })
+    .eq("id", id);
+  if (error) {
+    log.error("[campaign] comp_update_failed", { lead_id: id, err: error.message });
+    return c.json(errBody("internal", "comp_update_failed"), 500);
+  }
+
+  await writeAudit(supabase, {
+    lead_id: id, actor_user_id: auth.user_id, actor_email: auth.email,
+    field: "is_comped", old_value: String(was), new_value: String(body.is_comped),
+    reason: body.is_comped ? reason : "un-comped",
+  });
+
+  log.info("[campaign] comp_set", { lead_id: id, is_comped: body.is_comped, by: auth.email });
+  return c.json({ id, is_comped: body.is_comped, comp_reason: body.is_comped ? reason : null });
+});
+
+// ── POST /api/admin/vetting/:id/comp-offer ─────────────────────────────────
+// Record where a comped business stands on converting to paid, so the call
+// team knows who to work: offered -> accepted | declined, with dates.
+app.post("/vetting/:id/comp-offer", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const auth = c.get("auth");
+  const id = c.req.param("id");
+
+  let body: { status?: unknown; reason?: unknown };
+  try { body = await c.req.json(); } catch {
+    return c.json(errBody("bad_request", "body must be JSON"), 400);
+  }
+  const status = String(body.status ?? "");
+  if (!COMP_OFFER_STATUSES.includes(status as CompOfferStatus)) {
+    return c.json(errBody("bad_request", `status must be one of ${COMP_OFFER_STATUSES.join("|")}`), 400);
+  }
+
+  const { data: current } = await supabase
+    .from("coldcall_leads").select("id, comp_offer_status, is_comped").eq("id", id).maybeSingle();
+  if (!current) return c.json(errBody("not_found", "lead not found"), 404);
+  const row = current as { comp_offer_status: string | null; is_comped: boolean };
+  if (!row.is_comped) {
+    return c.json(errBody("conflict", "this business is not comped — there is no comp offer to track"), 409);
+  }
+
+  const nowIso = new Date().toISOString();
+  const patch: Record<string, unknown> = { comp_offer_status: status };
+  if (status === "offered") patch.comp_offered_at = nowIso;
+  else patch.comp_decided_at = nowIso;
+
+  const { error } = await supabase.from("coldcall_leads").update(patch).eq("id", id);
+  if (error) {
+    log.error("[campaign] offer_update_failed", { lead_id: id, err: error.message });
+    return c.json(errBody("internal", "offer_update_failed"), 500);
+  }
+
+  await writeAudit(supabase, {
+    lead_id: id, actor_user_id: auth.user_id, actor_email: auth.email,
+    field: "comp_offer_status", old_value: row.comp_offer_status ?? "none", new_value: status,
+    reason: typeof body.reason === "string" && body.reason.trim() ? body.reason.trim() : null,
+  });
+
+  log.info("[campaign] offer_recorded", { lead_id: id, status, by: auth.email });
+  return c.json({ id, comp_offer_status: status, ...patch });
+});
+
+// ── POST /api/admin/vetting/:id/notify ─────────────────────────────────────
+// The notify-before-publish email.
+//
+// DRY RUN BY DEFAULT. Without `confirm: true` this renders the email and
+// sends NOTHING — the response carries the exact subject, text and HTML that
+// would go out. That default is deliberate: this mails real small businesses
+// that never asked to hear from us, and an accidental send cannot be recalled.
+//
+// Only on confirm does it send, stamp notified_at, set listing_consent to
+// 'pending', and mint the removal token.
+app.post("/vetting/:id/notify", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const auth = c.get("auth");
+  const id = c.req.param("id");
+
+  let body: { confirm?: unknown; to?: unknown };
+  try { body = await c.req.json(); } catch { body = {}; }
+  const confirm = body.confirm === true;
+
+  const cfg = await readConfig(supabase, [
+    CONFIG_KEYS.siteUrl, CONFIG_KEYS.fromEmail, CONFIG_KEYS.fromName,
+  ]);
+  if (!cfg.ok) {
+    // Load-bearing: a missing site URL means a removal link that does not
+    // work, in the very email that promises one. Halt loudly.
+    return c.json(errBody(
+      "not_configured",
+      `missing config: ${cfg.missing.join(", ")} — apply migration 127`,
+      { missing: cfg.missing },
+    ), 500);
+  }
+
+  const { data, error } = await supabase
+    .from("coldcall_leads")
+    .select("id, name, legal_name, trading_name, trade, city, state, rating, review_count, " +
+            "dti_score, blurb, verified_year, slug, expires_at, is_comped, vetting_status, " +
+            // contact_email arrives with migration 127. Selected separately
+            // below so this read still works before that is applied.
+            "notified_at, listing_consent, removal_token")
+    .eq("id", id).maybeSingle();
+  if (error) {
+    log.error("[campaign] notify_read_failed", { lead_id: id, err: error.message });
+    return c.json(errBody("internal", "notify_read_failed"), 500);
+  }
+  if (!data) return c.json(errBody("not_found", "lead not found"), 404);
+  const lead = data as unknown as Record<string, unknown>;
+
+  // A token is minted on first notify and then reused, so an earlier email's
+  // removal link keeps working after a resend.
+  const token = (lead.removal_token as string | null) || removalToken();
+  const site = cfg.values[CONFIG_KEYS.siteUrl].replace(/\/+$/, "");
+  const urls = {
+    siteUrl: site,
+    profileUrl: lead.slug ? `${site}/contractor/${lead.slug}` : site,
+    removeUrl: `${site}/remove/${token}`,
+  };
+  const mail = renderNotifyEmail(lead as unknown as NotifyLead, urls);
+
+  // An explicit `to` always wins; otherwise the address captured on the lead
+  // during the chk_contact check. Read defensively: coldcall_leads had NO
+  // email column of any kind until migration 127 added contact_email.
+  let onRecord = "";
+  const ce = await supabase.from("coldcall_leads").select("contact_email").eq("id", id).maybeSingle();
+  if (!ce.error) onRecord = String((ce.data as { contact_email: string | null } | null)?.contact_email ?? "").trim();
+  const to = typeof body.to === "string" && body.to.trim() ? body.to.trim() : onRecord;
+
+  if (!confirm) {
+    // The preview IS the email — same function, same inputs.
+    return c.json({
+      dry_run: true,
+      would_send_to: to || null,
+      can_send: !!to,
+      from: `${cfg.values[CONFIG_KEYS.fromName]} <${cfg.values[CONFIG_KEYS.fromEmail]}>`,
+      urls,
+      email: mail,
+      warnings: [
+        ...(to ? [] : ["This lead has no email address on record — supply `to` to send."]),
+        ...(lead.vetting_status === "verified" ? [] : ["Not verified yet — the email describes a listing that does not exist."]),
+        ...(lead.is_comped ? [] : ["Not marked as comped."]),
+        ...(lead.notified_at ? [`Already notified at ${String(lead.notified_at)} — this would be a resend.`] : []),
+      ],
+    });
+  }
+
+  if (!to) return c.json(errBody("bad_request", "no email address for this lead — supply `to`"), 400);
+
+  const sent = await sendEmail(c.env, {
+    to, subject: mail.subject, text: mail.text, html: mail.html,
+    from: cfg.values[CONFIG_KEYS.fromEmail], fromName: cfg.values[CONFIG_KEYS.fromName],
+    replyTo: cfg.values[CONFIG_KEYS.fromEmail],
+  });
+  if (!sent.ok) {
+    // Nothing is stamped on a failed send: notified_at must mean "they were
+    // told", not "we tried".
+    log.error("[campaign] notify_send_failed", { lead_id: id, reason: sent.reason });
+    return c.json(errBody("upstream_error", `email not sent: ${sent.reason}`), 502);
+  }
+
+  const { error: uErr } = await supabase.from("coldcall_leads").update({
+    notified_at: new Date().toISOString(),
+    listing_consent: "pending",
+    removal_token: token,
+  }).eq("id", id);
+  if (uErr) log.error("[campaign] notify_stamp_failed", { lead_id: id, err: uErr.message });
+
+  await writeAudit(supabase, {
+    lead_id: id, actor_user_id: auth.user_id, actor_email: auth.email,
+    field: "notified_at", old_value: (lead.notified_at as string | null) ?? null,
+    new_value: new Date().toISOString(), reason: `notify-before-publish sent to ${to}`,
+  });
+
+  log.info("[campaign] notified", { lead_id: id, to, by: auth.email });
+  return c.json({ dry_run: false, sent: true, to, removal_url: urls.removeUrl, email: mail });
+});
+
+// ── POST /api/admin/vetting/comp-sweep ─────────────────────────────────────
+// Drop comped listings whose grace period has run out, so a free listing ends
+// deliberately rather than persisting silently.
+//
+// Clock starts at the OFFER, not at verification — see compGraceDeadline().
+// A comped business we have never made an offer to is never swept.
+//
+// Exposed as an endpoint rather than only a cron so it is runnable and
+// testable on demand; `dry_run` reports what it would drop without touching
+// anything.
+app.post("/vetting/comp-sweep", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const auth = c.get("auth");
+
+  let body: { confirm?: unknown };
+  try { body = await c.req.json(); } catch { body = {}; }
+  const confirm = body.confirm === true;
+
+  const cfg = await readConfig(supabase, [CONFIG_KEYS.graceDays]);
+  if (!cfg.ok) return c.json(errBody("not_configured", "comp_grace_days is not set"), 500);
+  const graceDays = parseInt(cfg.values[CONFIG_KEYS.graceDays], 10);
+
+  const { data, error } = await supabase
+    .from("coldcall_leads")
+    .select("id, name, trading_name, comp_offered_at, comp_offer_status, is_published, vetting_status")
+    .eq("is_comped", true).eq("comp_offer_status", "offered");
+  if (error) {
+    log.error("[campaign] sweep_read_failed", { err: error.message });
+    return c.json(errBody("internal", "sweep_read_failed"), 500);
+  }
+
+  const now = new Date();
+  const due = ((data ?? []) as unknown as Array<Record<string, unknown>>).filter((r) => {
+    const d = compGraceDeadline(r as { comp_offered_at: string | null }, graceDays);
+    return !!d && d <= now && r.vetting_status !== "removed";
+  });
+
+  if (!confirm) {
+    return c.json({
+      dry_run: true, grace_days: graceDays, would_drop: due.length,
+      leads: due.map((r) => ({ id: r.id, name: r.trading_name || r.name, offered_at: r.comp_offered_at })),
+    });
+  }
+
+  const dropped: string[] = [];
+  for (const r of due) {
+    const id = String(r.id);
+    const { error: uErr } = await supabase.from("coldcall_leads")
+      .update({ vetting_status: "removed", is_published: false }).eq("id", id);
+    if (uErr) { log.error("[campaign] sweep_drop_failed", { lead_id: id, err: uErr.message }); continue; }
+    await writeAudit(supabase, {
+      lead_id: id, actor_user_id: auth.user_id, actor_email: auth.email,
+      field: "vetting_status", old_value: String(r.vetting_status), new_value: "removed",
+      reason: `auto: comp grace period of ${graceDays} days expired without conversion`,
+    });
+    dropped.push(id);
+  }
+
+  log.info("[campaign] sweep_done", { grace_days: graceDays, dropped: dropped.length, by: auth.email });
+  return c.json({ dry_run: false, grace_days: graceDays, dropped: dropped.length, ids: dropped });
+});
+
 // ── The published profile ──────────────────────────────────────────────────
 // Editable fields, with their validators. Anything not on this list cannot be
 // written here — an unknown field is a 400, not a silent no-op, so a typo in
@@ -505,6 +845,7 @@ const PROFILE_FIELDS = {
   city:               { type: "text",  max: 120 },
   state:              { type: "state" },
   parish:             { type: "text",  max: 120 },   // the brief's county_parish
+  contact_email:      { type: "email", max: 200 },   // INTERNAL — never published
   license_number:     { type: "text",  max: 80 },
   license_state:      { type: "state" },
   gl_carrier:         { type: "text",  max: 160 },
@@ -532,6 +873,12 @@ function coerceProfileField(key: string, raw: unknown, spec: FieldSpec):
     const v = String(raw).trim();
     if (spec.max && v.length > spec.max) return { ok: false, message: `${key} must be ${spec.max} characters or fewer` };
     return { ok: true, value: v || null };
+  }
+  if (spec.type === "email") {
+    const v = String(raw).trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) return { ok: false, message: `${key} must be an email address` };
+    if (spec.max && v.length > spec.max) return { ok: false, message: `${key} is too long` };
+    return { ok: true, value: v };
   }
   if (spec.type === "state") {
     const v = String(raw).trim().toUpperCase();
