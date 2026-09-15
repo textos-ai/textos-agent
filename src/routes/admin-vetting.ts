@@ -8,6 +8,8 @@
 //   POST  /api/admin/vetting/:id/status     change vetting_status (GATED)
 //   POST  /api/admin/vetting/:id/publish    the separate publish toggle
 //   POST  /api/admin/vetting/:id/enter      manual "Send for verification"
+//   PATCH /api/admin/vetting/:id/profile    edit the published profile fields
+//   GET   /api/admin/vetting/:id/preview    exactly what the public API returns
 //
 // Separate file from admin-coldcall.ts (already 1,185 lines) so the vetting
 // surface stays grep-able as one unit. The rules themselves live in
@@ -32,6 +34,13 @@ import {
   enterVetting, VETTING_ENTRY_STATUS,
   type VettingStatus, type CheckKey,
 } from "../lib/trustlight-vetting";
+// The SAME shaping the public API uses. Importing it is what makes the preview
+// below trustworthy — it is not a description of the public shape, it IS the
+// public shape.
+import {
+  PROFILE_COLS, shapeVerified, shapeProfile, shapeUnvetted, visibilityOf,
+  type VerifiedRow, type ProfileRow,
+} from "../lib/trustlight-public";
 
 const app = new Hono<{ Bindings: Env }>();
 app.use("*", requireAuth);
@@ -439,4 +448,168 @@ app.post("/vetting/:id/enter", async (c) => {
   });
 });
 
+// ── The published profile ──────────────────────────────────────────────────
+// Editable fields, with their validators. Anything not on this list cannot be
+// written here — an unknown field is a 400, not a silent no-op, so a typo in
+// the editor surfaces instead of quietly failing to save.
+//
+// These are PUBLISHED CLAIMS about a real business. The validators are
+// deliberately strict about shape (a rating outside 0-5, a DTI outside 0-100,
+// a 3-letter state) because a malformed claim on a trust badge is worse than
+// a rejected edit.
+const PROFILE_FIELDS = {
+  legal_name:         { type: "text",  max: 200 },
+  trading_name:       { type: "text",  max: 200 },
+  trade:              { type: "text",  max: 80 },
+  city:               { type: "text",  max: 120 },
+  state:              { type: "state" },
+  parish:             { type: "text",  max: 120 },   // the brief's county_parish
+  license_number:     { type: "text",  max: 80 },
+  license_state:      { type: "state" },
+  gl_carrier:         { type: "text",  max: 160 },
+  years_in_business:  { type: "int",   min: 0, max: 200 },
+  blurb:              { type: "text",  max: 400 },
+  services:           { type: "array", max: 25, itemMax: 80 },
+  rating:             { type: "num",   min: 0, max: 5 },
+  review_count:       { type: "int",   min: 0, max: 1000000 },
+  dti_score:          { type: "int",   min: 0, max: 100 },
+  dti_findability:    { type: "int",   min: 0, max: 100 },
+  dti_answerability:  { type: "int",   min: 0, max: 100 },
+  dti_responsiveness: { type: "int",   min: 0, max: 100 },
+  dti_completeness:   { type: "int",   min: 0, max: 100 },
+  dti_compliance:     { type: "int",   min: 0, max: 100 },
+} as const;
+
+type FieldSpec = { type: string; max?: number; min?: number; itemMax?: number };
+
+function coerceProfileField(key: string, raw: unknown, spec: FieldSpec):
+  { ok: true; value: unknown } | { ok: false; message: string } {
+  // null or "" clears a field — an operator must be able to remove a claim.
+  if (raw === null || raw === "") return { ok: true, value: null };
+
+  if (spec.type === "text") {
+    const v = String(raw).trim();
+    if (spec.max && v.length > spec.max) return { ok: false, message: `${key} must be ${spec.max} characters or fewer` };
+    return { ok: true, value: v || null };
+  }
+  if (spec.type === "state") {
+    const v = String(raw).trim().toUpperCase();
+    if (!/^[A-Z]{2}$/.test(v)) return { ok: false, message: `${key} must be a 2-letter state code` };
+    return { ok: true, value: v };
+  }
+  if (spec.type === "int" || spec.type === "num") {
+    const n = typeof raw === "number" ? raw : Number(String(raw).trim());
+    if (!Number.isFinite(n)) return { ok: false, message: `${key} must be a number` };
+    if (spec.type === "int" && !Number.isInteger(n)) return { ok: false, message: `${key} must be a whole number` };
+    if (spec.min !== undefined && n < spec.min) return { ok: false, message: `${key} must be at least ${spec.min}` };
+    if (spec.max !== undefined && n > spec.max) return { ok: false, message: `${key} must be at most ${spec.max}` };
+    return { ok: true, value: spec.type === "num" ? Math.round(n * 10) / 10 : n };
+  }
+  if (spec.type === "array") {
+    const arr = Array.isArray(raw) ? raw : String(raw).split("\n").map((x) => x.trim()).filter(Boolean);
+    if (spec.max && arr.length > spec.max) return { ok: false, message: `${key} may have at most ${spec.max} entries` };
+    const out: string[] = [];
+    for (const item of arr) {
+      const v = String(item).trim();
+      if (!v) continue;
+      if (spec.itemMax && v.length > spec.itemMax) {
+        return { ok: false, message: `each ${key} entry must be ${spec.itemMax} characters or fewer` };
+      }
+      out.push(v);
+    }
+    return { ok: true, value: out.length ? out : null };
+  }
+  return { ok: false, message: `${key} has no validator` };
+}
+
+// ── PATCH /api/admin/vetting/:id/profile ───────────────────────────────────
+// Edit the published profile. Editable at ANY vetting_status by design — the
+// profile is usually written while the checks are still being worked, and
+// nothing here is public until verified + published anyway.
+app.patch("/vetting/:id/profile", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const auth = c.get("auth");
+  const id = c.req.param("id");
+
+  let body: Record<string, unknown>;
+  try { body = await c.req.json(); } catch {
+    return c.json(errBody("bad_request", "body must be JSON"), 400);
+  }
+
+  const patch: Record<string, unknown> = {};
+  for (const [k, raw] of Object.entries(body)) {
+    const spec = (PROFILE_FIELDS as Record<string, FieldSpec>)[k];
+    if (!spec) return c.json(errBody("bad_request", `'${k}' is not an editable profile field`), 400);
+    const r = coerceProfileField(k, raw, spec);
+    if (!r.ok) return c.json(errBody("bad_request", r.message), 400);
+    patch[k] = r.value;
+  }
+  if (!Object.keys(patch).length) {
+    return c.json(errBody("bad_request", "no profile fields supplied"), 400);
+  }
+
+  const { data, error } = await supabase
+    .from("coldcall_leads").update(patch).eq("id", id)
+    .select(VETTING_DETAIL_COLS).maybeSingle();
+  if (error) {
+    log.error("[vetting] profile_update_failed", { lead_id: id, err: error.message });
+    return c.json(errBody("internal", "profile_update_failed"), 500);
+  }
+  if (!data) return c.json(errBody("not_found", "lead not found"), 404);
+
+  log.info("[vetting] profile_updated", { lead_id: id, fields: Object.keys(patch), by: auth.email });
+  return c.json({ lead: data as unknown as Record<string, unknown>, updated: Object.keys(patch) });
+});
+
+// ── GET /api/admin/vetting/:id/preview ─────────────────────────────────────
+// EXACTLY what the public API would return for this record, produced by the
+// same functions routes/trustlight.ts calls — not a description of them.
+//
+// It renders the shape even when the record is NOT publicly visible, and says
+// why, so an operator can write the profile before verification and see what
+// it will look like. `visible: false` plus the list of blockers is the signal
+// that these edits are not live yet.
+app.get("/vetting/:id/preview", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const id = c.req.param("id");
+
+  const { data, error } = await supabase
+    .from("coldcall_leads")
+    .select(`${PROFILE_COLS}, id, vetting_status, is_published, category`)
+    .eq("id", id).maybeSingle();
+  if (error) {
+    log.error("[vetting] preview_failed", { lead_id: id, err: error.message });
+    return c.json(errBody("internal", "preview_failed"), 500);
+  }
+  if (!data) return c.json(errBody("not_found", "lead not found"), 404);
+
+  const row = data as unknown as ProfileRow & {
+    vetting_status?: unknown; is_published?: unknown; category: string | null; name: string | null;
+  };
+  const vis = visibilityOf(row);
+
+  return c.json({
+    visibility: {
+      visible: vis.visible,
+      blockers: vis.blockers,
+      // Where it WOULD appear once visible. featured is additionally subject
+      // to the one-per-trade pass, so it is "eligible", not "guaranteed".
+      appears_in: vis.visible
+        ? { featured: "eligible (one per trade)", search: "yes", profile: `/contractor/${String(row.slug)}` }
+        : { featured: "no", search: "no", profile: "404" },
+    },
+    // The 12-field card, as /featured and /search would emit it.
+    card: shapeVerified(row as VerifiedRow),
+    // The full profile, as /contractor/:slug would emit it.
+    profile: shapeProfile(row),
+    // How this business reads in the unvetted list — which is what the public
+    // sees TODAY while it is not verified.
+    unvetted_entry: shapeUnvetted({
+      name: row.name, category: row.category, city: row.city, state: row.state,
+    }),
+    editable_fields: Object.keys(PROFILE_FIELDS),
+  });
+});
+
 export default app;
+

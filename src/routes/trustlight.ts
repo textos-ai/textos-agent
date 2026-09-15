@@ -44,26 +44,20 @@ import type { Env } from "../env";
 import { errBody } from "../lib/errors";
 import { log } from "../lib/logger";
 import { createSupabaseClient } from "../services/supabase";
+// The public shape lives in one place so the admin preview and this route are
+// literally the same code — see lib/trustlight-public.ts.
+import {
+  VERIFIED_COLS, PROFILE_COLS, UNVETTED_COLS,
+  shapeVerified, shapeUnvetted, shapeProfile, publishable,
+  type VerifiedRow, type ProfileRow,
+} from "../lib/trustlight-public";
 
 const app = new Hono<{ Bindings: Env }>();
 
-// ── Column whitelists ───────────────────────────────────────────────────────
-// The ONLY columns that may be read for a public response. Reviewed as a unit:
-// if a column is not on one of these lists it cannot reach the internet.
-const VERIFIED_COLS =
-  "slug, legal_name, trading_name, name, trade, city, state, parish, " +
-  "rating, review_count, dti_score, blurb, verified_year, plan, exclusive_until";
-
-const PROFILE_COLS =
-  VERIFIED_COLS + ", services, years_in_business, license_state, verified_at, expires_at, " +
-  "dti_findability, dti_answerability, dti_responsiveness, dti_completeness, dti_compliance, " +
-  "chk_licensing_board, chk_license, chk_insurance, chk_business_filing, chk_court_records, " +
-  "chk_address, chk_years_in_business, chk_contact, chk_reviews";
-
-// Unvetted rows expose FOUR fields and nothing else. Note `category`, not
-// `trade`: an unvetted business has no curated trade, so the scraped Google
-// category is shown — it is a neutral descriptor, not a judgement.
-const UNVETTED_COLS = "name, category, city, state";
+// Column whitelists, row shaping and the publishability rule all come from
+// lib/trustlight-public.ts. They are NOT redefined here: the admin profile
+// preview imports the same functions, which is what guarantees the preview
+// and the live response cannot disagree.
 
 // Homepage grid: 9 fills a 3x3, and a 4x2 simply renders the first 8.
 const FEATURED_COUNT = 9;
@@ -103,59 +97,8 @@ async function rateLimited(env: Env, ip: string, bucket: string): Promise<boolea
 const clientIp = (c: { req: { header: (k: string) => string | undefined } }) =>
   c.req.header("CF-Connecting-IP") ?? c.req.header("X-Forwarded-For")?.split(",")[0]?.trim() ?? "";
 
-// ── Shaping ─────────────────────────────────────────────────────────────────
-type VerifiedRow = {
-  slug: string | null; legal_name: string | null; trading_name: string | null; name: string | null;
-  trade: string | null; city: string | null; state: string | null; parish: string | null;
-  rating: number | null; review_count: number | null; dti_score: number | null;
-  blurb: string | null; verified_year: number | null;
-  plan: string | null; exclusive_until: string | null;
-};
-
-/** Public display name: the curated names win; the scraped one is the last resort. */
-const displayName = (r: VerifiedRow) => r.trading_name || r.legal_name || r.name || "";
-
-const isExclusive = (r: VerifiedRow) =>
-  r.plan === "exclusive" && !!r.exclusive_until && new Date(r.exclusive_until) > new Date();
-
-/**
- * Re-project a verified row into the published shape. EXPLICIT field by field —
- * never a spread — so a new database column cannot leak by accident.
- * Identical 12-field shape on both endpoints, so the site renders one card.
- */
-function shapeVerified(r: VerifiedRow) {
-  return {
-    slug: r.slug,
-    name: displayName(r),
-    trade: r.trade,
-    city: r.city,
-    state: r.state,
-    county: r.parish,
-    rating: r.rating,
-    reviews: r.review_count,
-    dti: r.dti_score,
-    blurb: r.blurb,
-    verified_year: r.verified_year,
-    exclusive: isExclusive(r),
-  };
-}
-
-/** Title-case a scraped category ("general contractor" -> "General Contractor"). */
-const titleCase = (s: string | null) =>
-  (s ?? "").split(/\s+/).filter(Boolean)
-    .map((w) => w[0].toUpperCase() + w.slice(1).toLowerCase()).join(" ");
-
 /** Strip characters that would break PostgREST's filter grammar. */
 const clean = (v: string | undefined) => (v ?? "").trim().replace(/[%,()*]/g, "").slice(0, 80);
-
-/**
- * The three conditions that make a row publishable, applied identically
- * everywhere. Kept as one function so a future endpoint cannot forget one:
- * verified, published (the separate publish toggle), and unexpired.
- */
-function publishable<T extends { eq: Function; gt: Function; not: Function }>(q: T, nowIso: string): T {
-  return q.eq("vetting_status", "verified").eq("is_published", true).gt("expires_at", nowIso) as T;
-}
 
 // ── GET /api/directory/featured ─────────────────────────────────────────────
 // Homepage only. No parameters, no unvetted, no pagination.
@@ -329,12 +272,7 @@ app.get("/directory/search", async (c) => {
     // Exactly four fields, built explicitly — not a filtered copy of the row.
     unvetted = ((data ?? []) as unknown as Array<{
       name: string | null; category: string | null; city: string | null; state: string | null;
-    }>).map((r) => ({
-      name: r.name,
-      trade: titleCase(r.category),
-      city: r.city,
-      state: r.state,
-    }));
+    }>).map(shapeUnvetted);
   }
 
   c.header("Cache-Control", "public, max-age=300, s-maxage=600");
@@ -376,54 +314,10 @@ app.get("/contractor/:slug", async (c) => {
   }
   if (!data) return c.json(errBody("not_found", "not found"), 404);
 
-  const r = data as unknown as VerifiedRow & {
-    services: string[] | null; years_in_business: number | null; license_state: string | null;
-    verified_at: string | null; expires_at: string | null;
-    dti_findability: number | null; dti_answerability: number | null;
-    dti_responsiveness: number | null; dti_completeness: number | null; dti_compliance: number | null;
-    [k: string]: unknown;
-  };
-
-  // Verification summary: WHICH checks passed, and the date. Never the notes,
-  // and never anything about a check that did not pass — a 'fail' or 'na' is
-  // simply absent from `passed`, so the response cannot be read as an accusation.
-  const CHECK_LABELS: Record<string, string> = {
-    chk_licensing_board: "State licensing board record",
-    chk_license: "License verified",
-    chk_insurance: "Insurance confirmed with carrier",
-    chk_business_filing: "Business filing confirmed",
-    chk_court_records: "Court records reviewed",
-    chk_address: "Address confirmed",
-    chk_years_in_business: "Years in business confirmed",
-    chk_contact: "Contact details confirmed",
-    chk_reviews: "Review audit completed",
-  };
-  const passed = Object.keys(CHECK_LABELS)
-    .filter((k) => r[k] === "pass")
-    .map((k) => CHECK_LABELS[k]);
-
   c.header("Cache-Control", "public, max-age=300, s-maxage=600");
   return c.json({
     generated_at: nowIso,
-    contractor: {
-      ...shapeVerified(r),
-      services: Array.isArray(r.services) ? r.services : [],
-      years_in_business: r.years_in_business,
-      license_state: r.license_state,
-      dti_pillars: {
-        findability: r.dti_findability,
-        answerability: r.dti_answerability,
-        responsiveness: r.dti_responsiveness,
-        completeness: r.dti_completeness,
-        compliance: r.dti_compliance,
-      },
-      verification: {
-        verified_at: r.verified_at,
-        expires_at: r.expires_at,
-        checks_passed: passed,
-        checks_total: Object.keys(CHECK_LABELS).length,
-      },
-    },
+    contractor: shapeProfile(data as unknown as ProfileRow),
   });
 });
 

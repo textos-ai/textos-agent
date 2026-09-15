@@ -173,6 +173,29 @@ about *what* renders; this is about *when* it appears.
 
 ---
 
+## Shared admin CSS (TrustLight vetting page move)
+
+**Logged 2026-09-15. Not scheduled — separate task.**
+
+`/admin/coldcall-callers` and `/admin/trustlight-vetting` now each carry
+their own copy of the `.cc-*` / `.lm-*` base rules (cards, tables, pager,
+flash, modal shell). The duplication was introduced deliberately when vetting
+moved to its own page: a mechanical copy of coldcall-callers' block would
+have dragged responsive overrides out of their media queries and the lead
+modal's two-column `.lm-cols` layout, which the vetting view does not use, so
+the new page got a hand-written minimal subset instead.
+
+The fix is to extract the shared subset into one stylesheet both pages
+import, leaving each page only its page-specific rules. Worth doing before a
+third admin page needs the same base — at that point the copies will start
+drifting.
+
+Risk if left: a fix to a shared rule (e.g. table borders, modal z-index) gets
+applied to one page and not the other, and the divergence is invisible until
+someone looks at both pages side by side.
+
+---
+
 ## Notes
 
 - Path A scope was **pure removal of debug scaffolding** (console.logs, diagnostic comments, dead `requestBody`, redundant aliases, the documented-ineffective `Promise.race` + `setTimeout` wrapper) plus adapting the v2 unit tests. No behavior change to the working strategy path.
