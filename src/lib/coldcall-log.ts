@@ -25,6 +25,12 @@ export const CALL_OUTCOMES = [
   "meeting_booked",
   "wrong_number",
   "do_not_call",
+  // Added 2026-09-01. All callback-shaped (STATUS_FOR_OUTCOME → 'callback').
+  // interested_followup_req is deliberately distinct from interested_followup
+  // ("Callback booked"): the softer "interested, no firm time" case.
+  "interested_followup_req",
+  "will_call_back",
+  "call_back_tomorrow",
 ] as const;
 
 export type CallOutcome = (typeof CALL_OUTCOMES)[number];
@@ -61,6 +67,19 @@ export const STATUS_FOR_OUTCOME: Record<CallOutcome, LeadStatus> = {
   not_interested: "not_interested",
   do_not_call: "not_interested",
   wrong_number: "bad_number",
+  interested_followup_req: "callback",
+  will_call_back: "callback",
+  call_back_tomorrow: "callback",
+};
+
+/**
+ * Outcomes that seed a followup date when the caller didn't set one.
+ * "Call back tomorrow" means exactly that — a followup ~24h out — so the lead
+ * lands in the followups-due list without the caller re-typing a date. Any
+ * explicit followup_at the caller passes still wins (see logCallAttempt).
+ */
+export const AUTO_FOLLOWUP_OUTCOMES: Partial<Record<CallOutcome, () => string>> = {
+  call_back_tomorrow: () => new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
 };
 
 export interface LogAttemptInput {
@@ -120,7 +139,15 @@ export async function logCallAttempt(
   // only touched when the caller actually supplied them.
   const patch: Record<string, unknown> = { last_touched_at: new Date().toISOString() };
   if (typeof status === "string") patch.status = status;
-  if (followupAt !== undefined) patch.followup_at = followupAt;
+  // An explicit followup_at (string or null) always wins. Only when the caller
+  // left it undefined does an auto-followup outcome (e.g. "call back tomorrow")
+  // seed a date.
+  let effectiveFollowup = followupAt;
+  if (effectiveFollowup === undefined) {
+    const seed = AUTO_FOLLOWUP_OUTCOMES[outcome];
+    if (seed) effectiveFollowup = seed();
+  }
+  if (effectiveFollowup !== undefined) patch.followup_at = effectiveFollowup;
 
   const { data: lead, error: updErr } = await supabase
     .from("coldcall_leads")

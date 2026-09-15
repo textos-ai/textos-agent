@@ -11,7 +11,12 @@ export type ParseResult =
   | { ok: true; patch: SettingsPatch }
   | { ok: false; message: string };
 
-const SERVICE_KEYS = ["svc_website", "svc_ai_automation", "svc_fb_ads"] as const;
+const SERVICE_KEYS = ["svc_website", "svc_ai_automation", "svc_fb_ads", "svc_trustlight"] as const;
+
+// Numeric price columns, each validated as > 0. script_price_monthly is the
+// bundled monthly price for the three core services; trustlight_price_yearly is
+// the Vetted Network's own yearly price (migration 125).
+const PRICE_KEYS = ["script_price_monthly", "trustlight_price_yearly"] as const;
 
 /**
  * Validate a partial settings update.
@@ -26,13 +31,15 @@ const SERVICE_KEYS = ["svc_website", "svc_ai_automation", "svc_fb_ads"] as const
 export function parseSettingsPatch(body: Record<string, unknown>): ParseResult {
   const patch: SettingsPatch = {};
 
-  if ("script_price_monthly" in body) {
-    const raw = body.script_price_monthly;
-    const n = typeof raw === "number" ? raw : Number(String(raw ?? "").trim());
-    if (!Number.isFinite(n) || n <= 0) {
-      return { ok: false, message: "script_price_monthly must be a number greater than 0" };
+  for (const key of PRICE_KEYS) {
+    if (key in body) {
+      const raw = body[key];
+      const n = typeof raw === "number" ? raw : Number(String(raw ?? "").trim());
+      if (!Number.isFinite(n) || n <= 0) {
+        return { ok: false, message: `${key} must be a number greater than 0` };
+      }
+      patch[key] = Math.round(n * 100) / 100;
     }
-    patch.script_price_monthly = Math.round(n * 100) / 100;
   }
 
   for (const key of SERVICE_KEYS) {
@@ -51,4 +58,5 @@ export function parseSettingsPatch(body: Record<string, unknown>): ParseResult {
 }
 
 export const SETTINGS_COLS =
-  "id, script_price_monthly, svc_website, svc_ai_automation, svc_fb_ads";
+  "id, script_price_monthly, svc_website, svc_ai_automation, svc_fb_ads, " +
+  "svc_trustlight, trustlight_price_yearly";

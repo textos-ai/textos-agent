@@ -497,7 +497,10 @@ app.get("/coldcall-leads", async (c) => {
         return c.json(errBody("internal", "browse_ids_failed"), 500);
       }
       total = count ?? 0;
-      const rows = (data ?? []) as Array<{ id: string }>;
+      // Cast through unknown: the select string is built from a template
+      // literal, so supabase-js cannot statically parse it and types `data`
+      // as ParserError[]. The runtime shape is verified by e2e-demo-filter.mjs.
+      const rows = (data ?? []) as unknown as Array<{ id: string }>;
       ids.push(...rows.map((r) => r.id));
       if (rows.length < PAGE_SIZE) break;
     }
@@ -593,7 +596,25 @@ app.get("/coldcall-leads/:id", async (c) => {
     assignee = (a as typeof assignee) ?? null;
   }
 
-  return c.json({ lead, activity: acts, assignee });
+  // Active signups (what this lead actually bought — distinct from the svc_*
+  // interest toggles). Service name/billing_group come from the catalog so the
+  // modal can roll the 'core' group into one line at read time.
+  //
+  // NON-FATAL by design: signups are supplementary. A read failure here (e.g.
+  // migration 125 not yet applied on this DB) must not take down the whole lead
+  // modal — it degrades to an empty signups list, and lead+activity still load.
+  const { data: signups, error: suErr } = await supabase
+    .from("coldcall_lead_signups")
+    .select("id, service_slug, status, price_amount, billing_cycle, signed_up_at, signed_up_by, note, " +
+            "coldcall_services(name, billing_group, sort_order)")
+    .eq("lead_id", id)
+    .eq("status", "active")
+    .order("signed_up_at", { ascending: true });
+  if (suErr) {
+    log.warn("[coldcall-admin] lead_signups_read_failed", { lead_id: id, err: suErr.message });
+  }
+
+  return c.json({ lead, activity: acts, assignee, signups: suErr ? [] : (signups ?? []) });
 });
 
 // ── POST /api/admin/coldcall-leads/:id/log ─────────────────────────────────
@@ -750,6 +771,129 @@ app.patch("/coldcall-leads/:id/settings", async (c) => {
 
   log.info("[coldcall-admin] script_settings_saved", { lead_id: id, fields: Object.keys(patch) });
   return c.json({ settings: data });
+});
+
+// ── Signed-up services ─────────────────────────────────────────────────────
+// The svc_* toggles above record INTEREST during the call. These endpoints
+// record what a lead actually SIGNED UP for — a separate, persistent ledger
+// (coldcall_lead_signups) over an extensible catalog (coldcall_services). New
+// services are a catalog row, never a code change; the frontend rolls the
+// 'core' billing_group into one $297/mo line at read time (Option A).
+
+// GET /api/admin/coldcall-services — the catalog, for the add-signup picker.
+app.get("/coldcall-services", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const { data, error } = await supabase
+    .from("coldcall_services")
+    .select("slug, name, billing_cycle, default_price, billing_group, sort_order")
+    .eq("active", true)
+    .order("sort_order", { ascending: true });
+  if (error) {
+    log.error("[coldcall-admin] services_list_failed", { err: error.message });
+    return c.json(errBody("internal", "services_list_failed"), 500);
+  }
+  return c.json({ services: data ?? [] });
+});
+
+// POST /api/admin/coldcall-leads/:id/signups — sign a lead up for one service.
+// price_amount defaults to the catalog price; billing_cycle is taken from the
+// catalog (never the client). One active signup per (lead, service) → 409.
+app.post("/coldcall-leads/:id/signups", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const auth = c.get("auth");
+  const id = c.req.param("id");
+
+  let body: { service_slug?: unknown; price_amount?: unknown; note?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json(errBody("bad_request", "body must be JSON"), 400);
+  }
+
+  if (typeof body.service_slug !== "string" || !body.service_slug) {
+    return c.json(errBody("bad_request", "service_slug is required"), 400);
+  }
+  const slug = body.service_slug;
+
+  const { data: lead, error: lErr } = await supabase
+    .from("coldcall_leads").select("id").eq("id", id).maybeSingle();
+  if (lErr) {
+    log.error("[coldcall-admin] signup_lead_lookup_failed", { lead_id: id, err: lErr.message });
+    return c.json(errBody("internal", "signup_lead_lookup_failed"), 500);
+  }
+  if (!lead) return c.json(errBody("not_found", "lead not found"), 404);
+
+  const { data: svc, error: sErr } = await supabase
+    .from("coldcall_services")
+    .select("slug, billing_cycle, default_price, active")
+    .eq("slug", slug).maybeSingle();
+  if (sErr) {
+    log.error("[coldcall-admin] signup_service_lookup_failed", { err: sErr.message });
+    return c.json(errBody("internal", "signup_service_lookup_failed"), 500);
+  }
+  const service = svc as { slug: string; billing_cycle: string; default_price: number; active: boolean } | null;
+  if (!service || !service.active) {
+    return c.json(errBody("bad_request", `unknown or inactive service: ${slug}`), 400);
+  }
+
+  let price = Number(service.default_price);
+  if (body.price_amount !== undefined && body.price_amount !== null) {
+    const n = typeof body.price_amount === "number" ? body.price_amount : Number(String(body.price_amount).trim());
+    if (!Number.isFinite(n) || n <= 0) {
+      return c.json(errBody("bad_request", "price_amount must be a number greater than 0"), 400);
+    }
+    price = Math.round(n * 100) / 100;
+  }
+  const note = typeof body.note === "string" && body.note.trim() ? body.note.trim() : null;
+
+  // Attribute to the admin's own caller row when they have one; nullable.
+  let signedUpBy: string | null = null;
+  const { data: callerRow } = await supabase
+    .from("coldcall_callers").select("id").eq("user_id", auth.user_id).maybeSingle();
+  if (callerRow) signedUpBy = (callerRow as { id: string }).id;
+
+  const { data: created, error: iErr } = await supabase
+    .from("coldcall_lead_signups")
+    .insert({
+      lead_id: id, service_slug: slug, price_amount: price,
+      billing_cycle: service.billing_cycle, signed_up_by: signedUpBy, note,
+    })
+    .select("id, service_slug, status, price_amount, billing_cycle, signed_up_at, signed_up_by, note")
+    .single();
+  if (iErr) {
+    const e = iErr as { code?: string; message?: string };
+    if (e.code === "23505") {
+      return c.json(errBody("conflict", `lead is already signed up for '${slug}'`, { service_slug: slug }), 409);
+    }
+    log.error("[coldcall-admin] signup_insert_failed", { lead_id: id, service: slug, err: e.message ?? String(iErr) });
+    return c.json(errBody("internal", "signup_insert_failed"), 500);
+  }
+
+  log.info("[coldcall-admin] signup_added", { lead_id: id, service: slug, price });
+  return c.json({ signup: created }, 201);
+});
+
+// DELETE /api/admin/coldcall-leads/:id/signups/:signupId — soft-cancel a signup
+// (status flip, keeps the row so re-signups keep history).
+app.delete("/coldcall-leads/:id/signups/:signupId", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const id = c.req.param("id");
+  const signupId = c.req.param("signupId");
+
+  const { data, error } = await supabase
+    .from("coldcall_lead_signups")
+    .update({ status: "cancelled", cancelled_at: new Date().toISOString() })
+    .eq("id", signupId).eq("lead_id", id).eq("status", "active")
+    .select("id, service_slug, status")
+    .maybeSingle();
+  if (error) {
+    log.error("[coldcall-admin] signup_cancel_failed", { lead_id: id, signup_id: signupId, err: error.message });
+    return c.json(errBody("internal", "signup_cancel_failed"), 500);
+  }
+  if (!data) return c.json(errBody("not_found", "active signup not found"), 404);
+
+  log.info("[coldcall-admin] signup_cancelled", { lead_id: id, signup_id: signupId });
+  return c.json({ signup: data });
 });
 
 // ── POST /api/admin/coldcall-leads/assign ──────────────────────────────────
