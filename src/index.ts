@@ -51,6 +51,7 @@ import coldcallRoutes from "./routes/coldcall"; // INTERNAL: cold-calling tool (
 import adminColdcallRoutes from "./routes/admin-coldcall"; // INTERNAL: coldcall caller management + lead assignment
 import coldcallDemoRoutes from "./routes/coldcall-demo"; // PUBLIC: prospect-facing demo landing page
 import trustlightRoutes from "./routes/trustlight"; // PUBLIC: trustlight.com directory API
+import adminVettingRoutes from "./routes/admin-vetting"; // INTERNAL: TrustLight vetting queue + verification
 import { runHeartbeatWatchdog } from "./cron/heartbeatWatchdog";
 import { runGenAppStaleSweep } from "./cron/genAppStaleSweep";
 import { runScheduledReconcile } from "./cron/reconcileScheduledPosts";
@@ -154,6 +155,7 @@ app.route("/api/coldcall-demo", coldcallDemoRoutes);
 // live paths are /api/directory and /api/contractor/:slug, which is what the
 // trustlight.com/api/* zone route delivers. Every read uses an explicit column
 // whitelist: coldcall_leads holds third-party PII that must never leave.
+app.route("/api/admin", adminVettingRoutes);
 app.route("/api", trustlightRoutes);
 
 
