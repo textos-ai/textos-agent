@@ -1,7 +1,10 @@
 // =============================================================
 // TrustLight — PUBLIC directory API.
-// Mounted at /api, so the live paths are /api/directory and
-// /api/contractor/:slug. trustlight.com/api/* routes here.
+// Mounted at /api, so the live paths are:
+//   GET /api/directory/featured    homepage teaser, verified only
+//   GET /api/directory/search      the search page, paginated
+//   GET /api/contractor/:slug      one verified public profile
+// trustlight.com/api/* routes here.
 //
 // PUBLIC AND UNAUTHENTICATED BY NECESSITY, exactly like routes/sites.ts and
 // routes/coldcall-demo.ts: trustlight.com is a static site read by storm-
@@ -10,6 +13,11 @@
 // This file deliberately has NO `app.use("*", requireAuth)`. That is why it is
 // a separate router from coldcall.ts / admin-coldcall.ts, whose blanket guards
 // would otherwise authenticate everything added to them. Do not merge them.
+//
+// There is deliberately NO plain /api/directory any more. It served the
+// homepage teaser and the search page at once, which meant an unfiltered call
+// returned a slab of the lead table. The two jobs have different shapes and
+// different risks, so they are two endpoints; neither can return the database.
 //
 // ── THE BOUNDARY ────────────────────────────────────────────────────────────
 // coldcall_leads holds third-party PII for ~15,822 businesses we scraped and
@@ -57,18 +65,21 @@ const PROFILE_COLS =
 // category is shown — it is a neutral descriptor, not a judgement.
 const UNVETTED_COLS = "name, category, city, state";
 
-// Result caps. Unfiltered, `unvetted` would be ~15,800 rows — several MB and
-// well past what a Worker should serialise. The site filters by city/trade, so
-// these ceilings are generous for real use and are reported in the response.
-const DEFAULT_LIMIT = 200;
-const MAX_LIMIT = 500;
+// Homepage grid: 9 fills a 3x3, and a 4x2 simply renders the first 8.
+const FEATURED_COUNT = 9;
+// Pool pulled before the one-per-trade pass. Comfortably larger than the grid
+// so variety is possible without a second round trip.
+const FEATURED_POOL = 100;
+
+const PER_PAGE_DEFAULT = 50;
+const PER_PAGE_MAX = 75;
 
 // ── Rate limiting ───────────────────────────────────────────────────────────
 // Fixed 60s window per IP, in KV. KV is eventually consistent and caps writes
 // per key per second, so this is a coarse abuse brake, NOT a precise quota —
-// which is the right shape here: the endpoint sits behind a 5-minute CDN cache,
-// so genuine traffic mostly never reaches the Worker at all. Fails OPEN: a KV
-// outage must not take the public directory down.
+// which is the right shape here: these endpoints sit behind a 5-minute CDN
+// cache, so genuine traffic mostly never reaches the Worker at all. Fails
+// OPEN: a KV outage must not take the public directory down.
 const RATE_WINDOW_SECONDS = 60;
 const RATE_MAX_PER_WINDOW = 120;
 
@@ -110,6 +121,7 @@ const isExclusive = (r: VerifiedRow) =>
 /**
  * Re-project a verified row into the published shape. EXPLICIT field by field —
  * never a spread — so a new database column cannot leak by accident.
+ * Identical 12-field shape on both endpoints, so the site renders one card.
  */
 function shapeVerified(r: VerifiedRow) {
   return {
@@ -133,94 +145,207 @@ const titleCase = (s: string | null) =>
   (s ?? "").split(/\s+/).filter(Boolean)
     .map((w) => w[0].toUpperCase() + w.slice(1).toLowerCase()).join(" ");
 
-// ── GET /api/directory ──────────────────────────────────────────────────────
-app.get("/directory", async (c) => {
-  if (await rateLimited(c.env, clientIp(c), "dir")) {
+/** Strip characters that would break PostgREST's filter grammar. */
+const clean = (v: string | undefined) => (v ?? "").trim().replace(/[%,()*]/g, "").slice(0, 80);
+
+/**
+ * The three conditions that make a row publishable, applied identically
+ * everywhere. Kept as one function so a future endpoint cannot forget one:
+ * verified, published (the separate publish toggle), and unexpired.
+ */
+function publishable<T extends { eq: Function; gt: Function; not: Function }>(q: T, nowIso: string): T {
+  return q.eq("vetting_status", "verified").eq("is_published", true).gt("expires_at", nowIso) as T;
+}
+
+// ── GET /api/directory/featured ─────────────────────────────────────────────
+// Homepage only. No parameters, no unvetted, no pagination.
+//
+// SELECTION STRATEGY: one per trade, best first.
+// A pool of the highest-DTI publishable businesses is fetched, then reduced to
+// the best single entry per trade, then the grid is topped up from the
+// remaining pool if fewer than FEATURED_COUNT distinct trades exist.
+//
+// Chosen over "most recently verified" (which would make the homepage churn
+// and would front-load whichever trade we happened to onboard last) and over
+// plain "highest DTI" (which could show nine roofers). A family arriving after
+// a flood should see the range of help available, not one trade nine times.
+app.get("/directory/featured", async (c) => {
+  if (await rateLimited(c.env, clientIp(c), "feat")) {
     return c.json(errBody("rate_limited", "too many requests"), 429);
   }
 
   const supabase = createSupabaseClient(c.env);
   const nowIso = new Date().toISOString();
 
-  // Strip the characters that would break PostgREST's filter grammar rather
-  // than interpolating user input into a filter string.
-  const clean = (v: string | undefined) => (v ?? "").trim().replace(/[%,()*]/g, "").slice(0, 80);
-  const state = clean(c.req.query("state"));
-  const county = clean(c.req.query("county"));
-  const trade = clean(c.req.query("trade"));
-  const q = clean(c.req.query("q"));
-
-  const limRaw = parseInt(c.req.query("limit") ?? "", 10);
-  const limit = Math.min(MAX_LIMIT, Number.isFinite(limRaw) && limRaw > 0 ? limRaw : DEFAULT_LIMIT);
-
-  // ── verified ──
-  // vetting_status='verified' AND not expired AND published. is_published is a
-  // deliberate second gate (brief section 5: "a publish toggle separate from
-  // verified status"), and it only means anything if the public read honours
-  // it — otherwise completing the checks would publish instantly.
-  let vq = supabase
-    .from("coldcall_leads")
-    .select(VERIFIED_COLS)
-    .eq("vetting_status", "verified")
-    .eq("is_published", true)
-    .gt("expires_at", nowIso)
+  const { data, error } = await publishable(
+    supabase.from("coldcall_leads").select(VERIFIED_COLS), nowIso,
+  )
     .not("slug", "is", null)
     .order("dti_score", { ascending: false, nullsFirst: false })
-    .limit(limit);
-  if (state) vq = vq.eq("state", state);
-  if (county) vq = vq.eq("parish", county);
-  if (trade) vq = vq.ilike("trade", trade);
-  if (q) vq = vq.ilike("trading_name", `%${q}%`);
+    .order("rating", { ascending: false, nullsFirst: false })
+    .limit(FEATURED_POOL);
 
-  const { data: vData, error: vErr } = await vq;
-  if (vErr) {
-    log.error("[trustlight] directory_verified_failed", { err: vErr.message });
+  if (error) {
+    log.error("[trustlight] featured_failed", { err: error.message });
     return c.json(errBody("internal", "directory_unavailable"), 500);
   }
 
-  // ── unvetted ──
-  // ONLY vetting_status='lead'. Every other state — invited, in_verification,
-  // failed, suspended, declined, removed — is absent from both lists. A
-  // business mid-verification must not be visible, and a business that failed
-  // must never be publicly identifiable as having failed.
-  let uq = supabase
-    .from("coldcall_leads")
-    .select(UNVETTED_COLS)
-    .eq("vetting_status", "lead")
-    .not("name", "is", null)
-    .order("name", { ascending: true })
-    .limit(limit);
-  if (state) uq = uq.eq("state", state);
-  if (county) uq = uq.eq("parish", county);
-  if (trade) uq = uq.ilike("category", trade);
-  if (q) uq = uq.ilike("name", `%${q}%`);
-
-  const { data: uData, error: uErr } = await uq;
-  if (uErr) {
-    log.error("[trustlight] directory_unvetted_failed", { err: uErr.message });
-    return c.json(errBody("internal", "directory_unavailable"), 500);
+  const pool = (data ?? []) as unknown as VerifiedRow[];
+  const seen = new Set<string>();
+  const picked: VerifiedRow[] = [];
+  for (const r of pool) {
+    const key = (r.trade ?? "").toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    picked.push(r);
+    if (picked.length === FEATURED_COUNT) break;
   }
-
-  const verified = ((vData ?? []) as unknown as VerifiedRow[]).map(shapeVerified);
-
-  // Exactly four fields, built explicitly. Not a filtered copy of the row.
-  const unvetted = ((uData ?? []) as unknown as Array<{
-    name: string | null; category: string | null; city: string | null; state: string | null;
-  }>).map((r) => ({
-    name: r.name,
-    trade: titleCase(r.category),
-    city: r.city,
-    state: r.state,
-  }));
+  // Top up if there are fewer distinct trades than grid slots, so the homepage
+  // is never a half-empty grid.
+  if (picked.length < FEATURED_COUNT) {
+    for (const r of pool) {
+      if (picked.includes(r)) continue;
+      picked.push(r);
+      if (picked.length === FEATURED_COUNT) break;
+    }
+  }
 
   c.header("Cache-Control", "public, max-age=300, s-maxage=600");
   return c.json({
     generated_at: nowIso,
+    strategy: "one_per_trade_by_dti",
+    featured: picked.map(shapeVerified),
+  });
+});
+
+// ── GET /api/directory/search ───────────────────────────────────────────────
+// The search page. Filters: state, county, trade, city, q. Paginated.
+//
+// PAGINATION IS OVER ONE ORDERED STREAM: every verified result precedes every
+// unvetted one, then that single stream is sliced by page. So page 1 is
+// verified until they run out, and unvetted only begin once they do. Verified
+// is the featured tier, not just another row — including across page breaks.
+//
+// A page is ALWAYS capped at per_page. There is no parameter that returns the
+// table, filtered or not.
+app.get("/directory/search", async (c) => {
+  if (await rateLimited(c.env, clientIp(c), "search")) {
+    return c.json(errBody("rate_limited", "too many requests"), 429);
+  }
+
+  const supabase = createSupabaseClient(c.env);
+  const nowIso = new Date().toISOString();
+
+  const state = clean(c.req.query("state"));
+  const county = clean(c.req.query("county"));
+  const trade = clean(c.req.query("trade"));
+  const city = clean(c.req.query("city"));
+  const q = clean(c.req.query("q"));
+
+  const pageRaw = parseInt(c.req.query("page") ?? "", 10);
+  const page = Number.isFinite(pageRaw) && pageRaw > 0 ? pageRaw : 1;
+  const ppRaw = parseInt(c.req.query("per_page") ?? "", 10);
+  const perPage = Math.min(PER_PAGE_MAX, Number.isFinite(ppRaw) && ppRaw > 0 ? ppRaw : PER_PAGE_DEFAULT);
+  const offset = (page - 1) * perPage;
+
+  // ilike with no wildcards is a case-insensitive equals — forgiving for a
+  // dropdown value that may not match the stored casing.
+  const applyVerified = <T extends { ilike: Function }>(qq: T): T => {
+    let x = qq as T & Record<string, Function>;
+    if (state) x = x.ilike("state", state);
+    if (county) x = x.ilike("parish", county);
+    if (trade) x = x.ilike("trade", trade);
+    if (city) x = x.ilike("city", city);
+    if (q) x = x.ilike("trading_name", `%${q}%`);
+    return x as T;
+  };
+  // Unvetted has no curated trade, so the trade filter matches the scraped
+  // category, and the name search matches the scraped name.
+  const applyUnvetted = <T extends { ilike: Function }>(qq: T): T => {
+    let x = qq as T & Record<string, Function>;
+    if (state) x = x.ilike("state", state);
+    if (county) x = x.ilike("parish", county);
+    if (trade) x = x.ilike("category", trade);
+    if (city) x = x.ilike("city", city);
+    if (q) x = x.ilike("name", `%${q}%`);
+    return x as T;
+  };
+
+  // Counts first: they decide how the page splits between the two tiers.
+  const { count: vCount, error: vcErr } = await applyVerified(
+    publishable(supabase.from("coldcall_leads").select("id", { count: "exact", head: true }), nowIso)
+      .not("slug", "is", null),
+  );
+  if (vcErr) {
+    log.error("[trustlight] search_verified_count_failed", { err: vcErr.message });
+    return c.json(errBody("internal", "directory_unavailable"), 500);
+  }
+  const { count: uCount, error: ucErr } = await applyUnvetted(
+    supabase.from("coldcall_leads").select("id", { count: "exact", head: true })
+      .eq("vetting_status", "lead").not("name", "is", null),
+  );
+  if (ucErr) {
+    log.error("[trustlight] search_unvetted_count_failed", { err: ucErr.message });
+    return c.json(errBody("internal", "directory_unavailable"), 500);
+  }
+
+  const totalVerified = vCount ?? 0;
+  const totalUnvetted = uCount ?? 0;
+
+  // Slice the single stream: verified first, then unvetted.
+  const vTake = Math.max(0, Math.min(perPage, totalVerified - offset));
+  const vFrom = Math.min(offset, totalVerified);
+  const uTake = perPage - vTake;
+  const uFrom = Math.max(0, offset - totalVerified);
+
+  let verified: ReturnType<typeof shapeVerified>[] = [];
+  if (vTake > 0) {
+    const { data, error } = await applyVerified(
+      publishable(supabase.from("coldcall_leads").select(VERIFIED_COLS), nowIso).not("slug", "is", null),
+    )
+      .order("dti_score", { ascending: false, nullsFirst: false })
+      .order("rating", { ascending: false, nullsFirst: false })
+      .order("slug", { ascending: true })          // stable tiebreak across pages
+      .range(vFrom, vFrom + vTake - 1);
+    if (error) {
+      log.error("[trustlight] search_verified_failed", { err: error.message });
+      return c.json(errBody("internal", "directory_unavailable"), 500);
+    }
+    verified = ((data ?? []) as unknown as VerifiedRow[]).map(shapeVerified);
+  }
+
+  let unvetted: Array<{ name: string | null; trade: string; city: string | null; state: string | null }> = [];
+  if (uTake > 0) {
+    const { data, error } = await applyUnvetted(
+      supabase.from("coldcall_leads").select(UNVETTED_COLS)
+        .eq("vetting_status", "lead").not("name", "is", null),
+    )
+      .order("name", { ascending: true })
+      .range(uFrom, uFrom + uTake - 1);
+    if (error) {
+      log.error("[trustlight] search_unvetted_failed", { err: error.message });
+      return c.json(errBody("internal", "directory_unavailable"), 500);
+    }
+    // Exactly four fields, built explicitly — not a filtered copy of the row.
+    unvetted = ((data ?? []) as unknown as Array<{
+      name: string | null; category: string | null; city: string | null; state: string | null;
+    }>).map((r) => ({
+      name: r.name,
+      trade: titleCase(r.category),
+      city: r.city,
+      state: r.state,
+    }));
+  }
+
+  c.header("Cache-Control", "public, max-age=300, s-maxage=600");
+  return c.json({
+    generated_at: nowIso,
+    page,
+    per_page: perPage,
+    total_verified: totalVerified,
+    total_unvetted: totalUnvetted,
     verified,
     unvetted,
-    // Honest about truncation rather than silently returning a partial list.
-    limit,
-    truncated: { verified: verified.length >= limit, unvetted: unvetted.length >= limit },
   });
 });
 
@@ -241,14 +366,9 @@ app.get("/contractor/:slug", async (c) => {
   const supabase = createSupabaseClient(c.env);
   const nowIso = new Date().toISOString();
 
-  const { data, error } = await supabase
-    .from("coldcall_leads")
-    .select(PROFILE_COLS)
-    .eq("slug", slug)
-    .eq("vetting_status", "verified")
-    .eq("is_published", true)
-    .gt("expires_at", nowIso)
-    .maybeSingle();
+  const { data, error } = await publishable(
+    supabase.from("coldcall_leads").select(PROFILE_COLS).eq("slug", slug), nowIso,
+  ).maybeSingle();
 
   if (error) {
     log.error("[trustlight] profile_failed", { slug, err: error.message });
