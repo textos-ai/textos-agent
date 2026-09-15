@@ -34,6 +34,8 @@ import {
   logCallAttempt, CALL_OUTCOMES, LEAD_STATUSES, STATUS_FOR_OUTCOME,
   type CallOutcome, type LeadStatus,
 } from "../lib/coldcall-log";
+// Shared entry point into the vetting queue — see lib/trustlight-vetting.ts.
+import { enterVetting } from "../lib/trustlight-vetting";
 
 const app = new Hono<{ Bindings: Env }>();
 app.use("*", requireAuth);
@@ -870,7 +872,28 @@ app.post("/coldcall-leads/:id/signups", async (c) => {
   }
 
   log.info("[coldcall-admin] signup_added", { lead_id: id, service: slug, price });
-  return c.json({ signup: created }, 201);
+
+  // AUTOMATIC ENTRY INTO VETTING. A paid Vetted Network signup puts the
+  // business into the verification queue — it does NOT verify anything; all
+  // nine checks still have to pass the gate in the normal way.
+  //
+  // NON-FATAL: the signup itself already succeeded and is the customer's
+  // record of what they bought. If the queue entry fails, that is logged and
+  // reported in the response, never rolled back on top of a paid signup.
+  let vetting: unknown = null;
+  if (slug === "trustlight") {
+    const entered = await enterVetting(supabase, id, "auto: trustlight signup", {
+      user_id: auth.user_id, email: auth.email,
+    });
+    if (!entered.ok) {
+      log.error("[coldcall-admin] signup_vetting_entry_failed", { lead_id: id, err: entered.message });
+    } else {
+      log.info("[coldcall-admin] signup_vetting_entry", { lead_id: id, moved: entered.moved });
+    }
+    vetting = entered;
+  }
+
+  return c.json({ signup: created, vetting }, 201);
 });
 
 // DELETE /api/admin/coldcall-leads/:id/signups/:signupId — soft-cancel a signup

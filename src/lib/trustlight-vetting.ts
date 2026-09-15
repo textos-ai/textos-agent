@@ -177,3 +177,72 @@ export function verificationStamps(now = new Date()) {
     reverify_due: reverify.toISOString(),
   };
 }
+
+/**
+ * THE ENTRY POINT into the vetting queue.
+ *
+ * One helper, called from every path that can put a business into vetting —
+ * the automatic trustlight-signup hook and the manual "Send for verification"
+ * button today, and the paid-plan hook when that exists. Keeping it in one
+ * place is why the audit reason is a parameter rather than a literal at each
+ * call site.
+ *
+ * ENTERS AT 'in_verification', NOT 'invited'. The queue's default view is
+ * in_verification — that is the working queue. A paid signup that landed in
+ * 'invited' would sit outside the view an operator actually looks at, which is
+ * the failure mode worth designing against. 'invited' stays available for a
+ * future "we asked, they have not answered" flow.
+ *
+ * IDEMPOTENT BY DESIGN: it only moves a lead that is still at 'lead'. Anything
+ * already in, through, or rejected from vetting is left exactly as it is, so a
+ * second signup, a double-click, or a re-run cannot restart or rewind work in
+ * progress. It reports which of those happened rather than silently no-opping.
+ *
+ * This NEVER verifies anything. It only opens the queue entry; all nine checks
+ * still have to pass through the gate in the normal way.
+ */
+export const VETTING_ENTRY_STATUS: VettingStatus = "in_verification";
+
+export async function enterVetting(
+  supabase: { from: Function },
+  leadId: string,
+  reason: string,
+  actor?: { user_id?: string | null; email?: string | null },
+): Promise<
+  | { ok: true; moved: true; from: VettingStatus; to: VettingStatus; audit_recorded: boolean }
+  | { ok: true; moved: false; reason: "already_in_vetting"; current: string }
+  | { ok: false; message: string }
+> {
+  const { data, error } = await supabase
+    .from("coldcall_leads").select("id, vetting_status").eq("id", leadId).maybeSingle();
+  if (error) return { ok: false, message: `lead_lookup_failed: ${error.message}` };
+  if (!data) return { ok: false, message: "lead not found" };
+
+  const current = String((data as { vetting_status: string }).vetting_status ?? "lead");
+  if (current !== "lead") {
+    return { ok: true, moved: false, reason: "already_in_vetting", current };
+  }
+
+  const { error: uErr } = await supabase
+    .from("coldcall_leads")
+    .update({ vetting_status: VETTING_ENTRY_STATUS })
+    // Re-assert the precondition in the WHERE clause so two concurrent callers
+    // cannot both believe they moved it.
+    .eq("id", leadId).eq("vetting_status", "lead");
+  if (uErr) return { ok: false, message: `status_update_failed: ${uErr.message}` };
+
+  const audit = await writeAudit(supabase, {
+    lead_id: leadId,
+    actor_user_id: actor?.user_id ?? null,
+    actor_email: actor?.email ?? null,
+    field: "vetting_status",
+    old_value: "lead",
+    new_value: VETTING_ENTRY_STATUS,
+    reason,
+  });
+
+  return {
+    ok: true, moved: true, from: "lead", to: VETTING_ENTRY_STATUS,
+    audit_recorded: audit.ok,
+  };
+}

@@ -7,6 +7,7 @@
 //   PATCH /api/admin/vetting/:id/checks     set check results + internal notes
 //   POST  /api/admin/vetting/:id/status     change vetting_status (GATED)
 //   POST  /api/admin/vetting/:id/publish    the separate publish toggle
+//   POST  /api/admin/vetting/:id/enter      manual "Send for verification"
 //
 // Separate file from admin-coldcall.ts (already 1,185 lines) so the vetting
 // surface stays grep-able as one unit. The rules themselves live in
@@ -28,6 +29,7 @@ import {
   VETTING_STATUSES, CHECK_KEYS, CHECK_LABELS, CHECK_RESULTS,
   VETTING_DETAIL_COLS, VETTING_QUEUE_COLS,
   countPasses, allNinePass, failingChecks, buildUniqueSlug, writeAudit, verificationStamps,
+  enterVetting, VETTING_ENTRY_STATUS,
   type VettingStatus, type CheckKey,
 } from "../lib/trustlight-vetting";
 
@@ -389,6 +391,51 @@ app.post("/vetting/:id/publish", async (c) => {
     id, is_published: wanted, slug: row.slug,
     public_url: wanted && row.slug ? `/contractor/${row.slug}` : null,
     audit_recorded: audit.ok,
+  });
+});
+
+// ── POST /api/admin/vetting/:id/enter ──────────────────────────────────────
+// The MANUAL entry point — the "Send for verification" button on the lead.
+//
+// Exists alongside the automatic trustlight-signup hook because verification
+// often starts without a billing event: a business asks about it on a call, or
+// it is a comped listing in the free-vetting campaign that never "signs up" in
+// the billing sense at all.
+//
+// A dedicated endpoint rather than a plain status change, so the
+// "only from 'lead'" precondition is enforced here and not merely by a hidden
+// button. Clicking twice, or on a business already being worked, is a 409.
+app.post("/vetting/:id/enter", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const auth = c.get("auth");
+  const id = c.req.param("id");
+
+  let body: { reason?: unknown } = {};
+  try { body = await c.req.json(); } catch { /* body is optional here */ }
+  const extra = typeof body.reason === "string" && body.reason.trim() ? ` — ${body.reason.trim()}` : "";
+
+  const entered = await enterVetting(
+    supabase, id, `manual: ${auth.email ?? auth.user_id}${extra}`,
+    { user_id: auth.user_id, email: auth.email },
+  );
+
+  if (!entered.ok) {
+    log.error("[vetting] manual_entry_failed", { lead_id: id, err: entered.message });
+    if (entered.message === "lead not found") return c.json(errBody("not_found", "lead not found"), 404);
+    return c.json(errBody("internal", "vetting_entry_failed"), 500);
+  }
+  if (!entered.moved) {
+    return c.json(errBody(
+      "conflict",
+      `already in vetting (status: ${entered.current}) — nothing to send`,
+      { current: entered.current },
+    ), 409);
+  }
+
+  log.info("[vetting] manual_entry", { lead_id: id, to: entered.to, by: auth.email });
+  return c.json({
+    id, vetting_status: entered.to, moved: true,
+    audit_recorded: entered.audit_recorded,
   });
 });
 
