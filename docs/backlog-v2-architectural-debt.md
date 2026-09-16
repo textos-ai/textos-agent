@@ -196,6 +196,44 @@ someone looks at both pages side by side.
 
 ---
 
+## TrustLight email screens (parked 2026-09-16)
+
+**Backend is BUILT and on test. No UI, by decision — next work cycle.**
+
+Parked so the first 50 can be emailed by hand while the campaign board
+handles consent and removal tracking manually.
+
+Already built and staying as-is:
+
+- `coldcall_email_approvals` (migration 128) — one frozen message per row.
+  Subject, body and recipient are immutable after approval via a database
+  trigger, and `sent`/`rejected` are terminal.
+- `POST /api/admin/vetting/:id/notify` — renders and FREEZES a pending
+  approval row. Never sends.
+- `POST /api/admin/email-approvals/:id/approve` — the only send path.
+  Records the approver before attempting the send, so a failed send still
+  shows who authorised it.
+- `POST /api/admin/email-approvals/:id/reject`
+- `GET /api/admin/email-approvals` — the queue, pending first.
+- `senderAllowed()` — hard structural refusal of any domain but
+  trustlight.com. A TrustLight email from victora.ai reads as phishing to
+  the audience whose trust the product depends on.
+- `senderDomainVerified()` — live SendGrid domain-authentication check
+  before every send, failing closed.
+- `trustlight_email_enabled` — deliberately unseeded; its absence is the
+  off switch.
+
+**What is missing: the two screens.** An approval queue UI (to / subject /
+full body / removal link, approve and reject, sent+rejected history with
+who and when) and a notify-preview button on the campaign board.
+
+Until those exist the send path is reachable only by direct API call. That
+is not a gap to fix quickly — it is the current safety posture, and it
+should stay that way until someone deliberately builds the screens and
+turns the switch on.
+
+---
+
 ## Notes
 
 - Path A scope was **pure removal of debug scaffolding** (console.logs, diagnostic comments, dead `requestBody`, redundant aliases, the documented-ineffective `Promise.race` + `setTimeout` wrapper) plus adapting the v2 unit tests. No behavior change to the working strategy path.

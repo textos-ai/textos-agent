@@ -14,6 +14,8 @@
 //   GET   /api/admin/vetting/campaign       the free-vetting campaign board
 //   POST  /api/admin/vetting/:id/comp       mark comped / un-comp
 //   POST  /api/admin/vetting/:id/comp-offer record conversion progress
+//   POST  /api/admin/vetting/:id/notified   MANUAL notified + consent (hand-sent email)
+//   POST  /api/admin/vetting/:id/removal-link  mint/return the opt-out link
 //   POST  /api/admin/vetting/:id/notify     notify-before-publish (DRY RUN by default)
 //   POST  /api/admin/vetting/comp-sweep     drop comps past their grace period
 //   GET   /api/admin/email-approvals        the per-email approval queue
@@ -917,6 +919,163 @@ app.post("/email-approvals/:id/reject", async (c) => {
 
   log.info("[campaign] approval_rejected", { approval_id: id, by: auth.email });
   return c.json({ approval_id: id, status: "rejected", rejected_by: auth.email, reason });
+});
+
+// ── POST /api/admin/vetting/:id/notified ───────────────────────────────────
+// MANUAL consent tracking, for email sent by hand.
+//
+// The approval-queue send path is built but has no screens yet (parked), so
+// the first 50 are being emailed personally. This records that: it stamps
+// notified_at and sets listing_consent to what the business actually said.
+//
+// Deliberately SEPARATE from the automated notify endpoint. That one stamps
+// notified_at only on a genuinely sent email; this one is an operator saying
+// "I emailed them myself". Both write the audit log, and the audit reason
+// distinguishes them — otherwise a hand-sent email and a system-sent one
+// would be indistinguishable later, and "were they told?" is the question
+// this whole record exists to answer.
+app.post("/vetting/:id/notified", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const auth = c.get("auth");
+  const id = c.req.param("id");
+
+  let body: { listing_consent?: unknown; notified_at?: unknown; note?: unknown; clear_notified?: unknown };
+  try { body = await c.req.json(); } catch {
+    return c.json(errBody("bad_request", "body must be JSON"), 400);
+  }
+
+  const CONSENTS = ["pending", "granted", "declined"];
+  const consent = body.listing_consent === null ? null : String(body.listing_consent ?? "");
+  if (consent !== null && !CONSENTS.includes(consent)) {
+    return c.json(errBody("bad_request", `listing_consent must be one of ${CONSENTS.join("|")} or null`), 400);
+  }
+
+  // A supplied date lets an operator record an email sent last week rather
+  // than being forced to claim it went out just now.
+  let notifiedAt: string | null = new Date().toISOString();
+  if (body.clear_notified === true) {
+    notifiedAt = null;
+  } else if (typeof body.notified_at === "string" && body.notified_at.trim()) {
+    const d = new Date(body.notified_at);
+    if (Number.isNaN(d.getTime())) {
+      return c.json(errBody("bad_request", "notified_at is not a valid date"), 400);
+    }
+    if (d.getTime() > Date.now() + 60_000) {
+      return c.json(errBody("bad_request", "notified_at cannot be in the future"), 400);
+    }
+    notifiedAt = d.toISOString();
+  }
+
+  const { data: current, error: rErr } = await supabase
+    .from("coldcall_leads")
+    .select("id, notified_at, listing_consent, is_comped, vetting_status")
+    .eq("id", id).maybeSingle();
+  if (rErr) {
+    log.error("[campaign] notified_read_failed", { lead_id: id, err: rErr.message });
+    return c.json(errBody("internal", "notified_read_failed"), 500);
+  }
+  if (!current) return c.json(errBody("not_found", "lead not found"), 404);
+  const row = current as { notified_at: string | null; listing_consent: string | null };
+
+  const patch: Record<string, unknown> = { notified_at: notifiedAt, listing_consent: consent };
+  // A business that declines is not listed. Recording the decline and leaving
+  // the listing up would make the record a lie.
+  if (consent === "declined") {
+    patch.is_published = false;
+    patch.vetting_status = "removed";
+    patch.removal_requested_at = new Date().toISOString();
+  }
+
+  const { data: updated, error: uErr } = await supabase
+    .from("coldcall_leads").update(patch).eq("id", id)
+    .select("id, notified_at, listing_consent, is_published, vetting_status").maybeSingle();
+  if (uErr) {
+    log.error("[campaign] notified_update_failed", { lead_id: id, err: uErr.message });
+    return c.json(errBody("internal", "notified_update_failed"), 500);
+  }
+
+  const note = typeof body.note === "string" && body.note.trim() ? ` — ${body.note.trim()}` : "";
+  if (String(row.notified_at ?? "") !== String(notifiedAt ?? "")) {
+    await writeAudit(supabase, {
+      lead_id: id, actor_user_id: auth.user_id, actor_email: auth.email,
+      field: "notified_at", old_value: row.notified_at, new_value: notifiedAt,
+      reason: `manual: emailed by hand${note}`,
+    });
+  }
+  if (String(row.listing_consent ?? "") !== String(consent ?? "")) {
+    await writeAudit(supabase, {
+      lead_id: id, actor_user_id: auth.user_id, actor_email: auth.email,
+      field: "listing_consent", old_value: row.listing_consent, new_value: consent,
+      reason: `manual: recorded by ${auth.email}${note}`,
+    });
+  }
+  if (consent === "declined") {
+    await writeAudit(supabase, {
+      lead_id: id, actor_user_id: auth.user_id, actor_email: auth.email,
+      field: "vetting_status", old_value: String((current as { vetting_status: string }).vetting_status),
+      new_value: "removed", reason: `manual: business declined the listing${note}`,
+    });
+  }
+
+  log.info("[campaign] notified_manual", { lead_id: id, consent, by: auth.email });
+  return c.json({ lead: updated, consents: CONSENTS });
+});
+
+// ── POST /api/admin/vetting/:id/removal-link ───────────────────────────────
+// Mint (or return) the one-click removal link for a record, so it can be
+// pasted into a hand-written email.
+//
+// IDEMPOTENT: a lead keeps the same token once minted, so a link already sent
+// to a business never stops working because someone opened this again.
+app.post("/vetting/:id/removal-link", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const auth = c.get("auth");
+  const id = c.req.param("id");
+
+  const cfg = await readConfig(supabase, [CONFIG_KEYS.siteUrl]);
+  if (!cfg.ok) {
+    // Load-bearing: a wrong base URL means handing a business an opt-out link
+    // that does not work.
+    return c.json(errBody("not_configured", `missing config: ${cfg.missing.join(", ")}`), 500);
+  }
+
+  const { data, error } = await supabase
+    .from("coldcall_leads").select("id, name, trading_name, legal_name, removal_token")
+    .eq("id", id).maybeSingle();
+  if (error) {
+    log.error("[campaign] removal_link_read_failed", { lead_id: id, err: error.message });
+    return c.json(errBody("internal", "removal_link_failed"), 500);
+  }
+  if (!data) return c.json(errBody("not_found", "lead not found"), 404);
+  const row = data as unknown as Record<string, string | null>;
+
+  let token = row.removal_token;
+  let minted = false;
+  if (!token) {
+    token = removalToken();
+    const { error: uErr } = await supabase
+      .from("coldcall_leads").update({ removal_token: token }).eq("id", id);
+    if (uErr) {
+      log.error("[campaign] removal_token_mint_failed", { lead_id: id, err: uErr.message });
+      return c.json(errBody("internal", "removal_link_failed"), 500);
+    }
+    minted = true;
+    await writeAudit(supabase, {
+      lead_id: id, actor_user_id: auth.user_id, actor_email: auth.email,
+      field: "removal_token", old_value: null, new_value: "(minted)",
+      reason: "removal link generated for a hand-written email",
+    });
+  }
+
+  const site = cfg.values[CONFIG_KEYS.siteUrl].replace(/\/+$/, "");
+  return c.json({
+    id,
+    business: row.trading_name || row.legal_name || row.name,
+    removal_url: `${site}/remove/${token}`,
+    // The test-side page, so the flow is clickable before trustlight.com has one.
+    test_removal_url: `https://textos-web-test.pages.dev/remove/${token}`,
+    minted,
+  });
 });
 
 // ── POST /api/admin/vetting/comp-sweep ─────────────────────────────────────
