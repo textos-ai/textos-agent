@@ -65,6 +65,11 @@ export const VETTING_DETAIL_COLS = [
   "years_in_business", "blurb", "services", "rating", "review_count",
   "dti_score", "dti_findability", "dti_answerability", "dti_responsiveness",
   "dti_completeness", "dti_compliance",
+  // Sales-Ready scoring, read straight from the lead. INTERNAL ONLY — these
+  // never appear in lib/trustlight-public.ts, and the public harness asserts
+  // no "call_score" key reaches any public response.
+  "call_score", "rank", "score_category", "score_category_source",
+  "score_review", "score_rating", "is_cap_demoted", "is_unrated",
   "plan", "is_comped", "comp_reason", "listing_consent", "notified_at",
   "exclusive_trade", "exclusive_county", "exclusive_state", "exclusive_until",
   "chk_last_run",
@@ -75,8 +80,35 @@ export const VETTING_DETAIL_COLS = [
 export const VETTING_QUEUE_COLS = [
   "id", "name", "trade", "category", "city", "state", "parish",
   "vetting_status", "slug", "is_published", "verified_at", "expires_at", "updated_at",
+  // Rank and score so the queue can be worked best-first. INTERNAL ONLY.
+  "call_score", "rank",
   ...CHECK_KEYS,
 ].join(", ");
+
+/**
+ * How the queue and the campaign board may be ordered.
+ *
+ * 'oldest' is the default and stays the default: the vetting queue is a work
+ * queue, and the thing waiting longest is the thing at risk of being
+ * forgotten. 'score' is opt-in, for deciding who to pre-approve and call
+ * first.
+ *
+ * There was no existing sort control in the coldcall lead browser to match —
+ * it is hardcoded to call_score desc — so this is a new, explicit choice
+ * rather than a copied pattern.
+ */
+export const QUEUE_SORTS = ["oldest", "score"] as const;
+export type QueueSort = (typeof QUEUE_SORTS)[number];
+
+/** Apply a sort to a queue query. Score descending, nulls last. */
+export function applyQueueSort<T extends { order: Function }>(q: T, sort: QueueSort): T {
+  if (sort === "score") {
+    return q
+      .order("call_score", { ascending: false, nullsFirst: false })
+      .order("id", { ascending: true }) as T;          // stable across pages
+  }
+  return q.order("updated_at", { ascending: true }) as T;
+}
 
 type CheckRow = Partial<Record<CheckKey, string | null>>;
 

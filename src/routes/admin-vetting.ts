@@ -42,6 +42,7 @@ import {
   VETTING_STATUSES, CHECK_KEYS, CHECK_LABELS, CHECK_RESULTS,
   VETTING_DETAIL_COLS, VETTING_QUEUE_COLS,
   countPasses, allNinePass, failingChecks, buildUniqueSlug, writeAudit, verificationStamps,
+  QUEUE_SORTS, applyQueueSort, type QueueSort,
   enterVetting, VETTING_ENTRY_STATUS, setPlan, PLANS, type Plan,
   type VettingStatus, type CheckKey,
 } from "../lib/trustlight-vetting";
@@ -91,11 +92,17 @@ app.get("/vetting-queue", async (c) => {
 
   const q = (c.req.query("q") ?? "").trim().replace(/[%,()]/g, "");
 
-  let query = supabase
-    .from("coldcall_leads")
-    .select(VETTING_QUEUE_COLS, { count: "exact" })
-    .order("updated_at", { ascending: true })   // oldest first
-    .range(from, from + pageSize - 1);
+  const sort = (c.req.query("sort") ?? "oldest") as QueueSort;
+  if (!QUEUE_SORTS.includes(sort)) {
+    return c.json(errBody("bad_request", `sort must be one of ${QUEUE_SORTS.join("|")}`), 400);
+  }
+
+  let query = applyQueueSort(
+    supabase
+      .from("coldcall_leads")
+      .select(VETTING_QUEUE_COLS, { count: "exact" }),
+    sort,
+  ).range(from, from + pageSize - 1);
   if (status) query = query.eq("vetting_status", status);
   if (q) query = query.ilike("name", `%${q}%`);
 
@@ -147,6 +154,9 @@ app.get("/vetting-queue", async (c) => {
       days_in_status: since ? Math.floor((now - new Date(since).getTime()) / 86400000) : null,
       verified_at: r.verified_at,
       expires_at: r.expires_at,
+      // Sales-Ready score, read not computed. Admin-only.
+      call_score: r.call_score ?? null,
+      rank: r.rank ?? null,
     };
   });
 
@@ -157,6 +167,8 @@ app.get("/vetting-queue", async (c) => {
     page_size: pageSize,
     has_more: from + leads.length < (count ?? 0),
     statuses: VETTING_STATUSES,
+    sort,
+    sorts: QUEUE_SORTS,
   });
 });
 
@@ -169,11 +181,15 @@ app.get("/vetting-queue", async (c) => {
 app.get("/vetting/campaign", async (c) => {
   const supabase = createSupabaseClient(c.env);
 
-  const { data, error } = await supabase
+  const sort = (c.req.query("sort") ?? "oldest") as QueueSort;
+  if (!QUEUE_SORTS.includes(sort)) {
+    return c.json(errBody("bad_request", `sort must be one of ${QUEUE_SORTS.join("|")}`), 400);
+  }
+
+  const { data, error } = await applyQueueSort(supabase
     .from("coldcall_leads")
-    .select(VETTING_DETAIL_COLS + ", comp_offer_status, comp_offered_at, comp_decided_at, removal_requested_at")
-    .eq("is_comped", true)
-    .order("updated_at", { ascending: true });
+    .select(VETTING_DETAIL_COLS + ", comp_offer_status, comp_offered_at, comp_decided_at, removal_requested_at"), sort)
+    .eq("is_comped", true);
   if (error) {
     log.error("[campaign] list_failed", { err: error.message });
     return c.json(errBody("internal", "campaign_list_failed"), 500);
@@ -209,6 +225,9 @@ app.get("/vetting/campaign", async (c) => {
       grace_deadline: deadline ? deadline.toISOString() : null,
       grace_days_left: deadline ? Math.ceil((deadline.getTime() - now.getTime()) / 86400000) : null,
       grace_expired: !!deadline && deadline <= now && r.comp_offer_status === "offered",
+      // Who to pre-approve and call first. Admin-only.
+      call_score: r.call_score ?? null,
+      rank: r.rank ?? null,
     };
   });
 
@@ -217,6 +236,8 @@ app.get("/vetting/campaign", async (c) => {
     total: leads.length,
     grace_days: graceDays,
     offer_statuses: COMP_OFFER_STATUSES,
+    sort,
+    sorts: QUEUE_SORTS,
   });
 });
 
