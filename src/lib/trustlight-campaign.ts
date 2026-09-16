@@ -32,6 +32,7 @@ export const CONFIG_KEYS = {
   fromEmail: "trustlight_from_email",
   emailEnabled: "trustlight_email_enabled",
   fromName: "trustlight_from_name",
+  reverifyWindowDays: "reverify_window_days",
 } as const;
 
 export async function readConfig(

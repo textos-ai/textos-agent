@@ -18,6 +18,7 @@
 //   POST  /api/admin/vetting/:id/removal-link  mint/return the opt-out link
 //   POST  /api/admin/vetting/:id/notify     notify-before-publish (DRY RUN by default)
 //   POST  /api/admin/vetting/comp-sweep     drop comps past their grace period
+//   GET   /api/admin/vetting/reverification the renewal pipeline (READ-ONLY)
 //   GET   /api/admin/vetting/exclusivity    the area board: claimed, expired, open
 //   POST  /api/admin/vetting/:id/exclusivity         claim an area (GATED)
 //   POST  /api/admin/vetting/:id/exclusivity/release release an area
@@ -42,6 +43,9 @@ import { requireAdmin } from "../lib/admin";
 import { errBody } from "../lib/errors";
 import { log } from "../lib/logger";
 import { createSupabaseClient } from "../services/supabase";
+// daysUntil lives with the exclusivity rules because that is where it was
+// first needed; it is plain date arithmetic and the re-verification dashboard
+// reuses it rather than keeping a second copy that could drift.
 import {
   AREA_FIELDS, areaKey, areaLabel, blocksClaim, claimState, daysUntil,
   holderName, isAreaConflict, normalizeArea, parseUntil, rowArea,
@@ -52,6 +56,7 @@ import {
   VETTING_DETAIL_COLS, VETTING_QUEUE_COLS,
   countPasses, allNinePass, failingChecks, buildUniqueSlug, writeAudit, verificationStamps,
   QUEUE_SORTS, CAMPAIGN_SORTS, applyQueueSort, isDaysSort,
+  REVERIFY_SORTS, applyReverifySort, type ReverifySort,
   latestStatusChanges, sortByDaysInStatus, type QueueSort,
   enterVetting, VETTING_ENTRY_STATUS, setPlan, PLANS, type Plan,
   type VettingStatus, type CheckKey,
@@ -321,6 +326,104 @@ app.get("/vetting/campaign", async (c) => {
 // ── GET /api/admin/vetting/:id ─────────────────────────────────────────────
 // One business: every check with its internal note, the published-profile
 // fields, and the audit trail.
+// ── GET /api/admin/vetting/reverification ──────────────────────────────────
+// The renewal pipeline: verified records whose re-verification is due inside
+// the configured window, soonest first, plus everything already expired.
+//
+// READ-ONLY BY DESIGN. This endpoint writes nothing and offers no action.
+// Re-verification itself is started from the vetting record, through the same
+// gate as any other verification — there is no shortcut from this screen,
+// because a renewal that skipped the nine checks would be the one thing that
+// makes the badge stop meaning anything.
+//
+// Already-expired records are included whatever the window says. They still
+// read 'verified' in the admin view but have ALREADY dropped out of the
+// public API (publishable() requires expires_at > now), so hiding them for
+// being outside a forward-looking window would hide the worst cases.
+app.get("/vetting/reverification", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const now = new Date();
+  const nowIso = now.toISOString();
+
+  const sort = (c.req.query("sort") ?? "due") as ReverifySort;
+  if (!REVERIFY_SORTS.includes(sort)) {
+    return c.json(errBody("bad_request", `sort must be one of ${REVERIFY_SORTS.join("|")}`), 400);
+  }
+
+  // The window is config, not a literal. Its absence is refused rather than
+  // defaulted: a dashboard quietly looking at the wrong number of days is how
+  // a verification lapses without anyone seeing it coming.
+  const cfg = await readConfig(supabase, [CONFIG_KEYS.reverifyWindowDays]);
+  if (!cfg.ok) {
+    return c.json(errBody("not_configured",
+      "reverify_window_days is not set — apply migration 130 (trustlight reverify window)"), 500);
+  }
+  const windowDays = parseInt(cfg.values[CONFIG_KEYS.reverifyWindowDays], 10);
+  if (!Number.isFinite(windowDays) || windowDays <= 0) {
+    return c.json(errBody("not_configured",
+      `reverify_window_days is '${cfg.values[CONFIG_KEYS.reverifyWindowDays]}', which is not a positive number of days`), 500);
+  }
+  const horizon = new Date(now.getTime() + windowDays * 86400000).toISOString();
+
+  // Two populations, one screen:
+  //   1. due soon    — reverify_due on or before the horizon
+  //   2. expired     — expires_at already past, whatever reverify_due says
+  // PostgREST can express that as one `or`, so it stays a single query and a
+  // record that is both is returned once.
+  const { data, error } = await applyReverifySort(
+    supabase
+      .from("coldcall_leads")
+      .select("id, name, trading_name, legal_name, slug, rank, call_score, " +
+              "verified_at, verified_year, expires_at, reverify_due, is_published, " +
+              "plan, is_comped, vetting_status")
+      .eq("vetting_status", "verified")
+      .or(`reverify_due.lte.${horizon},expires_at.lte.${nowIso}`),
+    sort,
+  );
+  if (error) {
+    log.error("[reverify] read_failed", { err: error.message });
+    return c.json(errBody("internal", "reverification_read_failed"), 500);
+  }
+
+  type Row = Record<string, unknown>;
+  const rows = (data ?? []) as unknown as Row[];
+
+  const leads = rows.map((r) => {
+    const expiresAt = (r.expires_at as string | null) ?? null;
+    const days = daysUntil(expiresAt, now);
+    return {
+      id: r.id,
+      name: (r.trading_name as string) || (r.legal_name as string) || (r.name as string),
+      slug: r.slug ?? null,
+      rank: r.rank ?? null,
+      call_score: r.call_score ?? null,
+      verified_at: r.verified_at ?? null,
+      verified_year: r.verified_year ?? null,
+      expires_at: expiresAt,
+      reverify_due: r.reverify_due ?? null,
+      days_until_expiry: days,
+      // Already out of the public directory, whatever the admin view says.
+      is_expired: !!expiresAt && expiresAt <= nowIso,
+      is_published: r.is_published === true,
+      plan: (r.plan as string) ?? "none",
+      is_comped: r.is_comped === true,
+    };
+  });
+
+  return c.json({
+    window_days: windowDays,
+    horizon,
+    generated_at: nowIso,
+    total: leads.length,
+    expired_count: leads.filter((l) => l.is_expired).length,
+    due_count: leads.filter((l) => !l.is_expired).length,
+    leads,
+    sort,
+    sorts: REVERIFY_SORTS,
+    read_only: true,
+  });
+});
+
 // ── Parish Exclusive ───────────────────────────────────────────────────────
 // One verified business per (trade, county, state). The database enforces the
 // race with a partial unique index (126); these routes exist to make it

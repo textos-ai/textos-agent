@@ -109,6 +109,54 @@ export const QUEUE_SORTS = [
 ] as const;
 export type QueueSort = (typeof QUEUE_SORTS)[number];
 
+/**
+ * How the re-verification dashboard may be ordered.
+ *
+ * 'due' is the default and the reason the screen exists: the renewal closest
+ * to lapsing is the one that needs working. Everything else is opt-in.
+ *
+ * Unlike Days in status, Days until expiry IS orderable in SQL — it comes
+ * straight from expires_at rather than being derived from the audit log — so
+ * it needs no special path in the route.
+ */
+export const REVERIFY_SORTS = [
+  "due",
+  "rank_asc", "rank_desc",
+  "score_desc", "score_asc",
+  "expiry_asc", "expiry_desc",
+] as const;
+export type ReverifySort = (typeof REVERIFY_SORTS)[number];
+
+/**
+ * Apply a re-verification sort.
+ *
+ * nullsFirst:false throughout, for the same reason as the queue: Postgres
+ * defaults to NULLS FIRST on a descending sort, which would float a record
+ * with no rank above rank 1. A record with no expiry date sorts last rather
+ * than reading as the most urgent thing on the screen.
+ */
+export function applyReverifySort<T extends { order: Function }>(q: T, sort: ReverifySort): T {
+  switch (sort) {
+    case "rank_asc":
+      return q.order("rank", { ascending: true, nullsFirst: false }).order("id", { ascending: true }) as T;
+    case "rank_desc":
+      return q.order("rank", { ascending: false, nullsFirst: false }).order("id", { ascending: true }) as T;
+    case "score_desc":
+      return q.order("call_score", { ascending: false, nullsFirst: false }).order("id", { ascending: true }) as T;
+    case "score_asc":
+      return q.order("call_score", { ascending: true, nullsFirst: false }).order("id", { ascending: true }) as T;
+    case "expiry_asc":
+      return q.order("expires_at", { ascending: true, nullsFirst: false }).order("id", { ascending: true }) as T;
+    case "expiry_desc":
+      return q.order("expires_at", { ascending: false, nullsFirst: false }).order("id", { ascending: true }) as T;
+    default:
+      // Soonest due first. reverify_due is the pipeline's own clock; expires_at
+      // is the deadline it exists to protect.
+      return q.order("reverify_due", { ascending: true, nullsFirst: false })
+              .order("id", { ascending: true }) as T;
+  }
+}
+
 /** The campaign board has no Days in status column. */
 export const CAMPAIGN_SORTS = QUEUE_SORTS.filter((s) => !s.startsWith("days_"));
 
