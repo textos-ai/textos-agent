@@ -16,6 +16,9 @@
 //   POST  /api/admin/vetting/:id/comp-offer record conversion progress
 //   POST  /api/admin/vetting/:id/notify     notify-before-publish (DRY RUN by default)
 //   POST  /api/admin/vetting/comp-sweep     drop comps past their grace period
+//   GET   /api/admin/email-approvals        the per-email approval queue
+//   POST  /api/admin/email-approvals/:id/approve   approve AND send (only send path)
+//   POST  /api/admin/email-approvals/:id/reject
 //
 // Separate file from admin-coldcall.ts (already 1,185 lines) so the vetting
 // surface stays grep-able as one unit. The rules themselves live in
@@ -49,7 +52,7 @@ import {
 } from "../lib/trustlight-public";
 import {
   COMP_OFFER_STATUSES, CONFIG_KEYS, readConfig, removalToken,
-  renderNotifyEmail, sendEmail, compGraceDeadline,
+  renderNotifyEmail, sendEmail, compGraceDeadline, senderAllowed,
   type CompOfferStatus, type NotifyLead,
 } from "../lib/trustlight-campaign";
 
@@ -653,47 +656,46 @@ app.post("/vetting/:id/comp-offer", async (c) => {
 });
 
 // ── POST /api/admin/vetting/:id/notify ─────────────────────────────────────
-// The notify-before-publish email.
+// Queue the notify-before-publish email FOR APPROVAL. This never sends.
 //
-// DRY RUN BY DEFAULT. Without `confirm: true` this renders the email and
-// sends NOTHING — the response carries the exact subject, text and HTML that
-// would go out. That default is deliberate: this mails real small businesses
-// that never asked to hear from us, and an accidental send cannot be recalled.
+// The rendered message is FROZEN into coldcall_email_approvals as 'pending'.
+// Sending happens in exactly one place — the approve endpoint below, acting on
+// a specific approved row — so "nothing sends without approval" is a property
+// of the API, not a discipline the UI is trusted to keep.
 //
-// Only on confirm does it send, stamp notified_at, set listing_consent to
-// 'pending', and mint the removal token.
+// `preview: true` renders without queueing, for looking at the wording.
 app.post("/vetting/:id/notify", async (c) => {
   const supabase = createSupabaseClient(c.env);
   const auth = c.get("auth");
   const id = c.req.param("id");
 
-  let body: { confirm?: unknown; to?: unknown };
+  let body: { preview?: unknown; to?: unknown };
   try { body = await c.req.json(); } catch { body = {}; }
-  const confirm = body.confirm === true;
+  const previewOnly = body.preview === true;
 
   const cfg = await readConfig(supabase, [
     CONFIG_KEYS.siteUrl, CONFIG_KEYS.fromEmail, CONFIG_KEYS.fromName,
   ]);
-  // Read separately and NOT required: its absence means "sending is off",
-  // which is the safe default and must not block a dry-run preview.
-  const gate = await readConfig(supabase, [CONFIG_KEYS.emailEnabled]);
-  const emailEnabled = gate.ok ? gate.values[CONFIG_KEYS.emailEnabled] : undefined;
   if (!cfg.ok) {
-    // Load-bearing: a missing site URL means a removal link that does not
-    // work, in the very email that promises one. Halt loudly.
     return c.json(errBody(
       "not_configured",
-      `missing config: ${cfg.missing.join(", ")} — apply migration 127`,
+      `missing config: ${cfg.missing.join(", ")} — apply migrations 127 and 128`,
       { missing: cfg.missing },
     ), 500);
+  }
+
+  const from = cfg.values[CONFIG_KEYS.fromEmail];
+  const allowed = senderAllowed(from);
+  if (!allowed.ok) {
+    // Refused here too, not only at send: an operator must never be shown a
+    // queued email that could never legitimately go out.
+    return c.json(errBody("not_configured", allowed.reason), 500);
   }
 
   const { data, error } = await supabase
     .from("coldcall_leads")
     .select("id, name, legal_name, trading_name, trade, city, state, rating, review_count, " +
             "dti_score, blurb, verified_year, slug, expires_at, is_comped, vetting_status, " +
-            // contact_email arrives with migration 127. Selected separately
-            // below so this read still works before that is applied.
             "notified_at, listing_consent, removal_token")
     .eq("id", id).maybeSingle();
   if (error) {
@@ -703,8 +705,6 @@ app.post("/vetting/:id/notify", async (c) => {
   if (!data) return c.json(errBody("not_found", "lead not found"), 404);
   const lead = data as unknown as Record<string, unknown>;
 
-  // A token is minted on first notify and then reused, so an earlier email's
-  // removal link keeps working after a resend.
   const token = (lead.removal_token as string | null) || removalToken();
   const site = cfg.values[CONFIG_KEYS.siteUrl].replace(/\/+$/, "");
   const urls = {
@@ -714,65 +714,209 @@ app.post("/vetting/:id/notify", async (c) => {
   };
   const mail = renderNotifyEmail(lead as unknown as NotifyLead, urls);
 
-  // An explicit `to` always wins; otherwise the address captured on the lead
-  // during the chk_contact check. Read defensively: coldcall_leads had NO
-  // email column of any kind until migration 127 added contact_email.
   let onRecord = "";
   const ce = await supabase.from("coldcall_leads").select("contact_email").eq("id", id).maybeSingle();
   if (!ce.error) onRecord = String((ce.data as { contact_email: string | null } | null)?.contact_email ?? "").trim();
   const to = typeof body.to === "string" && body.to.trim() ? body.to.trim() : onRecord;
 
-  if (!confirm) {
-    // The preview IS the email — same function, same inputs.
+  const warnings = [
+    ...(to ? [] : ["This lead has no contact_email on record — supply `to`."]),
+    ...(lead.vetting_status === "verified" ? [] : ["Not verified yet — the email describes a listing that does not exist."]),
+    ...(lead.is_comped ? [] : ["Not marked as comped."]),
+    ...(lead.notified_at ? [`Already notified at ${String(lead.notified_at)} — this would be a resend.`] : []),
+  ];
+
+  if (previewOnly) {
     return c.json({
-      dry_run: true,
-      would_send_to: to || null,
-      can_send: !!to,
-      from: `${cfg.values[CONFIG_KEYS.fromName]} <${cfg.values[CONFIG_KEYS.fromEmail]}>`,
-      urls,
-      email: mail,
-      // Surfaced in the dry run so an operator can see the send is stubbed
-      // BEFORE trying to confirm, rather than discovering it from a 502.
-      sending_enabled: emailEnabled === "true",
-      warnings: [
-        ...(emailEnabled === "true" ? [] : ["Sending is STUBBED — confirm will not deliver anything."]),
-        ...(to ? [] : ["This lead has no email address on record — supply `to` to send."]),
-        ...(lead.vetting_status === "verified" ? [] : ["Not verified yet — the email describes a listing that does not exist."]),
-        ...(lead.is_comped ? [] : ["Not marked as comped."]),
-        ...(lead.notified_at ? [`Already notified at ${String(lead.notified_at)} — this would be a resend.`] : []),
-      ],
+      preview: true, queued: false, would_send_to: to || null,
+      from: `${cfg.values[CONFIG_KEYS.fromName]} <${from}>`, urls, email: mail, warnings,
     });
   }
 
-  if (!to) return c.json(errBody("bad_request", "no email address for this lead — supply `to`"), 400);
+  if (!to) return c.json(errBody("bad_request", "no contact_email for this lead — supply `to`"), 400);
 
-  const sent = await sendEmail(c.env, {
-    to, subject: mail.subject, text: mail.text, html: mail.html,
-    from: cfg.values[CONFIG_KEYS.fromEmail], fromName: cfg.values[CONFIG_KEYS.fromName],
-    replyTo: cfg.values[CONFIG_KEYS.fromEmail],
-  }, emailEnabled);
-  if (!sent.ok) {
-    // Nothing is stamped on a failed send: notified_at must mean "they were
-    // told", not "we tried".
-    log.error("[campaign] notify_send_failed", { lead_id: id, reason: sent.reason });
-    return c.json(errBody("upstream_error", `email not sent: ${sent.reason}`), 502);
+  // Mint the token now so the frozen body and the lead agree. The body is
+  // stored as sent-ready; re-rendering later would change approved words.
+  if (!lead.removal_token) {
+    await supabase.from("coldcall_leads").update({ removal_token: token }).eq("id", id);
   }
 
-  const { error: uErr } = await supabase.from("coldcall_leads").update({
-    notified_at: new Date().toISOString(),
-    listing_consent: "pending",
-    removal_token: token,
-  }).eq("id", id);
-  if (uErr) log.error("[campaign] notify_stamp_failed", { lead_id: id, err: uErr.message });
+  const { data: created, error: iErr } = await supabase
+    .from("coldcall_email_approvals")
+    .insert({
+      lead_id: id, to_email: to, from_email: from,
+      subject: mail.subject, body_text: mail.text, body_html: mail.html,
+      removal_url: urls.removeUrl, profile_url: urls.profileUrl,
+      requested_by_user_id: auth.user_id, requested_by_email: auth.email,
+    })
+    .select("id, status, to_email, subject, created_at")
+    .single();
+  if (iErr) {
+    const e = iErr as { code?: string; message?: string };
+    if (e.code === "23505") {
+      return c.json(errBody("conflict", "an email for this lead is already awaiting approval"), 409);
+    }
+    log.error("[campaign] approval_insert_failed", { lead_id: id, err: e.message });
+    return c.json(errBody("internal", "approval_insert_failed"), 500);
+  }
+
+  log.info("[campaign] notify_queued", { lead_id: id, approval_id: created.id, by: auth.email });
+  return c.json({ preview: false, queued: true, approval: created, email: mail, urls, warnings }, 201);
+});
+
+// ── GET /api/admin/email-approvals ─────────────────────────────────────────
+// The approval queue. Pending first, oldest first — this is a review list, not
+// a log, so the thing waiting longest is the thing to look at.
+app.get("/email-approvals", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const status = c.req.query("status");
+  const ALLOWED = ["pending", "approved", "rejected", "sent", "failed"];
+  if (status && !ALLOWED.includes(status)) {
+    return c.json(errBody("bad_request", `unknown status '${status}'`), 400);
+  }
+
+  let q = supabase
+    .from("coldcall_email_approvals")
+    .select("id, lead_id, to_email, from_email, subject, body_text, removal_url, profile_url, " +
+            "status, requested_by_email, created_at, approved_by_email, approved_at, " +
+            "rejected_at, reject_reason, sent_at, send_error")
+    .order("created_at", { ascending: true })
+    .limit(200);
+  if (status) q = q.eq("status", status);
+
+  const { data, error } = await q;
+  if (error) {
+    log.error("[campaign] approvals_list_failed", { err: error.message });
+    return c.json(errBody("internal", "approvals_list_failed"), 500);
+  }
+
+  const rows = (data ?? []) as unknown as Array<Record<string, unknown>>;
+  // Business names for the queue, in one query.
+  const names: Record<string, string> = {};
+  if (rows.length) {
+    const { data: leads } = await supabase
+      .from("coldcall_leads").select("id, name, trading_name, legal_name")
+      .in("id", [...new Set(rows.map((r) => String(r.lead_id)))]);
+    for (const l of (leads ?? []) as Array<Record<string, string | null>>) {
+      names[String(l.id)] = l.trading_name || l.legal_name || l.name || "";
+    }
+  }
+
+  return c.json({
+    approvals: rows.map((r) => ({ ...r, business: names[String(r.lead_id)] ?? null })),
+    total: rows.length,
+    statuses: ALLOWED,
+  });
+});
+
+// ── POST /api/admin/email-approvals/:id/approve ────────────────────────────
+// THE ONLY PLACE ANYTHING IS SENT.
+//
+// Approval and send are one action on one specific row, so an approval can
+// never be recorded for a message that was not then the message sent. The row
+// must be 'pending'; anything else is a 409, which is what makes a double
+// click safe.
+app.post("/email-approvals/:id/approve", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const auth = c.get("auth");
+  const id = c.req.param("id");
+
+  const { data, error } = await supabase
+    .from("coldcall_email_approvals")
+    .select("*").eq("id", id).maybeSingle();
+  if (error) {
+    log.error("[campaign] approve_read_failed", { approval_id: id, err: error.message });
+    return c.json(errBody("internal", "approve_read_failed"), 500);
+  }
+  if (!data) return c.json(errBody("not_found", "approval not found"), 404);
+  const row = data as unknown as Record<string, unknown>;
+  if (row.status !== "pending") {
+    return c.json(errBody("conflict", `this email is '${String(row.status)}', not pending`, { status: row.status }), 409);
+  }
+
+  const allowed = senderAllowed(String(row.from_email));
+  if (!allowed.ok) return c.json(errBody("not_configured", allowed.reason), 500);
+
+  const gate = await readConfig(supabase, [CONFIG_KEYS.emailEnabled]);
+  const emailEnabled = gate.ok ? gate.values[CONFIG_KEYS.emailEnabled] : undefined;
+  const cfgName = await readConfig(supabase, [CONFIG_KEYS.fromName]);
+  const fromName = cfgName.ok ? cfgName.values[CONFIG_KEYS.fromName] : "TrustLight";
+
+  // Record the approval BEFORE attempting the send. If the send then fails,
+  // the paper trail still shows who authorised it and when — which is the
+  // question the log exists to answer.
+  const approvedAt = new Date().toISOString();
+  const { error: aErr } = await supabase
+    .from("coldcall_email_approvals")
+    .update({
+      status: "approved", approved_at: approvedAt,
+      approved_by_user_id: auth.user_id, approved_by_email: auth.email,
+    })
+    .eq("id", id).eq("status", "pending");
+  if (aErr) {
+    log.error("[campaign] approve_write_failed", { approval_id: id, err: aErr.message });
+    return c.json(errBody("internal", "approve_write_failed"), 500);
+  }
+
+  // The FROZEN body is sent, never a re-render.
+  const sent = await sendEmail(c.env, {
+    to: String(row.to_email), subject: String(row.subject),
+    text: String(row.body_text), html: String(row.body_html),
+    from: String(row.from_email), fromName, replyTo: String(row.from_email),
+  }, emailEnabled);
+
+  if (!sent.ok) {
+    await supabase.from("coldcall_email_approvals")
+      .update({ status: "failed", send_error: sent.reason.slice(0, 500) }).eq("id", id);
+    log.warn("[campaign] approved_but_not_sent", { approval_id: id, reason: sent.reason, by: auth.email });
+    return c.json(errBody("upstream_error", `approved, but not sent: ${sent.reason}`, {
+      approval_id: id, approved_by: auth.email, approved_at: approvedAt, status: "failed",
+    }), 502);
+  }
+
+  const sentAt = new Date().toISOString();
+  await supabase.from("coldcall_email_approvals")
+    .update({ status: "sent", sent_at: sentAt }).eq("id", id);
+
+  // Only a genuinely sent email stamps the lead. notified_at must mean "they
+  // were told", not "we approved telling them".
+  await supabase.from("coldcall_leads")
+    .update({ notified_at: sentAt, listing_consent: "pending" })
+    .eq("id", String(row.lead_id));
 
   await writeAudit(supabase, {
-    lead_id: id, actor_user_id: auth.user_id, actor_email: auth.email,
-    field: "notified_at", old_value: (lead.notified_at as string | null) ?? null,
-    new_value: new Date().toISOString(), reason: `notify-before-publish sent to ${to}`,
+    lead_id: String(row.lead_id), actor_user_id: auth.user_id, actor_email: auth.email,
+    field: "notified_at", old_value: null, new_value: sentAt,
+    reason: `notify email approved and sent to ${String(row.to_email)}`,
   });
 
-  log.info("[campaign] notified", { lead_id: id, to, by: auth.email });
-  return c.json({ dry_run: false, sent: true, to, removal_url: urls.removeUrl, email: mail });
+  log.info("[campaign] approved_and_sent", { approval_id: id, to: row.to_email, by: auth.email });
+  return c.json({ approval_id: id, status: "sent", approved_by: auth.email, approved_at: approvedAt, sent_at: sentAt });
+});
+
+// ── POST /api/admin/email-approvals/:id/reject ─────────────────────────────
+app.post("/email-approvals/:id/reject", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const auth = c.get("auth");
+  const id = c.req.param("id");
+
+  let body: { reason?: unknown };
+  try { body = await c.req.json(); } catch { body = {}; }
+  const reason = typeof body.reason === "string" && body.reason.trim() ? body.reason.trim() : null;
+
+  const { data, error } = await supabase
+    .from("coldcall_email_approvals")
+    .update({ status: "rejected", rejected_at: new Date().toISOString(), reject_reason: reason })
+    .eq("id", id).eq("status", "pending")
+    .select("id, status, lead_id, to_email").maybeSingle();
+  if (error) {
+    log.error("[campaign] reject_failed", { approval_id: id, err: error.message });
+    return c.json(errBody("internal", "reject_failed"), 500);
+  }
+  if (!data) return c.json(errBody("conflict", "no pending email with that id"), 409);
+
+  log.info("[campaign] approval_rejected", { approval_id: id, by: auth.email });
+  return c.json({ approval_id: id, status: "rejected", rejected_by: auth.email, reason });
 });
 
 // ── POST /api/admin/vetting/comp-sweep ─────────────────────────────────────

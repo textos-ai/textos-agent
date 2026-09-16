@@ -163,6 +163,61 @@ export function renderNotifyEmail(
 }
 
 /**
+ * The only domain TrustLight mail may come from.
+ *
+ * A TrustLight email arriving from victora.ai reads as phishing to exactly the
+ * audience the product depends on — storm-affected families and the small
+ * businesses being told they were verified. This is a hard structural refusal,
+ * not a config default, so no config edit or typo can make it happen.
+ */
+export const ALLOWED_SENDER_DOMAIN = "trustlight.com";
+
+export function senderAllowed(from: string): { ok: true } | { ok: false; reason: string } {
+  const domain = String(from).split("@")[1]?.toLowerCase().trim() ?? "";
+  if (!domain) return { ok: false, reason: `'${from}' is not an email address` };
+  if (domain === ALLOWED_SENDER_DOMAIN || domain.endsWith(`.${ALLOWED_SENDER_DOMAIN}`)) return { ok: true };
+  return {
+    ok: false,
+    reason: `refusing to send TrustLight mail from '${domain}' — only ${ALLOWED_SENDER_DOMAIN} is permitted`,
+  };
+}
+
+/**
+ * Is the sending domain actually authenticated in SendGrid?
+ *
+ * Asked before every send rather than assumed from a config flag, so notify
+ * HALTS on its own until the domain is really verified — nobody has to
+ * remember to flip a switch when it is, and nobody can flip one when it is
+ * not. Fails CLOSED: any error, any ambiguity, no send.
+ */
+export async function senderDomainVerified(
+  env: Env,
+  domain = ALLOWED_SENDER_DOMAIN,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  if (!env.SENDGRID_API_KEY || env.SENDGRID_API_KEY === "PLACEHOLDER") {
+    return { ok: false, reason: "SENDGRID_API_KEY is not configured" };
+  }
+  try {
+    const res = await fetch(
+      `https://api.sendgrid.com/v3/whitelabel/domains?domain=${encodeURIComponent(domain)}&limit=50`,
+      { headers: { Authorization: `Bearer ${env.SENDGRID_API_KEY}` } },
+    );
+    if (!res.ok) {
+      return { ok: false, reason: `could not check domain authentication (SendGrid ${res.status})` };
+    }
+    const list = (await res.json()) as Array<{ domain?: string; valid?: boolean }>;
+    const match = (Array.isArray(list) ? list : []).find(
+      (d) => String(d.domain ?? "").toLowerCase() === domain.toLowerCase(),
+    );
+    if (!match) return { ok: false, reason: `${domain} is not set up for domain authentication in SendGrid` };
+    if (!match.valid) return { ok: false, reason: `${domain} is present in SendGrid but not yet validated (DNS still pending)` };
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: `domain check failed: ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+/**
  * Send via SendGrid, matching the call already used by welcome-email.ts.
  *
  * Not extracted into a shared service: the only two existing senders inline
@@ -185,6 +240,12 @@ export async function sendEmail(
   // The gate is a config row rather than a code edit, so enabling it later is
   // a deliberate, reversible act that leaves a trail. The row is absent by
   // design, so the default everywhere is "cannot send".
+  // Structural refusal first: never even attempt a send from the wrong domain.
+  const allowed = senderAllowed(msg.from);
+  if (!allowed.ok) {
+    log.error("[trustlight] sender_domain_refused", { from: msg.from });
+    return { ok: false, reason: allowed.reason };
+  }
   if (enabled !== "true") {
     log.warn("[trustlight] email_send_stubbed", {
       to: msg.to, subject: msg.subject,
@@ -192,8 +253,12 @@ export async function sendEmail(
     });
     return { ok: false, reason: "sending is stubbed — trustlight_email_enabled is not 'true'" };
   }
-  if (!env.SENDGRID_API_KEY || env.SENDGRID_API_KEY === "PLACEHOLDER") {
-    return { ok: false, reason: "SENDGRID_API_KEY is not configured" };
+  // HALT until the domain is genuinely authenticated in SendGrid. Checked at
+  // send time, not trusted from config.
+  const verified = await senderDomainVerified(env, msg.from.split("@")[1] ?? "");
+  if (!verified.ok) {
+    log.warn("[trustlight] sender_domain_unverified", { from: msg.from, reason: verified.reason });
+    return { ok: false, reason: verified.reason };
   }
   try {
     const res = await fetch("https://api.sendgrid.com/v3/mail/send", {
