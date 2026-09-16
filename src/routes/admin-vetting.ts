@@ -18,6 +18,10 @@
 //   POST  /api/admin/vetting/:id/removal-link  mint/return the opt-out link
 //   POST  /api/admin/vetting/:id/notify     notify-before-publish (DRY RUN by default)
 //   POST  /api/admin/vetting/comp-sweep     drop comps past their grace period
+//   GET   /api/admin/vetting/exclusivity    the area board: claimed, expired, open
+//   POST  /api/admin/vetting/:id/exclusivity         claim an area (GATED)
+//   POST  /api/admin/vetting/:id/exclusivity/release release an area
+//   POST  /api/admin/vetting/exclusivity-sweep       free areas past their end date
 //   GET   /api/admin/email-approvals        the per-email approval queue
 //   POST  /api/admin/email-approvals/:id/approve   approve AND send (only send path)
 //   POST  /api/admin/email-approvals/:id/reject
@@ -38,6 +42,11 @@ import { requireAdmin } from "../lib/admin";
 import { errBody } from "../lib/errors";
 import { log } from "../lib/logger";
 import { createSupabaseClient } from "../services/supabase";
+import {
+  AREA_FIELDS, areaKey, areaLabel, blocksClaim, claimState, daysUntil,
+  holderName, isAreaConflict, normalizeArea, parseUntil, rowArea,
+  type Area, type ExclusiveRow,
+} from "../lib/trustlight-exclusivity";
 import {
   VETTING_STATUSES, CHECK_KEYS, CHECK_LABELS, CHECK_RESULTS,
   VETTING_DETAIL_COLS, VETTING_QUEUE_COLS,
@@ -312,6 +321,155 @@ app.get("/vetting/campaign", async (c) => {
 // ── GET /api/admin/vetting/:id ─────────────────────────────────────────────
 // One business: every check with its internal note, the published-profile
 // fields, and the audit trail.
+// ── Parish Exclusive ───────────────────────────────────────────────────────
+// One verified business per (trade, county, state). The database enforces the
+// race with a partial unique index (126); these routes exist to make it
+// legible — to say WHO holds an area, whether that hold is still good, and
+// which areas are open — and to turn a raw 23505 into a sentence.
+//
+// The index cannot test expiry (an index predicate must be IMMUTABLE and
+// now() is not), so an expired claim still physically occupies its slot. That
+// is why "expired" is a first-class state here and why the sweep exists.
+
+/** Every row that currently occupies a slot in the unique index. Small by
+ *  construction: verified + plan='exclusive' only. */
+async function loadClaims(supabase: ReturnType<typeof createSupabaseClient>) {
+  const { data, error } = await supabase
+    .from("coldcall_leads")
+    .select("id, name, trading_name, legal_name, plan, vetting_status, slug, " +
+            "exclusive_trade, exclusive_county, exclusive_state, exclusive_until")
+    .eq("plan", "exclusive").eq("vetting_status", "verified")
+    .not("exclusive_trade", "is", null)
+    .not("exclusive_county", "is", null)
+    .not("exclusive_state", "is", null);
+  if (error) return { ok: false as const, message: error.message };
+  return { ok: true as const, rows: (data ?? []) as unknown as ExclusiveRow[] };
+}
+
+/** The holder of an area, if any. Compares normalised values because that is
+ *  what every write stores. */
+function findHolder(rows: ExclusiveRow[], area: Area): ExclusiveRow | null {
+  return rows.find((r) => {
+    const a = rowArea(r);
+    return a && areaKey({
+      trade: a.trade.toLowerCase(),
+      county: a.county.toLowerCase(),
+      state: a.state.toUpperCase(),
+    }) === areaKey(area);
+  }) ?? null;
+}
+
+// ── GET /api/admin/vetting/exclusivity ─────────────────────────────────────
+// The board. Claimed areas (with active/expired called out) and, when the
+// area list from migration 129 is available, the areas nobody holds.
+app.get("/vetting/exclusivity", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const nowIso = new Date().toISOString();
+  const trade = String(c.req.query("trade") ?? "").trim().toLowerCase();
+
+  const claims = await loadClaims(supabase);
+  if (!claims.ok) {
+    log.error("[exclusivity] claims_read_failed", { err: claims.message });
+    return c.json(errBody("internal", "claims_read_failed"), 500);
+  }
+
+  const held = claims.rows.map((r) => {
+    const a = rowArea(r) as Area;
+    const state = claimState(r, nowIso);
+    return {
+      id: r.id,
+      holder: holderName(r),
+      trade: a.trade, county: a.county, state: a.state,
+      label: areaLabel(a),
+      exclusive_until: r.exclusive_until ?? null,
+      claim_state: state,
+      days_left: daysUntil(r.exclusive_until, new Date()),
+    };
+  });
+
+  // The sellable-area universe. Its absence is reported, never papered over:
+  // an empty "open" list and a missing one mean very different things to
+  // somebody about to promise a parish to a customer.
+  let areas: Array<{ county: string; state: string; lead_count: number }> = [];
+  let areasError: string | null = null;
+  const av = await supabase
+    .from("coldcall_areas").select("county, state, lead_count").order("lead_count", { ascending: false });
+  if (av.error) {
+    areasError = "the area list is unavailable — migration 129 (coldcall_areas) is not applied";
+    log.warn("[exclusivity] areas_view_missing", { err: av.error.message });
+  } else {
+    areas = (av.data ?? []) as unknown as Array<{ county: string; state: string; lead_count: number }>;
+  }
+
+  // "Open" only means anything once a trade is named — an area is sold per
+  // trade, so st_tammany is simultaneously taken for roofing and open for
+  // plumbing. Without a trade we return the areas and let the UI ask.
+  const takenForTrade = new Set(
+    held.filter((h) => h.claim_state === "active" && (!trade || h.trade === trade))
+        .map((h) => `${h.county}|${h.state}`),
+  );
+  const open = trade
+    ? areas.filter((a) => !takenForTrade.has(`${a.county}|${a.state}`))
+    : [];
+
+  return c.json({
+    trade: trade || null,
+    claimed: held.sort((a, b) => a.label.localeCompare(b.label)),
+    active_count: held.filter((h) => h.claim_state === "active").length,
+    expired_count: held.filter((h) => h.claim_state === "expired").length,
+    areas,
+    areas_error: areasError,
+    open,
+    // Stated so the UI never has to encode this rule itself.
+    note: "An expired claim still occupies its slot until it is released or swept.",
+  });
+});
+
+// ── POST /api/admin/vetting/exclusivity-sweep ──────────────────────────────
+// Free every area whose end date has passed. This is the mechanism migration
+// 126 names for expiry, because the unique index cannot test a date itself.
+// Dry run unless confirmed, matching comp-sweep.
+app.post("/vetting/exclusivity-sweep", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const auth = c.get("auth");
+  let body: { confirm?: unknown };
+  try { body = await c.req.json(); } catch { body = {}; }
+  const confirm = body.confirm === true;
+  const nowIso = new Date().toISOString();
+
+  const claims = await loadClaims(supabase);
+  if (!claims.ok) {
+    log.error("[exclusivity] sweep_read_failed", { err: claims.message });
+    return c.json(errBody("internal", "sweep_read_failed"), 500);
+  }
+  const due = claims.rows.filter((r) => claimState(r, nowIso) === "expired");
+
+  if (!confirm) {
+    return c.json({
+      dry_run: true, would_free: due.length,
+      areas: due.map((r) => ({
+        id: r.id, holder: holderName(r),
+        label: areaLabel(rowArea(r) as Area), exclusive_until: r.exclusive_until ?? null,
+      })),
+    });
+  }
+
+  const freed: string[] = [];
+  for (const r of due) {
+    const area = rowArea(r) as Area;
+    const { error } = await supabase.from("coldcall_leads").update(AREA_FIELDS).eq("id", r.id);
+    if (error) { log.error("[exclusivity] sweep_free_failed", { lead_id: r.id, err: error.message }); continue; }
+    await writeAudit(supabase, {
+      lead_id: r.id, actor_user_id: auth.user_id, actor_email: auth.email,
+      field: "exclusive_area", old_value: areaKey(area), new_value: null,
+      reason: `auto: exclusivity ended ${r.exclusive_until ?? "(no end date)"} — area released`,
+    });
+    freed.push(r.id);
+  }
+  log.info("[exclusivity] sweep_done", { freed: freed.length, by: auth.email });
+  return c.json({ dry_run: false, freed: freed.length, ids: freed });
+});
+
 app.get("/vetting/:id", async (c) => {
   const supabase = createSupabaseClient(c.env);
   const id = c.req.param("id");
@@ -1227,6 +1385,171 @@ app.post("/vetting/comp-sweep", async (c) => {
 
   log.info("[campaign] sweep_done", { grace_days: graceDays, dropped: dropped.length, by: auth.email });
   return c.json({ dry_run: false, grace_days: graceDays, dropped: dropped.length, ids: dropped });
+});
+
+// ── POST /api/admin/vetting/:id/exclusivity ────────────────────────────────
+// Claim an area for one verified business.
+//
+// Refuses rather than clobbers. An ACTIVE claim held by somebody else is never
+// taken away here — that is a commercial decision, not a form submission. An
+// EXPIRED claim is released first, because 126 defines expiry as freeing the
+// slot and the index cannot do it on its own.
+app.post("/vetting/:id/exclusivity", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const auth = c.get("auth");
+  const id = c.req.param("id");
+  const nowIso = new Date().toISOString();
+
+  let body: { trade?: unknown; county?: unknown; state?: unknown; exclusive_until?: unknown };
+  try { body = await c.req.json(); } catch {
+    return c.json(errBody("bad_request", "body must be JSON"), 400);
+  }
+
+  const area = normalizeArea(body);
+  if ("error" in area) return c.json(errBody("bad_request", area.error), 400);
+  const until = parseUntil(body.exclusive_until, nowIso);
+  if ("error" in until) return c.json(errBody("bad_request", until.error), 400);
+
+  const { data: leadRow } = await supabase
+    .from("coldcall_leads")
+    .select("id, name, trading_name, legal_name, plan, vetting_status, expires_at, " +
+            "exclusive_trade, exclusive_county, exclusive_state, exclusive_until")
+    .eq("id", id).maybeSingle();
+  if (!leadRow) return c.json(errBody("not_found", "lead not found"), 404);
+  const lead = leadRow as unknown as ExclusiveRow & { expires_at?: string | null };
+
+  const blocked = blocksClaim(lead);
+  if (blocked) return c.json(errBody("conflict", blocked), 409);
+
+  const claims = await loadClaims(supabase);
+  if (!claims.ok) {
+    log.error("[exclusivity] claims_read_failed", { err: claims.message });
+    return c.json(errBody("internal", "claims_read_failed"), 500);
+  }
+
+  const holder = findHolder(claims.rows, area);
+  if (holder && holder.id !== id) {
+    const state = claimState(holder, nowIso);
+    if (state === "active") {
+      // The clean message the brief asks for, in place of a raw 23505.
+      return c.json(errBody("conflict",
+        `${areaLabel(area)} is already held by ${holderName(holder)} until ` +
+        `${String(holder.exclusive_until).slice(0, 10)}. Release that claim first, or pick another area.`,
+        { held_by: holder.id, holder: holderName(holder), until: holder.exclusive_until, claim_state: state },
+      ), 409);
+    }
+    // Expired: 126 says an ended claim frees the area. Do it explicitly and
+    // audit it, so the area does not appear to be taken by a dead claim.
+    const prevArea = rowArea(holder) as Area;
+    const { error: relErr } = await supabase.from("coldcall_leads").update(AREA_FIELDS).eq("id", holder.id);
+    if (relErr) {
+      log.error("[exclusivity] expired_release_failed", { lead_id: holder.id, err: relErr.message });
+      return c.json(errBody("internal", "could not release the expired claim on this area"), 500);
+    }
+    await writeAudit(supabase, {
+      lead_id: String(holder.id), actor_user_id: auth.user_id, actor_email: auth.email,
+      field: "exclusive_area", old_value: areaKey(prevArea), new_value: null,
+      reason: `expired ${String(holder.exclusive_until).slice(0, 10)} — released so ${areaLabel(area)} could be reassigned`,
+    });
+  }
+
+  const previous = rowArea(lead);
+  const { error } = await supabase.from("coldcall_leads").update({
+    plan: "exclusive",
+    exclusive_trade: area.trade,
+    exclusive_county: area.county,
+    exclusive_state: area.state,
+    exclusive_until: until.until,
+  }).eq("id", id);
+
+  if (error) {
+    // Backstop for the race the index exists to catch: two operators claiming
+    // the same area between the check above and this write.
+    if (isAreaConflict(error)) {
+      return c.json(errBody("conflict",
+        `${areaLabel(area)} was claimed by another business a moment ago. Reload the area board and try again.`,
+      ), 409);
+    }
+    log.error("[exclusivity] claim_failed", { lead_id: id, err: error.message });
+    return c.json(errBody("internal", "claim_failed"), 500);
+  }
+
+  await writeAudit(supabase, {
+    lead_id: id, actor_user_id: auth.user_id, actor_email: auth.email,
+    field: "exclusive_area",
+    old_value: previous ? areaKey(previous) : null,
+    new_value: areaKey(area),
+    reason: `exclusivity granted until ${until.until.slice(0, 10)}`,
+  });
+  if (lead.plan !== "exclusive") {
+    await writeAudit(supabase, {
+      lead_id: id, actor_user_id: auth.user_id, actor_email: auth.email,
+      field: "plan", old_value: String(lead.plan ?? "none"), new_value: "exclusive",
+      reason: `set by an exclusivity claim on ${areaLabel(area)}`,
+    });
+  }
+
+  // Exclusivity riding past the verification it depends on is not refused —
+  // it is a legitimate longer contract — but it is worth saying out loud,
+  // because the index drops the claim the moment the record stops being
+  // verified.
+  const warnings = lead.expires_at && until.until > lead.expires_at
+    ? [`This claim runs past the verification expiry (${String(lead.expires_at).slice(0, 10)}). ` +
+       "If the record is not re-verified by then it stops being verified and the area frees itself."]
+    : [];
+
+  log.info("[exclusivity] claimed", { lead_id: id, area: areaKey(area), by: auth.email });
+  return c.json({
+    id, plan: "exclusive", trade: area.trade, county: area.county, state: area.state,
+    exclusive_until: until.until, claim_state: "active",
+    days_left: daysUntil(until.until, new Date()), label: areaLabel(area), warnings,
+  });
+});
+
+// ── POST /api/admin/vetting/:id/exclusivity/release ────────────────────────
+// Give the area back. Clears the four area fields, which is exactly what the
+// index predicate needs to stop counting this row as the holder.
+//
+// plan is deliberately NOT changed. Whether somebody is still paying is a
+// billing fact, and silently downgrading it here would also re-fire the
+// plan trigger. The UI says so, and the plan control is one row away.
+app.post("/vetting/:id/exclusivity/release", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const auth = c.get("auth");
+  const id = c.req.param("id");
+  let body: { reason?: unknown };
+  try { body = await c.req.json(); } catch { body = {}; }
+  const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+
+  const { data: leadRow } = await supabase
+    .from("coldcall_leads")
+    .select("id, name, trading_name, legal_name, plan, vetting_status, " +
+            "exclusive_trade, exclusive_county, exclusive_state, exclusive_until")
+    .eq("id", id).maybeSingle();
+  if (!leadRow) return c.json(errBody("not_found", "lead not found"), 404);
+  const lead = leadRow as unknown as ExclusiveRow;
+
+  const area = rowArea(lead);
+  if (!area) return c.json(errBody("conflict", "this business does not hold an area"), 409);
+  const wasState = claimState(lead, new Date().toISOString());
+
+  const { error } = await supabase.from("coldcall_leads").update(AREA_FIELDS).eq("id", id);
+  if (error) {
+    log.error("[exclusivity] release_failed", { lead_id: id, err: error.message });
+    return c.json(errBody("internal", "release_failed"), 500);
+  }
+
+  await writeAudit(supabase, {
+    lead_id: id, actor_user_id: auth.user_id, actor_email: auth.email,
+    field: "exclusive_area", old_value: areaKey(area), new_value: null,
+    reason: reason || `released by ${auth.email} (was ${wasState})`,
+  });
+
+  log.info("[exclusivity] released", { lead_id: id, area: areaKey(area), by: auth.email });
+  return c.json({
+    id, released: true, label: areaLabel(area), was: wasState, plan: lead.plan ?? "none",
+    note: "The area is free. The commercial plan was left as it was — change it on the plan control if this is a downgrade.",
+  });
 });
 
 // ── The published profile ──────────────────────────────────────────────────

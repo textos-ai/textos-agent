@@ -234,6 +234,48 @@ turns the switch on.
 
 ---
 
+## check:models — 33 pre-existing violations (NOT new, do not rediscover)
+
+`npm run check:models` exits non-zero and has done so since before the
+TrustLight work started. **33 violations across 22 files.** None of them are
+TrustLight files, and none were introduced by the vetting, campaign or
+exclusivity work — those surfaces make no LLM calls at all.
+
+Confirmed clean (zero violations): `src/lib/trustlight-*.ts`,
+`src/routes/trustlight.ts`, `src/routes/admin-vetting.ts`.
+
+The 22 files holding them:
+
+```
+src/lib/model-config.ts                     src/lib/non-task-model-config.ts
+src/routes/admin.ts                         src/routes/businesses.ts
+src/lib/tasks/business-landing-page.ts      src/lib/tasks/cold-email-outreach.ts
+src/lib/tasks/dashboard-briefing.ts         src/lib/tasks/derive-search-queries.ts
+src/lib/tasks/draft-reply.ts                src/lib/tasks/find-a-unique-business-name.ts
+src/lib/tasks/generic-document-runner.ts    src/lib/tasks/launch-tweet.ts
+src/lib/tasks/logo.ts                       src/lib/tasks/match-verify-leads.ts
+src/lib/tasks/mission-document.ts           src/lib/tasks/personalized-pitch-email.ts
+src/lib/tasks/personalized-pitch-email.ts   src/lib/tasks/reach-package-lead.ts
+src/lib/tasks/research-strategy.ts          src/lib/tasks/social-content-plan.ts
+src/lib/tasks/tam-sam-som.ts                src/lib/tasks/understand-lead.ts
+src/lib/tasks/welcome-email.ts
+```
+
+The checker's complaint is the same in each: `models.<tier>` is read
+directly instead of going through `resolveFeatureModel()` /
+`resolveModelForTask()`.
+
+**Deliberately not fixed.** Rob's instruction when this first came up was to
+leave the pre-existing violations alone; the count was reported as 10 at the
+time and the checker now counts 33, but the difference is in how the checker
+counts, not new debt from this work. Treat a rising count as worth
+investigating ONLY if a TrustLight file appears in the list.
+
+Because the checker exits non-zero regardless, it cannot be used as a gate
+until this is cleared — that is the real cost of leaving it.
+
+---
+
 ## Notes
 
 - Path A scope was **pure removal of debug scaffolding** (console.logs, diagnostic comments, dead `requestBody`, redundant aliases, the documented-ineffective `Promise.race` + `setTimeout` wrapper) plus adapting the v2 unit tests. No behavior change to the working strategy path.
