@@ -90,24 +90,109 @@ export const VETTING_QUEUE_COLS = [
  *
  * 'oldest' is the default and stays the default: the vetting queue is a work
  * queue, and the thing waiting longest is the thing at risk of being
- * forgotten. 'score' is opt-in, for deciding who to pre-approve and call
- * first.
+ * forgotten. Every other order is opt-in.
  *
- * There was no existing sort control in the coldcall lead browser to match —
- * it is hardcoded to call_score desc — so this is a new, explicit choice
- * rather than a copied pattern.
+ * Each sortable column names both directions explicitly rather than carrying a
+ * separate direction parameter — one value fully describes the ordering, so a
+ * request cannot express a half-state.
+ *
+ * DAYS IN STATUS IS NOT A COLUMN. It is derived from the audit log (updated_at
+ * moves on any edit and would report the wrong age the moment an operator
+ * typed a note), so it cannot be ordered in SQL. The route handles it
+ * separately — see sortByDaysInStatus().
  */
-export const QUEUE_SORTS = ["oldest", "score"] as const;
+export const QUEUE_SORTS = [
+  "oldest",
+  "rank_asc", "rank_desc",
+  "score_desc", "score_asc",
+  "days_desc", "days_asc",
+] as const;
 export type QueueSort = (typeof QUEUE_SORTS)[number];
 
-/** Apply a sort to a queue query. Score descending, nulls last. */
+/** The campaign board has no Days in status column. */
+export const CAMPAIGN_SORTS = QUEUE_SORTS.filter((s) => !s.startsWith("days_"));
+
+export const isDaysSort = (s: QueueSort) => s === "days_desc" || s === "days_asc";
+
+/**
+ * Apply an SQL-orderable sort. Days sorts are NOT handled here and must be
+ * routed through sortByDaysInStatus() instead.
+ *
+ * nullsFirst:false on every column sort is what puts an unranked or unscored
+ * business at the bottom in BOTH directions — Postgres would otherwise default
+ * to NULLS FIRST on a descending sort, floating "not scored" above a 70.
+ */
 export function applyQueueSort<T extends { order: Function }>(q: T, sort: QueueSort): T {
-  if (sort === "score") {
-    return q
-      .order("call_score", { ascending: false, nullsFirst: false })
-      .order("id", { ascending: true }) as T;          // stable across pages
+  switch (sort) {
+    case "rank_asc":
+      return q.order("rank", { ascending: true, nullsFirst: false })
+              .order("id", { ascending: true }) as T;
+    case "rank_desc":
+      return q.order("rank", { ascending: false, nullsFirst: false })
+              .order("id", { ascending: true }) as T;
+    case "score_desc":
+      return q.order("call_score", { ascending: false, nullsFirst: false })
+              .order("id", { ascending: true }) as T;
+    case "score_asc":
+      return q.order("call_score", { ascending: true, nullsFirst: false })
+              .order("id", { ascending: true }) as T;
+    default:
+      return q.order("updated_at", { ascending: true }) as T;
   }
-  return q.order("updated_at", { ascending: true }) as T;
+}
+
+/**
+ * The most recent vetting_status change per lead, newest first.
+ *
+ * Bounded deliberately: only leads that have ACTUALLY moved have a row here,
+ * so this set is small by construction (a lead sitting at 'lead' has none).
+ * The cap is a guard against an unbounded read, not an expected limit.
+ */
+export const DAYS_SORT_AUDIT_CAP = 20000;
+
+export async function latestStatusChanges(
+  supabase: { from: Function },
+): Promise<Map<string, string>> {
+  const { data, error } = await supabase
+    .from("coldcall_vetting_audit")
+    .select("lead_id, created_at")
+    .eq("field", "vetting_status")
+    .order("created_at", { ascending: false })
+    .limit(DAYS_SORT_AUDIT_CAP);
+  const latest = new Map<string, string>();
+  if (error) return latest;
+  for (const a of (data ?? []) as Array<{ lead_id: string; created_at: string }>) {
+    // Newest first, so the first row seen for a lead IS its latest change.
+    if (!latest.has(a.lead_id)) latest.set(a.lead_id, a.created_at);
+  }
+  return latest;
+}
+
+/**
+ * Order rows by how long they have sat in their current status.
+ *
+ * Longest-waiting means the OLDEST status change, so days_desc is
+ * changed_at ascending — the inversion is the whole point of the column.
+ *
+ * A lead with no recorded change has null days and goes to the BOTTOM in both
+ * directions. It is not "waiting forever" and it is not "waiting zero days";
+ * we simply do not know, and guessing either way would misrank it.
+ */
+export function sortByDaysInStatus<T extends { id: string }>(
+  rows: T[],
+  latest: Map<string, string>,
+  sort: "days_desc" | "days_asc",
+): T[] {
+  const known = rows.filter((r) => latest.has(r.id));
+  const unknown = rows.filter((r) => !latest.has(r.id));
+  known.sort((a, b) => {
+    const ta = new Date(latest.get(a.id) as string).getTime();
+    const tb = new Date(latest.get(b.id) as string).getTime();
+    return sort === "days_desc" ? ta - tb : tb - ta;
+  });
+  // Stable, deterministic tail so paging over the unknowns does not shuffle.
+  unknown.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return [...known, ...unknown];
 }
 
 type CheckRow = Partial<Record<CheckKey, string | null>>;

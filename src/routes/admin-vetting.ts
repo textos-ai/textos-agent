@@ -42,7 +42,8 @@ import {
   VETTING_STATUSES, CHECK_KEYS, CHECK_LABELS, CHECK_RESULTS,
   VETTING_DETAIL_COLS, VETTING_QUEUE_COLS,
   countPasses, allNinePass, failingChecks, buildUniqueSlug, writeAudit, verificationStamps,
-  QUEUE_SORTS, applyQueueSort, type QueueSort,
+  QUEUE_SORTS, CAMPAIGN_SORTS, applyQueueSort, isDaysSort,
+  latestStatusChanges, sortByDaysInStatus, type QueueSort,
   enterVetting, VETTING_ENTRY_STATUS, setPlan, PLANS, type Plan,
   type VettingStatus, type CheckKey,
 } from "../lib/trustlight-vetting";
@@ -97,39 +98,104 @@ app.get("/vetting-queue", async (c) => {
     return c.json(errBody("bad_request", `sort must be one of ${QUEUE_SORTS.join("|")}`), 400);
   }
 
-  let query = applyQueueSort(
-    supabase
-      .from("coldcall_leads")
-      .select(VETTING_QUEUE_COLS, { count: "exact" }),
-    sort,
-  ).range(from, from + pageSize - 1);
-  if (status) query = query.eq("vetting_status", status);
-  if (q) query = query.ilike("name", `%${q}%`);
-
-  const { data, count, error } = await query;
-  if (error) {
-    log.error("[vetting] queue_failed", { err: error.message });
-    return c.json(errBody("internal", "queue_failed"), 500);
-  }
-
   type Row = Record<string, unknown> & { id: string; vetting_status: string };
-  const rows = (data ?? []) as unknown as Row[];
+  const withFilters = <T extends { eq: Function; ilike: Function }>(qq: T): T => {
+    let x = qq as T & Record<string, Function>;
+    if (status) x = x.eq("vetting_status", status);
+    if (q) x = x.ilike("name", `%${q}%`);
+    return x as T;
+  };
 
-  // Most recent vetting_status change per lead, in ONE query for the page.
+  let rows: Row[] = [];
+  let count = 0;
   const sinceByLead: Record<string, string> = {};
-  if (rows.length) {
-    const { data: audit, error: aErr } = await supabase
-      .from("coldcall_vetting_audit")
-      .select("lead_id, created_at")
-      .eq("field", "vetting_status")
-      .in("lead_id", rows.map((r) => r.id))
-      .order("created_at", { ascending: false });
-    if (aErr) {
-      // Non-fatal: the queue is still usable without the age column.
-      log.warn("[vetting] queue_audit_read_failed", { err: aErr.message });
-    } else {
-      for (const a of (audit ?? []) as Array<{ lead_id: string; created_at: string }>) {
-        if (!sinceByLead[a.lead_id]) sinceByLead[a.lead_id] = a.created_at;
+
+  if (isDaysSort(sort)) {
+    // DAYS IN STATUS CANNOT BE ORDERED IN SQL — it comes from the audit log.
+    // Only leads that have actually MOVED have a row there, so the ordered
+    // set is small by construction; everything else has null days and sorts
+    // to the bottom regardless of direction.
+    const latest = await latestStatusChanges(supabase);
+    for (const [k, v] of latest) sinceByLead[k] = v;
+
+    const ids = [...latest.keys()];
+    let known: Row[] = [];
+    if (ids.length) {
+      // Chunked: an `in` list of every moved lead could outgrow a URL.
+      for (let i = 0; i < ids.length; i += 200) {
+        const { data, error } = await withFilters(
+          supabase.from("coldcall_leads").select(VETTING_QUEUE_COLS).in("id", ids.slice(i, i + 200)),
+        );
+        if (error) {
+          log.error("[vetting] queue_days_known_failed", { err: error.message });
+          return c.json(errBody("internal", "queue_failed"), 500);
+        }
+        known.push(...((data ?? []) as unknown as Row[]));
+      }
+    }
+    known = sortByDaysInStatus(known, latest, sort);
+
+    // The tail: matching leads with no recorded change. Counted, and paged
+    // into only once the known ones run out.
+    const { count: totalCount, error: cErr } = await withFilters(
+      supabase.from("coldcall_leads").select("id", { count: "exact", head: true }),
+    );
+    if (cErr) {
+      log.error("[vetting] queue_days_count_failed", { err: cErr.message });
+      return c.json(errBody("internal", "queue_failed"), 500);
+    }
+    count = totalCount ?? 0;
+
+    const knownSlice = known.slice(from, from + pageSize);
+    rows = knownSlice;
+    if (rows.length < pageSize) {
+      const tailFrom = Math.max(0, from - known.length);
+      const tailTake = pageSize - rows.length;
+      let tail = withFilters(
+        supabase.from("coldcall_leads").select(VETTING_QUEUE_COLS),
+      ).order("id", { ascending: true }).range(tailFrom, tailFrom + tailTake + ids.length);
+      const { data: tailData, error: tErr } = await tail;
+      if (tErr) {
+        log.error("[vetting] queue_days_tail_failed", { err: tErr.message });
+        return c.json(errBody("internal", "queue_failed"), 500);
+      }
+      const knownIds = new Set(ids);
+      rows = rows.concat(
+        ((tailData ?? []) as unknown as Row[]).filter((r) => !knownIds.has(r.id)).slice(0, tailTake),
+      );
+    }
+  } else {
+    let query = applyQueueSort(
+      supabase
+        .from("coldcall_leads")
+        .select(VETTING_QUEUE_COLS, { count: "exact" }),
+      sort,
+    ).range(from, from + pageSize - 1);
+    query = withFilters(query);
+
+    const { data, count: c2, error } = await query;
+    if (error) {
+      log.error("[vetting] queue_failed", { err: error.message });
+      return c.json(errBody("internal", "queue_failed"), 500);
+    }
+    rows = (data ?? []) as unknown as Row[];
+    count = c2 ?? 0;
+
+    // Most recent vetting_status change per lead, in ONE query for the page.
+    if (rows.length) {
+      const { data: audit, error: aErr } = await supabase
+        .from("coldcall_vetting_audit")
+        .select("lead_id, created_at")
+        .eq("field", "vetting_status")
+        .in("lead_id", rows.map((r) => r.id))
+        .order("created_at", { ascending: false });
+      if (aErr) {
+        // Non-fatal: the queue is still usable without the age column.
+        log.warn("[vetting] queue_audit_read_failed", { err: aErr.message });
+      } else {
+        for (const a of (audit ?? []) as Array<{ lead_id: string; created_at: string }>) {
+          if (!sinceByLead[a.lead_id]) sinceByLead[a.lead_id] = a.created_at;
+        }
       }
     }
   }
@@ -162,10 +228,10 @@ app.get("/vetting-queue", async (c) => {
 
   return c.json({
     leads,
-    total: count ?? 0,
+    total: count,
     page,
     page_size: pageSize,
-    has_more: from + leads.length < (count ?? 0),
+    has_more: from + leads.length < count,
     statuses: VETTING_STATUSES,
     sort,
     sorts: QUEUE_SORTS,
@@ -181,9 +247,11 @@ app.get("/vetting-queue", async (c) => {
 app.get("/vetting/campaign", async (c) => {
   const supabase = createSupabaseClient(c.env);
 
+  // The campaign board has no Days in status column, so its vocabulary omits
+  // those values rather than accepting a sort it cannot honour.
   const sort = (c.req.query("sort") ?? "oldest") as QueueSort;
-  if (!QUEUE_SORTS.includes(sort)) {
-    return c.json(errBody("bad_request", `sort must be one of ${QUEUE_SORTS.join("|")}`), 400);
+  if (!CAMPAIGN_SORTS.includes(sort)) {
+    return c.json(errBody("bad_request", `sort must be one of ${CAMPAIGN_SORTS.join("|")}`), 400);
   }
 
   const { data, error } = await applyQueueSort(supabase
@@ -237,7 +305,7 @@ app.get("/vetting/campaign", async (c) => {
     grace_days: graceDays,
     offer_statuses: COMP_OFFER_STATUSES,
     sort,
-    sorts: QUEUE_SORTS,
+    sorts: CAMPAIGN_SORTS,
   });
 });
 
