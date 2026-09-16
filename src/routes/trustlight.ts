@@ -6,6 +6,7 @@
 //   GET /api/contractor/:slug      one verified public profile
 //   GET /api/removal/:token        who a removal link belongs to (read-only)
 //   POST /api/removal/:token       one-click removal, no login
+//   POST /api/application          a contractor applies to be verified
 // trustlight.com/api/* routes here.
 //
 // PUBLIC AND UNAUTHENTICATED BY NECESSITY, exactly like routes/sites.ts and
@@ -46,6 +47,10 @@ import type { Env } from "../env";
 import { errBody } from "../lib/errors";
 import { log } from "../lib/logger";
 import { createSupabaseClient } from "../services/supabase";
+import {
+  APPLICATION_RATE, HONEYPOT_FIELD, MATCH_REASON, applicationPatch,
+  licenseKey, newLeadColumns, validateApplication, type MatchKey,
+} from "../lib/trustlight-application";
 // The public shape lives in one place so the admin preview and this route are
 // literally the same code — see lib/trustlight-public.ts.
 import {
@@ -93,6 +98,37 @@ async function rateLimited(env: Env, ip: string, bucket: string): Promise<boolea
   } catch (err) {
     log.warn("[trustlight] rate_limit_unavailable", { err: err instanceof Error ? err.message : String(err) });
     return false;
+  }
+}
+
+
+/**
+ * Rate limit for the WRITE endpoint.
+ *
+ * Same KV mechanism and the same coarse fixed window as rateLimited() above,
+ * with one deliberate difference: this one reports failure instead of
+ * swallowing it. The reads fail OPEN so a KV outage cannot take the public
+ * directory down; an unauthenticated write that fails open during an outage
+ * accepts unlimited rows, so the caller turns that into a 503.
+ */
+async function writeRateLimited(
+  env: Env, ip: string, bucket: string, windowSeconds: number, max: number,
+): Promise<"ok" | "limited" | "unavailable"> {
+  if (!env.SNAPSHOT_KV) return "unavailable";
+  // No IP means no way to attribute the request, so it cannot be rate limited.
+  if (!ip) return "unavailable";
+  const window = Math.floor(Date.now() / 1000 / windowSeconds);
+  const key = `tl_rl:${bucket}:${ip}:${window}`;
+  try {
+    const current = parseInt((await env.SNAPSHOT_KV.get(key)) ?? "0", 10);
+    if (current >= max) return "limited";
+    await env.SNAPSHOT_KV.put(key, String(current + 1), { expirationTtl: windowSeconds * 2 });
+    return "ok";
+  } catch (err) {
+    log.warn("[trustlight] write_rate_limit_unavailable", {
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return "unavailable";
   }
 }
 
@@ -403,3 +439,177 @@ app.post("/removal/:token", async (c) => {
 });
 
 export default app;
+
+
+// ── POST /api/application ──────────────────────────────────────────────────
+// A contractor applies to be verified. Replaces the Formspree form on
+// trustlight.com/start.
+//
+// THE ONLY UNAUTHENTICATED WRITE IN THE PRODUCT. Everything below follows
+// from that:
+//
+//   - It sets vetting_status='invited' and fills fields for an operator to
+//     CHECK. It never touches a chk_* field, never stamps verified_at, never
+//     publishes. Nothing here can make a business verified.
+//   - The reply is identical whether the submission matched an existing lead,
+//     updated one, or created a new record. Saying "we found you" would turn
+//     this into an oracle for probing the lead database one licence at a time.
+//   - The rate limiter fails CLOSED, unlike the public reads. For a read,
+//     failing open keeps the directory up during a KV outage; for a write,
+//     failing open means unlimited row creation. A contractor who sees "try
+//     again shortly" is recoverable. A filled lead table is not.
+//   - No email. Nothing is notified. Applications are worked by hand in
+//     /admin/trustlight-vetting.
+app.post("/application", async (c) => {
+  const ip = clientIp(c);
+
+  // Two windows, both required. Per-minute stops a burst; per-hour stops a
+  // slow drip that would never trip the minute bucket.
+  for (const [bucket, seconds, max] of [
+    ["app_m", 60, APPLICATION_RATE.perMinute],
+    ["app_h", 3600, APPLICATION_RATE.perHour],
+  ] as Array<[string, number, number]>) {
+    const limited = await writeRateLimited(c.env, ip, bucket, seconds, max);
+    if (limited === "limited") {
+      return c.json(errBody("rate_limited", "too many applications from this address — please try again later"), 429);
+    }
+    if (limited === "unavailable") {
+      log.error("[trustlight] application_rate_unavailable", { ip_present: !!ip });
+      return c.json(errBody("internal",
+        "we cannot accept applications right now — please try again shortly"), 503);
+    }
+  }
+
+  let body: Record<string, unknown>;
+  try {
+    const parsed = await c.req.json();
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
+    body = parsed as Record<string, unknown>;
+  } catch {
+    return c.json(errBody("bad_request", "body must be a JSON object"), 400);
+  }
+
+  // Honeypot: hidden on the page, so a human never fills it. Answered with the
+  // same 202 a real submission gets — telling a bot it was detected only helps
+  // it try again differently.
+  const honey = body[HONEYPOT_FIELD];
+  if (typeof honey === "string" && honey.trim() !== "") {
+    log.warn("[trustlight] application_honeypot", { ip_present: !!ip });
+    return c.json({ received: true }, 202);
+  }
+
+  const validated = validateApplication(body);
+  if (!validated.ok) {
+    // Field errors ARE returned: the applicant has to be able to fix their own
+    // form. This says nothing about the database, only about what they sent.
+    return c.json(errBody("bad_request", "some details need fixing", { errors: validated.errors }), 400);
+  }
+  const v = validated.value;
+  const supabase = createSupabaseClient(c.env);
+  const nowIso = new Date().toISOString();
+
+  // ── The match ladder ─────────────────────────────────────────────────────
+  // Licence first, as specified. Licence numbers are only unique within a
+  // state, so the state is part of the key. Compared on a collapsed form
+  // because contractors write their own licence a dozen different ways.
+  let matched: { id: string; vetting_status: string | null } | null = null;
+  let how: MatchKey = "new";
+
+  const { data: licRows, error: licErr } = await supabase
+    .from("coldcall_leads")
+    .select("id, vetting_status, license_number")
+    .eq("license_state", v.fields.license_state)
+    .not("license_number", "is", null)
+    .limit(500);
+  if (licErr) {
+    log.error("[trustlight] application_licence_lookup_failed", { err: licErr.message });
+    return c.json(errBody("internal", "could not process the application"), 500);
+  }
+  for (const r of (licRows ?? []) as Array<{ id: string; vetting_status: string | null; license_number: string }>) {
+    if (licenseKey(r.license_number) === v.licenseCompare) {
+      matched = { id: r.id, vetting_status: r.vetting_status };
+      how = "licence";
+      break;
+    }
+  }
+
+  // Then phone. 91% of leads carry normalised digits, which is why this is the
+  // key that will actually catch duplicates today — licence numbers are filled
+  // in DURING vetting, so almost no lead has one yet.
+  if (!matched) {
+    const { data: phoneRows, error: phoneErr } = await supabase
+      .from("coldcall_leads")
+      .select("id, vetting_status")
+      .eq("phone_e164_digits", v.phoneDigits)
+      .limit(2);
+    if (phoneErr) {
+      log.error("[trustlight] application_phone_lookup_failed", { err: phoneErr.message });
+      return c.json(errBody("internal", "could not process the application"), 500);
+    }
+    const rows = (phoneRows ?? []) as Array<{ id: string; vetting_status: string | null }>;
+    // Exactly one, or it is not a match. Two businesses sharing a phone number
+    // is a real thing (shared office, answering service), and picking one at
+    // random would attach an application to the wrong company.
+    if (rows.length === 1) {
+      matched = rows[0];
+      how = "phone";
+    } else if (rows.length > 1) {
+      log.info("[trustlight] application_phone_ambiguous", { digits_len: v.phoneDigits.length });
+    }
+  }
+
+  const patch = applicationPatch(v, nowIso);
+  let leadId: string;
+  let previousStatus: string | null = null;
+
+  if (matched) {
+    previousStatus = matched.vetting_status ?? null;
+    leadId = matched.id;
+    // A business already part-way through verification must not be dragged
+    // back to 'invited' by re-submitting the form. Their details are still
+    // updated; their progress is not discarded.
+    const inProgress = previousStatus && previousStatus !== "lead" && previousStatus !== "invited";
+    const finalPatch = inProgress
+      ? (() => { const { vetting_status, ...rest } = patch; return rest; })()
+      : patch;
+    const { error } = await supabase.from("coldcall_leads").update(finalPatch).eq("id", leadId);
+    if (error) {
+      log.error("[trustlight] application_update_failed", { lead_id: leadId, err: error.message });
+      return c.json(errBody("internal", "could not process the application"), 500);
+    }
+  } else {
+    const { data: created, error } = await supabase
+      .from("coldcall_leads")
+      .insert({ ...newLeadColumns(v), ...patch })
+      .select("id").single();
+    if (error || !created) {
+      log.error("[trustlight] application_insert_failed", { err: error?.message });
+      return c.json(errBody("internal", "could not process the application"), 500);
+    }
+    leadId = (created as { id: string }).id;
+  }
+
+  // The paper trail. No actor: this was the business itself, not an operator —
+  // the same convention the self-service removal link uses.
+  const { error: aErr } = await supabase.from("coldcall_vetting_audit").insert({
+    lead_id: leadId,
+    field: "vetting_status",
+    old_value: previousStatus,
+    new_value: "invited",
+    reason: MATCH_REASON[how],
+  });
+  if (aErr) {
+    // The record is already written; refusing now would lose the application
+    // AND the trail. Logged loudly instead so it is visible in wrangler tail.
+    log.error("[trustlight] application_audit_failed", { lead_id: leadId, err: aErr.message });
+  }
+
+  log.info("[trustlight] application_received", { lead_id: leadId, matched_on: how });
+
+  // Deliberately uniform. No id, no match information, no hint that the
+  // business was already known to us.
+  return c.json({
+    received: true,
+    message: "Thank you — your application has been received. We verify by hand, so this is not instant.",
+  }, 202);
+});
