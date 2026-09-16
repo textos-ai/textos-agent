@@ -51,6 +51,19 @@ INSERT INTO public.coldcall_config (key, value, note) VALUES
    'Display name on outbound TrustLight email.')
 ON CONFLICT (key) DO NOTHING;
 
+-- DELIBERATELY NOT SEEDED: trustlight_email_enabled.
+--
+-- lib/trustlight-campaign.ts refuses to send unless this key exists and is
+-- exactly 'true'. Its ABSENCE is the off switch, so email cannot be sent in
+-- any environment until someone adds it on purpose. Do not add it here — that
+-- would make "sending is on" the default that ships with the migration.
+--
+-- To enable, after the content and test plan are signed off:
+--   INSERT INTO public.coldcall_config (key, value, note)
+--   VALUES ('trustlight_email_enabled', 'true', 'Outbound TrustLight email enabled');
+-- To disable again:
+--   DELETE FROM public.coldcall_config WHERE key = 'trustlight_email_enabled';
+
 
 -- == Verify (paste after applying) =============================================
 -- The new column exists and is nullable:

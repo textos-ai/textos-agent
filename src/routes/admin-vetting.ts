@@ -674,6 +674,10 @@ app.post("/vetting/:id/notify", async (c) => {
   const cfg = await readConfig(supabase, [
     CONFIG_KEYS.siteUrl, CONFIG_KEYS.fromEmail, CONFIG_KEYS.fromName,
   ]);
+  // Read separately and NOT required: its absence means "sending is off",
+  // which is the safe default and must not block a dry-run preview.
+  const gate = await readConfig(supabase, [CONFIG_KEYS.emailEnabled]);
+  const emailEnabled = gate.ok ? gate.values[CONFIG_KEYS.emailEnabled] : undefined;
   if (!cfg.ok) {
     // Load-bearing: a missing site URL means a removal link that does not
     // work, in the very email that promises one. Halt loudly.
@@ -727,7 +731,11 @@ app.post("/vetting/:id/notify", async (c) => {
       from: `${cfg.values[CONFIG_KEYS.fromName]} <${cfg.values[CONFIG_KEYS.fromEmail]}>`,
       urls,
       email: mail,
+      // Surfaced in the dry run so an operator can see the send is stubbed
+      // BEFORE trying to confirm, rather than discovering it from a 502.
+      sending_enabled: emailEnabled === "true",
       warnings: [
+        ...(emailEnabled === "true" ? [] : ["Sending is STUBBED — confirm will not deliver anything."]),
         ...(to ? [] : ["This lead has no email address on record — supply `to` to send."]),
         ...(lead.vetting_status === "verified" ? [] : ["Not verified yet — the email describes a listing that does not exist."]),
         ...(lead.is_comped ? [] : ["Not marked as comped."]),
@@ -742,7 +750,7 @@ app.post("/vetting/:id/notify", async (c) => {
     to, subject: mail.subject, text: mail.text, html: mail.html,
     from: cfg.values[CONFIG_KEYS.fromEmail], fromName: cfg.values[CONFIG_KEYS.fromName],
     replyTo: cfg.values[CONFIG_KEYS.fromEmail],
-  });
+  }, emailEnabled);
   if (!sent.ok) {
     // Nothing is stamped on a failed send: notified_at must mean "they were
     // told", not "we tried".

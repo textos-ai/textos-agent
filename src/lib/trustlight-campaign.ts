@@ -30,6 +30,7 @@ export const CONFIG_KEYS = {
   graceDays: "comp_grace_days",
   siteUrl: "trustlight_site_url",
   fromEmail: "trustlight_from_email",
+  emailEnabled: "trustlight_email_enabled",
   fromName: "trustlight_from_name",
 } as const;
 
@@ -174,7 +175,23 @@ export function renderNotifyEmail(
 export async function sendEmail(
   env: Env,
   msg: { to: string; subject: string; text: string; html: string; from: string; fromName: string; replyTo?: string },
+  enabled: string | undefined,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
+  // ── SENDING IS STUBBED ──────────────────────────────────────────────
+  // Rob's instruction: build the campaign, but wire nothing that can actually
+  // send — in ANY environment — until the content and a test plan are signed
+  // off. This returns BEFORE any network call is made.
+  //
+  // The gate is a config row rather than a code edit, so enabling it later is
+  // a deliberate, reversible act that leaves a trail. The row is absent by
+  // design, so the default everywhere is "cannot send".
+  if (enabled !== "true") {
+    log.warn("[trustlight] email_send_stubbed", {
+      to: msg.to, subject: msg.subject,
+      note: "set coldcall_config.trustlight_email_enabled='true' to allow real sends",
+    });
+    return { ok: false, reason: "sending is stubbed — trustlight_email_enabled is not 'true'" };
+  }
   if (!env.SENDGRID_API_KEY || env.SENDGRID_API_KEY === "PLACEHOLDER") {
     return { ok: false, reason: "SENDGRID_API_KEY is not configured" };
   }

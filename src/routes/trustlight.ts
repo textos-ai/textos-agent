@@ -125,7 +125,6 @@ app.get("/directory/featured", async (c) => {
   const { data, error } = await publishable(
     supabase.from("coldcall_leads").select(VERIFIED_COLS), nowIso,
   )
-    .not("slug", "is", null)
     .order("dti_score", { ascending: false, nullsFirst: false })
     .order("rating", { ascending: false, nullsFirst: false })
     .limit(FEATURED_POOL);
@@ -218,8 +217,7 @@ app.get("/directory/search", async (c) => {
 
   // Counts first: they decide how the page splits between the two tiers.
   const { count: vCount, error: vcErr } = await applyVerified(
-    publishable(supabase.from("coldcall_leads").select("id", { count: "exact", head: true }), nowIso)
-      .not("slug", "is", null),
+    publishable(supabase.from("coldcall_leads").select("id", { count: "exact", head: true }), nowIso),
   );
   if (vcErr) {
     log.error("[trustlight] search_verified_count_failed", { err: vcErr.message });
@@ -246,7 +244,7 @@ app.get("/directory/search", async (c) => {
   let verified: ReturnType<typeof shapeVerified>[] = [];
   if (vTake > 0) {
     const { data, error } = await applyVerified(
-      publishable(supabase.from("coldcall_leads").select(VERIFIED_COLS), nowIso).not("slug", "is", null),
+      publishable(supabase.from("coldcall_leads").select(VERIFIED_COLS), nowIso),
     )
       .order("dti_score", { ascending: false, nullsFirst: false })
       .order("rating", { ascending: false, nullsFirst: false })

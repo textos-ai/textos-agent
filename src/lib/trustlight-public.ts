@@ -96,6 +96,45 @@ export const PUBLIC_CHECK_LABELS: Record<string, string> = {
   chk_reviews: "Review audit completed",
 };
 
+/**
+ * Fields a directory card cannot be published without.
+ *
+ * A verified record missing one of these used to reach the public response
+ * with a null in it — the live /featured grid was returning a card whose
+ * trade was `null`. A half-built card under a trust badge is worse than no
+ * card: it makes the badge look automated rather than checked.
+ *
+ * DELIBERATELY NOT INCLUDED: rating, review_count, dti_score and blurb. A
+ * genuinely unrated business has rating NULL, and migration 115 is explicit
+ * that NULL means "no reviews yet" and must never be shown as 0. Excluding
+ * those businesses would punish new ones for being new.
+ *
+ * `name` is absent because it is resolved (trading_name || legal_name ||
+ * name) and is guarded separately by the verification gate, which refuses to
+ * verify a business with no name at all.
+ */
+export const REQUIRED_PUBLIC_FIELDS = ["slug", "trade", "city", "state"] as const;
+
+/**
+ * Apply the required-field conditions to a query. Paired with
+ * missingPublicFields() below, which answers the same question about a row
+ * so the admin preview can explain the exclusion instead of just showing
+ * nothing.
+ */
+export function withRequiredFields<T extends { not: Function }>(q: T): T {
+  let x = q as T & Record<string, Function>;
+  for (const f of REQUIRED_PUBLIC_FIELDS) x = x.not(f, "is", null);
+  return x as T;
+}
+
+/** Which required fields this row is missing. */
+export function missingPublicFields(row: Record<string, unknown>): string[] {
+  return REQUIRED_PUBLIC_FIELDS.filter((f) => {
+    const v = row[f];
+    return v === null || v === undefined || String(v).trim() === "";
+  });
+}
+
 export type ProfileRow = VerifiedRow & {
   services: string[] | null; years_in_business: number | null; license_state: string | null;
   verified_at: string | null; expires_at: string | null;
@@ -140,8 +179,14 @@ export function shapeProfile(r: ProfileRow) {
  * The three conditions that make a row publishable, applied identically
  * everywhere. One function so a future endpoint cannot forget one.
  */
-export function publishable<T extends { eq: Function; gt: Function }>(q: T, nowIso: string): T {
-  return q.eq("vetting_status", "verified").eq("is_published", true).gt("expires_at", nowIso) as T;
+export function publishable<T extends { eq: Function; gt: Function; not: Function }>(q: T, nowIso: string): T {
+  // The required-field exclusion is folded in HERE rather than chained at each
+  // call site. Every public read already goes through publishable(), so this
+  // is the one place that makes it impossible for a read to forget — which is
+  // how a card with trade:null reached the live /featured grid.
+  return withRequiredFields(
+    q.eq("vetting_status", "verified").eq("is_published", true).gt("expires_at", nowIso) as T,
+  );
 }
 
 /**
@@ -164,6 +209,14 @@ export function visibilityOf(
   } else if (new Date(String(row.expires_at)) <= now) {
     blockers.push("Verification has expired.");
   }
-  if (!row.slug) blockers.push("No slug — there is no public URL yet.");
+  // Required-field exclusion (slug included) — the same rule the public
+  // queries enforce, so the preview can never say "visible" about a record
+  // the API would filter out.
+  const missing = missingPublicFields(row as Record<string, unknown>);
+  for (const f of missing) {
+    blockers.push(f === "slug"
+      ? "No slug — there is no public URL yet."
+      : `Missing ${f} — a required field, so this record is excluded from the public directory.`);
+  }
   return { visible: blockers.length === 0, blockers };
 }
