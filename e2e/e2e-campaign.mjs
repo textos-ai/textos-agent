@@ -5,6 +5,7 @@
 // nothing and stamps nothing. Rob reviews the content before anything goes out.
 import fs from "node:fs";
 import { createClient } from "@supabase/supabase-js";
+import { ENRICHMENT_COLUMNS } from "./enrichment-columns.mjs";
 
 const AGENT = "https://textos-agent-test.rgaudet2023.workers.dev";
 const env = {};
@@ -52,7 +53,11 @@ const TOUCHED = ["vetting_status","slug","is_published","verified_at","verified_
   // Contact fields: the profile endpoint publishes them now, so the email has
   // to list them and this suite has to set them. Same restore rule applies.
   "phone","website_url","address","zip","google_profile_url",
-  ...CHECKS, ...CHECKS.map((c) => `${c}_note`)];
+  ...CHECKS, ...CHECKS.map((c) => `${c}_note`),
+  // Verifying through the API probes the website and writes the enrichment
+  // columns. This suite never asks for that, but it causes it, so it restores it.
+  ...ENRICHMENT_COLUMNS,
+];
 
 const { data: subs } = await db.from("coldcall_leads")
   .select("id, name").eq("vetting_status", "lead").not("name", "is", null)

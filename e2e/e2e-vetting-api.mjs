@@ -10,6 +10,7 @@
 // is append-only by design) and are reported at the end.
 import fs from "node:fs";
 import { createClient } from "@supabase/supabase-js";
+import { ENRICHMENT_COLUMNS } from "./enrichment-columns.mjs";
 
 const AGENT = "https://textos-agent-test.rgaudet2023.workers.dev";
 const env = {};
@@ -30,7 +31,11 @@ const ok = (l, p, x = "") => { if (!p) fails++; console.log(`  ${l.padEnd(60)} $
 const CHECKS = ["chk_licensing_board","chk_license","chk_insurance","chk_business_filing",
   "chk_court_records","chk_address","chk_years_in_business","chk_contact","chk_reviews"];
 const TOUCHED = ["vetting_status","slug","is_published","verified_at","verified_year","expires_at",
-  "reverify_due","chk_last_run","trade","city","state", ...CHECKS, ...CHECKS.map((c) => `${c}_note`)];
+  "reverify_due","chk_last_run","trade","city","state","category", ...CHECKS, ...CHECKS.map((c) => `${c}_note`),
+  // Verifying through the API probes the website and writes the enrichment
+  // columns. This suite never asks for that, but it causes it, so it restores it.
+  ...ENRICHMENT_COLUMNS,
+];
 const SECRET = "GATE-TEST-NOTE-4471";
 
 // admin session
@@ -192,7 +197,13 @@ try {
   const afterNoop = (await api(`/api/admin/vetting/${ID}`)).body?.audit?.length ?? 0;
   ok("a no-op profile edit writes no audit row", afterNoop === beforeNoop,
     `${beforeNoop} -> ${afterNoop}`);
-  ok("the trail grew overall", afterNoop > auditBefore, `${auditBefore} -> ${afterNoop}`);
+  // NOT a length comparison: the detail endpoint returns at most 100 audit
+  // rows, so on a well-worked lead the count saturates and a ">" assertion
+  // fails for a reason that has nothing to do with auditing.
+  const newest = (await api(`/api/admin/vetting/${ID}`)).body?.audit?.[0];
+  ok("the newest audit entry is the edit just made",
+    newest?.field === "trade" && newest?.new_value === "roofing contractor",
+    JSON.stringify({ field: newest?.field, new_value: newest?.new_value }));
 
   // "reason" is a note, never a column.
   const notAField = await api(`/api/admin/vetting/${ID}/profile`, {
@@ -226,6 +237,48 @@ try {
   ok("reverify_due is 60 days before expiry",
     Math.abs((new Date(L.expires_at) - new Date(L.reverify_due)) / 86400000 - 60) < 2);
   ok("NOT auto-published", L.is_published === false, String(L.is_published));
+
+  console.log("\n5b. The gate enforces what the PUBLIC READ requires");
+  const backToQueue = async () => api(`/api/admin/vetting/${ID}/status`, {
+    method: "POST", body: JSON.stringify({ vetting_status: "in_verification", reason: "e2e gate test" }),
+  });
+  await backToQueue();
+
+  // ── The gate now enforces what the PUBLIC READ requires ────────────────
+  // Nine checks and a name used to be enough. The public read needs slug,
+  // trade, city and state, and only slug was ever checked - so a record could
+  // be verified, published, show no error, and never appear. Four real
+  // businesses were lost that way.
+  await db.from("coldcall_leads").update({ trade: null, category: null, city: null }).eq("id", ID);
+  const noCity = await tryVerify("missing city -> 409 refused", 409);
+  ok("the refusal names the missing field", /city/i.test(JSON.stringify(noCity.body ?? {})),
+    String(noCity.body?.message).slice(0, 96));
+  const stillLead = await api(`/api/admin/vetting/${ID}`);
+  ok("a refused verification wrote nothing", stillLead.body?.lead?.vetting_status !== "verified",
+    String(stillLead.body?.lead?.vetting_status));
+
+  // ── Trade is carried over from category, with no prompt ────────────────
+  await db.from("coldcall_leads")
+    .update({ city: "Slidell", category: "gutter service", trade: null }).eq("id", ID);
+  const carried = await tryVerify("category present -> verification proceeds", 200);
+  ok("trade was filled from category", carried.body?.lead?.trade === "gutter service",
+    String(carried.body?.lead?.trade));
+  // Verification deliberately does not publish, so the publish toggle is the
+  // one legitimate blocker left. What matters is that NO required public field
+  // is missing - that was the bug.
+  const blockers = carried.body?.public_blockers ?? [];
+  ok("no required public field is missing after verification",
+    !blockers.some((b) => /Missing/i.test(b)), JSON.stringify(blockers));
+  ok("the only thing left is the publish toggle",
+    blockers.length === 1 && /publish toggle/i.test(blockers[0]), JSON.stringify(blockers));
+
+  // A curated trade always wins over the scraped category.
+  await backToQueue();
+  await api(`/api/admin/vetting/${ID}/profile`, { method: "PATCH", body: JSON.stringify({ trade: "roofer" }) });
+  const again = await tryVerify("re-verify with a curated trade", 200);
+  ok("an operator's trade is not overwritten by category",
+    again.body?.lead?.trade === "roofing contractor", String(again.body?.lead?.trade));
+
 
   console.log("\n6. Publish is a separate, deliberate flip");
   const pub = await api(`/api/admin/vetting/${ID}/publish`, { method: "POST", body: JSON.stringify({ is_published: true, reason: "gate test" }) });

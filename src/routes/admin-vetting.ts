@@ -66,7 +66,7 @@ import {
 // public shape.
 import {
   PROFILE_COLS, shapeVerified, shapeProfile, shapeUnvetted, visibilityOf,
-  HOME_TRADE_CATEGORIES, canonicalTrade,
+  HOME_TRADE_CATEGORIES, canonicalTrade, REQUIRED_PUBLIC_FIELDS, missingPublicFields,
   type VerifiedRow, type ProfileRow,
 } from "../lib/trustlight-public";
 import { DTI_CONFIG_KEYS, scoreDti, type DtiWeights, type DtiRow } from "../lib/trustlight-dti";
@@ -827,6 +827,23 @@ app.post("/vetting/:id/status", async (c) => {
     if (!name) {
       return c.json(errBody("bad_request", "cannot verify: the business has no name to publish"), 400);
     }
+
+    // ── TRADE IS CARRIED OVER FROM CATEGORY ─────────────────────────────────
+    // The lead export fills `category`; the public read requires `trade`. For
+    // as long as nothing bridged the two, verifying a business moved it from a
+    // populated column to an empty one and made it LESS visible than it had
+    // been as an unvetted lead. That cost four businesses their listing -
+    // Coastal Roofing, Vinyltech, Apex Tree Care and Barreto Home Solutions -
+    // and each one was found by hand, months apart.
+    //
+    // Written verbatim, not canonicalised: `category` is what the export says
+    // the business does, and second-guessing it here would be a different bug.
+    // Only ever fills a BLANK trade - a curated value an operator typed always
+    // wins.
+    if (!String(lead.trade ?? "").trim() && String(lead.category ?? "").trim()) {
+      patch.trade = String(lead.category).trim();
+    }
+
     Object.assign(patch, verificationStamps());
     if (!lead.slug) {
       try {
@@ -835,6 +852,29 @@ app.post("/vetting/:id/status", async (c) => {
         log.error("[vetting] slug_failed", { lead_id: id, err: err instanceof Error ? err.message : String(err) });
         return c.json(errBody("internal", "slug_generation_failed"), 500);
       }
+    }
+
+    // ── THE GATE THE PUBLIC READ ACTUALLY APPLIES ───────────────────────────
+    // Verification used to check nine boxes and a name. The public read checks
+    // slug, trade, city and state. Only `slug` appeared in both, so an
+    // operator could pass every check, verify, publish, see no error, and the
+    // record would simply never appear.
+    //
+    // Same constant as publishable(), evaluated against the row AS IT WILL BE
+    // once this patch lands - so the trade filled in above and the slug
+    // generated above both count. Missing anything, the operator is told now,
+    // by name, instead of a business finding out months later.
+    const after = { ...(lead as Record<string, unknown>), ...patch };
+    const missing = missingPublicFields(after);
+    if (missing.length) {
+      log.warn("[vetting] verify_blocked_public_fields", { lead_id: id, missing });
+      return c.json(errBody(
+        "conflict",
+        `cannot verify: the public directory needs ${missing.join(" and ")}. ` +
+        `A record missing ${missing.length === 1 ? "that" : "those"} would be verified and published ` +
+        `but never appear. Fill ${missing.length === 1 ? "it" : "them"} in on the profile first.`,
+        { missing, required: REQUIRED_PUBLIC_FIELDS },
+      ), 409);
     }
   }
 
@@ -903,6 +943,10 @@ app.post("/vetting/:id/status", async (c) => {
     can_verify: allNinePass(l as Record<CheckKey, string | null>),
     audit_recorded: audit.ok,
     enrichment: enriched,
+    // Whether the public can actually see it, answered at the moment of the
+    // change rather than left for someone to discover later. Same function the
+    // public read uses.
+    ...publicVisibility(l),
   });
 });
 
@@ -928,14 +972,20 @@ app.post("/vetting/:id/publish", async (c) => {
 
   const { data: current, error: cErr } = await supabase
     .from("coldcall_leads")
-    .select("id, vetting_status, is_published, slug, expires_at")
+    // trade/city/state are selected because the publish gate below evaluates
+    // REQUIRED_PUBLIC_FIELDS. Reading fewer columns than the check needs would
+    // report every record as missing them.
+    .select("id, vetting_status, is_published, slug, expires_at, trade, city, state")
     .eq("id", id).maybeSingle();
   if (cErr) {
     log.error("[vetting] publish_read_failed", { lead_id: id, err: cErr.message });
     return c.json(errBody("internal", "publish_read_failed"), 500);
   }
   if (!current) return c.json(errBody("not_found", "lead not found"), 404);
-  const row = current as unknown as { vetting_status: string; is_published: boolean; slug: string | null; expires_at: string | null };
+  const row = current as unknown as {
+    vetting_status: string; is_published: boolean; slug: string | null; expires_at: string | null;
+    trade: string | null; city: string | null; state: string | null;
+  };
 
   if (wanted) {
     if (row.vetting_status !== "verified") {
@@ -943,6 +993,19 @@ app.post("/vetting/:id/publish", async (c) => {
     }
     if (!row.slug) {
       return c.json(errBody("conflict", "cannot publish: no slug — re-run verification"), 409);
+    }
+    // Publishing is the moment a record is claimed to be live, so it answers
+    // to the same four fields the public read requires - not just the slug it
+    // used to check.
+    const missingPub = missingPublicFields(row as unknown as Record<string, unknown>);
+    if (missingPub.length) {
+      return c.json(errBody(
+        "conflict",
+        `cannot publish: the public directory needs ${missingPub.join(" and ")}. ` +
+        `Publishing without ${missingPub.length === 1 ? "it" : "them"} would show as live ` +
+        `while the directory returned nothing.`,
+        { missing: missingPub, required: REQUIRED_PUBLIC_FIELDS },
+      ), 409);
     }
     if (!row.expires_at || new Date(row.expires_at) <= new Date()) {
       return c.json(errBody("conflict", "cannot publish: verification has expired"), 409);

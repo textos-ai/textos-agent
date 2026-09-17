@@ -5,6 +5,7 @@
 // Inc, Trinity Home Services or Vinyltech.
 import fs from "node:fs";
 import { createClient } from "@supabase/supabase-js";
+import { ENRICHMENT_COLUMNS } from "./enrichment-columns.mjs";
 
 // Distinct lead window (30-30) so this suite cannot fight another
 // running back to back over the same records.
@@ -47,7 +48,11 @@ const TOUCHED = ["vetting_status","is_published","slug","trade","city","state","
   "expires_at","reverify_due","trading_name","rating","review_count","dti_score","blurb","chk_last_run",
   "is_comped","comp_reason","comp_offer_status","comp_offered_at","comp_decided_at",
   "notified_at","listing_consent","removal_token","removal_requested_at",
-  ...CHECKS, ...CHECKS.map((c) => `${c}_note`)];
+  ...CHECKS, ...CHECKS.map((c) => `${c}_note`),
+  // Verifying through the API probes the website and writes the enrichment
+  // columns. This suite never asks for that, but it causes it, so it restores it.
+  ...ENRICHMENT_COLUMNS,
+];
 
 const { data: subject } = await db.from("coldcall_leads")
   .select("id, name").eq("vetting_status", "lead").not("name", "is", null)

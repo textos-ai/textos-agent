@@ -13,6 +13,7 @@
 // design) and are reported at the end.
 import fs from "node:fs";
 import { createClient } from "@supabase/supabase-js";
+import { ENRICHMENT_COLUMNS } from "./enrichment-columns.mjs";
 
 const AGENT = "https://textos-agent-test.rgaudet2023.workers.dev";
 const PROTECTED = ["Pat Bryant Electric", "Kwik Service Electric Inc", "Trinity Home Services", "Vinyltech"];
@@ -52,7 +53,11 @@ const CHECKS = ["chk_licensing_board","chk_license","chk_insurance","chk_busines
 const TOUCHED = ["vetting_status","slug","is_published","verified_at","verified_year","expires_at","reverify_due",
   "plan","trading_name","trade","city","state","parish","rating","review_count","dti_score","blurb","chk_last_run",
   "exclusive_trade","exclusive_county","exclusive_state","exclusive_until",
-  ...CHECKS, ...CHECKS.map((c) => `${c}_note`)];
+  ...CHECKS, ...CHECKS.map((c) => `${c}_note`),
+  // Verifying through the API probes the website and writes the enrichment
+  // columns. This suite never asks for that, but it causes it, so it restores it.
+  ...ENRICHMENT_COLUMNS,
+];
 
 const { data: subs } = await db.from("coldcall_leads")
   .select("id, name").eq("vetting_status", "lead").not("name", "is", null)

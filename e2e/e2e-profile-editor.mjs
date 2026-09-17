@@ -5,6 +5,7 @@
 // record, fetching BOTH, and deep-comparing — not by eyeballing the shape.
 import fs from "node:fs";
 import { createClient } from "@supabase/supabase-js";
+import { ENRICHMENT_COLUMNS } from "./enrichment-columns.mjs";
 
 const AGENT = "https://textos-agent-test.rgaudet2023.workers.dev";
 const env = {};
@@ -39,7 +40,11 @@ const PROFILE = ["legal_name","trading_name","trade","city","state","parish","li
   "license_state","gl_carrier","years_in_business","blurb","services","rating","review_count",
   "dti_score","dti_findability","dti_answerability","dti_responsiveness","dti_completeness","dti_compliance"];
 const TOUCHED = ["vetting_status","slug","is_published","verified_at","verified_year","expires_at",
-  "reverify_due","chk_last_run", ...PROFILE, ...CHECKS, ...CHECKS.map((c) => `${c}_note`)];
+  "reverify_due","chk_last_run", ...PROFILE, ...CHECKS, ...CHECKS.map((c) => `${c}_note`),
+  // Verifying through the API probes the website and writes the enrichment
+  // columns. This suite never asks for that, but it causes it, so it restores it.
+  ...ENRICHMENT_COLUMNS,
+];
 
 const { data: subject } = await db.from("coldcall_leads")
   .select("id, name").eq("vetting_status", "lead").not("name", "is", null)
@@ -113,12 +118,24 @@ try {
     card: p1.body.card, profile: p1.body.profile, unvetted_entry: p1.body.unvetted_entry,
   });
   for (const key of ["license_number", "gl_carrier", "legal_name", "chk_", "_note",
-                     "phone", "vetting_status", "is_published", "call_score"]) {
+                     "vetting_status", "is_published", "call_score"]) {
     ok(`public-shaped sections omit "${key}"`, !mirrors.includes(key));
   }
   ok("those names appear ONLY in editable_fields",
     ["license_number", "gl_carrier", "legal_name"].every((k) =>
       !mirrors.includes(k) && p1.body.editable_fields.includes(k)));
+
+  // `phone` used to be on the list above, back when the profile published no
+  // contact details at all. It does now — a directory that withholds the
+  // contractor's phone number is no use to a homeowner — so the boundary moved
+  // rather than disappearing, and the assertion moves with it. The phone
+  // belongs to the PROFILE's contact block only: the card and the unvetted
+  // entry are summaries and still carry none of it.
+  const summaries = JSON.stringify({ card: p1.body.card, unvetted_entry: p1.body.unvetted_entry });
+  ok("the card and unvetted entry still carry no phone", !summaries.includes("phone"));
+  ok("the profile publishes the phone, deliberately, under contact",
+    p1.body.profile?.contact?.phone !== undefined,
+    JSON.stringify(p1.body.profile?.contact ?? null));
 
   console.log("\n5. Verify + publish, then compare preview against the LIVE response");
   await api(`/api/admin/vetting/${ID}/checks`, {
