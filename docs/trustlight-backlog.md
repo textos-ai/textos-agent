@@ -148,6 +148,22 @@ Worth doing eventually, in this order:
 
 ## DONE
 
+### Asset caching hid two shipped fixes — closed
+
+Cloudflare Pages serves `/assets/*` with `max-age=14400` and HTML with
+`max-age=0`. A visitor always got fresh HTML pointing at an unversioned
+`assets/api.js`, which their browser then served from a four-hour-old cache.
+Changes that were correct on the server looked, in a browser, like they had
+never deployed - the card-linking fix was reported as missing twice while the
+deployed code was right both times.
+
+`deploy.ps1` now appends `?v=<content hash>` to every `.js`/`.css` reference
+in the staged HTML. Per file, so an unchanged asset keeps its cached copy.
+Staging copies only, so nothing in the repo churns per deploy.
+
+**When verifying a frontend change, check the deployed asset, not the page.**
+A page can be fresh while the script it loads is hours old.
+
 ### Launch — closed
 
 The `trustlight.com/api/*` zone route is live, and the rewritten site is
