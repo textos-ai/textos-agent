@@ -1821,6 +1821,12 @@ app.patch("/vetting/:id/profile", async (c) => {
     return c.json(errBody("bad_request", "body must be JSON"), 400);
   }
 
+  // An optional note, recorded against every field this request changes.
+  // Same shape the publish endpoint takes, and never treated as a field.
+  const reason = typeof body.reason === "string" && body.reason.trim()
+    ? body.reason.trim().slice(0, 500) : null;
+  delete body.reason;
+
   const patch: Record<string, unknown> = {};
   for (const [k, raw] of Object.entries(body)) {
     const spec = (PROFILE_FIELDS as Record<string, FieldSpec>)[k];
@@ -1833,6 +1839,18 @@ app.patch("/vetting/:id/profile", async (c) => {
     return c.json(errBody("bad_request", "no profile fields supplied"), 400);
   }
 
+  // The BEFORE values, read before the write, so the audit trail can record
+  // what each field actually changed from. Only the fields being edited are
+  // selected - there is no reason to read the rest of the row.
+  const { data: prior, error: pErr } = await supabase
+    .from("coldcall_leads").select(Object.keys(patch).join(", ")).eq("id", id).maybeSingle();
+  if (pErr) {
+    log.error("[vetting] profile_prior_read_failed", { lead_id: id, err: pErr.message });
+    return c.json(errBody("internal", "profile_update_failed"), 500);
+  }
+  if (!prior) return c.json(errBody("not_found", "lead not found"), 404);
+  const before = prior as unknown as Record<string, unknown>;
+
   const { data, error } = await supabase
     .from("coldcall_leads").update(patch).eq("id", id)
     .select(VETTING_DETAIL_COLS).maybeSingle();
@@ -1841,6 +1859,32 @@ app.patch("/vetting/:id/profile", async (c) => {
     return c.json(errBody("internal", "profile_update_failed"), 500);
   }
   if (!data) return c.json(errBody("not_found", "lead not found"), 404);
+
+  // ── AUDIT ────────────────────────────────────────────────────────────────
+  // One row per field that actually changed, matching what the status and
+  // publish endpoints already write. These are the PUBLISHED CLAIMS about a
+  // real business - the trade that decides whether it appears at all, the
+  // rating, the blurb, the DTI scores. Until this existed they could be
+  // changed with no persistent record of who changed them or what they were
+  // before, while a status flip two lines away was fully audited.
+  //
+  // No-op edits are skipped deliberately: a trail that records writes which
+  // changed nothing is a trail nobody reads.
+  const asText = (v: unknown) =>
+    v === null || v === undefined ? null : Array.isArray(v) ? JSON.stringify(v) : String(v);
+  for (const field of Object.keys(patch)) {
+    const oldText = asText(before[field]);
+    const newText = asText(patch[field]);
+    if (oldText === newText) continue;
+    const a = await writeAudit(supabase, {
+      lead_id: id, actor_user_id: auth.user_id, actor_email: auth.email,
+      field, old_value: oldText, new_value: newText, reason: reason ?? null,
+    });
+    // Non-fatal, and loud: the edit is already committed, so failing the
+    // request here would be worse than an incomplete trail. It is logged at
+    // error level so it is not silent.
+    if (!a.ok) log.error("[vetting] profile_audit_write_failed", { lead_id: id, field, err: a.message });
+  }
 
   log.info("[vetting] profile_updated", { lead_id: id, fields: Object.keys(patch), by: auth.email });
   return c.json({ lead: data as unknown as Record<string, unknown>, updated: Object.keys(patch) });

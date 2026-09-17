@@ -15,43 +15,21 @@ Last reviewed 2026-09-17.
 
 | | State |
 |---|---|
-| `textos-agent` | `main` = `origin/main` = `b16e6b0` |
-| prod worker `textos-agent-dev` | `ea098094` — current with `main` |
+| `textos-agent` | `main` = `origin/main`, clean |
+| prod worker `textos-agent-dev` | current with `main` |
 | test worker `textos-agent-test` | current with `main` |
-| `trustlight.com/api/*` zone route | **does not exist** |
-| `trustlight.com` (the site) | **serves the pre-rewrite copy** |
-| preview `directory-preview.trustlight-com.pages.dev` | current |
-| `textos-web` | `ac279b1`, untouched by this work |
+| `trustlight.com/api/*` zone route | **live** |
+| `trustlight.com` (the site) | **live, rewritten copy** |
+| `textos-web` admin | deployed to test and prod |
 
-Both workers carry the full public API. Nothing points at it yet.
+The site is up. 6 verified businesses are public and the admin agrees with
+the public API on all six.
 
 ---
 
 ## OPEN
 
-### 1. Zone route: `trustlight.com/api/*` → `textos-agent-dev`
-
-**Blocks the site launch.** There is no `routes` block in `wrangler.toml`, so
-this is a Cloudflare dashboard change or a new `routes` entry plus a redeploy.
-Until it exists, `trustlight.com/api/directory/featured` returns the Pages HTML
-fallback and the rewritten site would render its error state on every page.
-
-Must land **before** the production site deploy, not after.
-
-### 2. Production deploy of `trustlight-public`
-
-Everything below is built, tested and live on the preview only:
-
-- contractor-facing copy rewrite across all 13 pages (0 banned-vocabulary hits)
-- the refund guarantee on `get-verified` and `start`
-- the H2 card system, `/search`, and `/contractor/{slug}`
-- `start.html` trimmed to the API's field contract (28 → 24 controls)
-- `badge.html` repointed at real profile URLs, with an interim notice
-- host-derived `API_BASE`, `/search` in nav and footer sitewide
-
-Ships with `.\deploy.ps1 -Production`, after item 1.
-
-### 3. A facets endpoint for the search filters
+### 1. A facets endpoint for the search filters
 
 `GET /api/directory/facets` returning the distinct publishable values per
 field, with counts. `/search` currently uses free-text inputs backed by a
@@ -65,7 +43,7 @@ Constraints inherited from the rest of the public API: explicit column
 whitelist, no `select("*")`, no row spread, and counts must not make a
 non-public record inferable.
 
-### 4. Wire `start.html` to `POST /api/application`
+### 2. Wire `start.html` to `POST /api/application`
 
 The endpoint is built, tested and deployed to both workers. The form was
 trimmed to match `APPLICATION_FIELDS` exactly — `validateApplication()` rejects
@@ -75,7 +53,7 @@ form was missing.
 `start.html` still posts to **Formspree**. Payment → verification is still
 manual.
 
-### 5. Admin: render the trade picker
+### 3. Admin: render the trade picker
 
 `GET /api/admin/vetting/:id/preview` now returns `trade_options` — the 16
 values `PATCH .../profile` accepts. The admin UI still shows a free-text box.
@@ -83,7 +61,7 @@ values `PATCH .../profile` accepts. The admin UI still shows a free-text box.
 The constraint is enforced server-side either way (`bb7630f`), so this is
 ergonomics, not correctness. A `textos-web` change.
 
-### 6. `--dim-text` and the star gold fail WCAG AA
+### 4. `--dim-text` and the star gold fail WCAG AA
 
 Measured, not estimated:
 
@@ -96,7 +74,7 @@ The directory surfaces work around both — `--steel` (5.46) for captions and
 `#9A6100` (5.14) for stars — but `site.css` still uses the failing values
 everywhere else. Fixing them at the token level would lift every page at once.
 
-### 7. Badge SVGs hardcode `VERIFIED 2026`
+### 5. Badge SVGs hardcode `VERIFIED 2026`
 
 All six variants (`compact`, `horizontal`, `square` × light/dark) carry the
 year in the artwork **and** in the `aria-label`. The API returns
@@ -106,7 +84,7 @@ Accurate for every current record. Wrong the day a 2027 verification
 publishes, and it fails silently — the card renders, the year is just a lie.
 Needs a year-less variant or per-year assets. A design decision.
 
-### 8. Test and prod share the `SNAPSHOT_KV` namespace
+### 6. Test and prod share the `SNAPSHOT_KV` namespace
 
 `wrangler.toml` binds namespace id `198fb2847eaa45f9b9d3102311832b9b` at both
 the top level (prod) and under `[env.test]`. Rate-limit counters therefore
@@ -115,14 +93,68 @@ collide across environments — test traffic can consume prod's window.
 Harmless for what it is (a coarse abuse brake that fails open), but it means
 the two environments are not as isolated as the rest of the config implies.
 
-### 9. `google_profile` is null on every live record
+### 7. `google_profile` is null on every live record
 
 The column exists (migration 131 applied) and the profile endpoint publishes
 it. No row has a value, so the "On Google" row never renders. Data, not code.
 
+### 8. Duplicate business names in `coldcall_leads`
+
+**Not urgent, and NOT a merge job.** Recorded because it looks alarming and
+the obvious reaction would be wrong.
+
+356 names are shared by 2+ rows, covering **1,173 rows — 7.4% of the table**.
+Group sizes run to 38 (`Jackson Hewitt Tax Service`), 34 (`Anytime Fitness`),
+33, 24, 24.
+
+| | groups | rows |
+|---|---|---|
+| same name, same city | 175 | 456 |
+| same name, all different cities | 211 | — |
+| mixed | 37 | — |
+
+Named examples: **Coastal Roofing** has 3 rows (verified/Picayune,
+lead/Covington, lead/Slidell — the last categorised `gutter service`).
+**Trinity Home Services** has 2, both Metairie, one verified one lead.
+
+**These are mostly branches, not scrape duplicates.** Every one of the 14,411
+rows carrying a phone number has a *unique* one — zero collisions across the
+whole table — and that holds inside all 175 same-name-same-city groups too.
+Two `Jackson Hewitt` rows in Metairie with different numbers are two offices.
+Merging on name would destroy real records.
+
+**The application matcher is not currently at risk.** `POST /api/application`
+matches on licence, then phone, and requires *exactly one* hit or it treats
+the submission as new. It never matches on name, so duplicate names cannot
+mis-attach an application. Two facts back that up:
+
+- **0 phone numbers are shared by 2+ rows**, so the phone rung is unambiguous.
+- **0 of 15,822 rows carry a licence number at all**, so the licence rung can
+  never fire against scraped data. Only applicants supply one.
+
+The real risk runs the other way: a contractor applying from a number that is
+not the scraped one matches nothing and a NEW row is created beside the
+existing lead. That is the mechanism that will *add* duplicates over time, and
+it is inherent to matching on a single phone number.
+
+Worth doing eventually, in this order:
+1. Leave the data alone. Nothing here needs merging today.
+2. When the volume of applications justifies it, widen the match ladder
+   (normalised name + city + state as a third rung, surfaced to an operator
+   for confirmation rather than auto-matched).
+3. If a dedupe is ever run, key it on phone, never on name.
+
 ---
 
 ## DONE
+
+### Launch — closed
+
+The `trustlight.com/api/*` zone route is live, and the rewritten site is
+deployed to production. Verified after: `/api/*` returns JSON from the prod
+worker while Pages serves the site, `API_BASE` resolves same-origin, all 14
+pages serve, and no internal file (`CLAUDE.md`, `BACKLOG.md`, `deploy.ps1`,
+the mockups) is reachable.
 
 ### Trade vocabulary — closed
 
@@ -170,6 +202,22 @@ Two Cloudflare Pages behaviours are load-bearing and documented in
 `_redirects`: the shell cannot be named `contractor.html` (clean-URL
 normalisation 308s `/contractor/*` to `/contractor`), and the rewrite target
 cannot end in `.html` (normalised to a 308 instead of a rewrite).
+
+### Profile edits are audited — closed
+
+`PATCH /vetting/:id/profile` wrote a log line and nothing to
+`coldcall_vetting_audit`, while a status flip two lines away was fully
+audited. Trade, rating, blurb, DTI scores — every published claim about a
+business — could be changed with no record of who changed it or what it was
+before. It now writes one row per field that actually changed, with actor,
+old value, new value, an optional reason and a timestamp. No-op edits are
+skipped so the trail stays readable.
+
+Three trade edits made before this existed were backfilled: real actor, real
+old value (null, read before the write), and `created_at` taken from each
+row's own `updated_at`, which the database set on that write and nothing has
+touched since. Each backfilled row says so in its `reason` — reconstructed,
+not observed from a log.
 
 ### Business contact on the public profile — closed
 

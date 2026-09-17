@@ -166,6 +166,40 @@ try {
   ok("a refused trade wrote nothing", stillSet.body?.lead?.trade === "moving company",
     String(stillSet.body?.lead?.trade));
 
+  // ── Profile edits are audited, like status and publish ──────────────
+  // These are the published claims about a real business. Until this existed
+  // the trade that decides whether a record appears at all could be changed
+  // with no record of who changed it or what it was before.
+  const auditBefore = (await api(`/api/admin/vetting/${ID}`)).body?.audit?.length ?? 0;
+  await api(`/api/admin/vetting/${ID}/profile`, {
+    method: "PATCH", body: JSON.stringify({ trade: "roofer", reason: "e2e audit check" }),
+  });
+  const auditDet = await api(`/api/admin/vetting/${ID}`);
+  const rows = (auditDet.body?.audit ?? []).filter((a) => a.field === "trade");
+  ok("a profile edit writes an audit row", rows.length >= 1, String(rows.length));
+  const latest = rows[0];
+  ok("audit records the new value", latest?.new_value === "roofing contractor", String(latest?.new_value));
+  ok("audit records the old value", latest?.old_value === "moving company", String(latest?.old_value));
+  ok("audit records who did it", !!latest?.actor_email, String(latest?.actor_email));
+  ok("audit carries the reason", latest?.reason === "e2e audit check", String(latest?.reason));
+  ok("audit is timestamped", !!latest?.created_at);
+
+  // A write that changes nothing must not add noise to the trail.
+  const beforeNoop = (await api(`/api/admin/vetting/${ID}`)).body?.audit?.length ?? 0;
+  await api(`/api/admin/vetting/${ID}/profile`, {
+    method: "PATCH", body: JSON.stringify({ trade: "roofing contractor" }),
+  });
+  const afterNoop = (await api(`/api/admin/vetting/${ID}`)).body?.audit?.length ?? 0;
+  ok("a no-op profile edit writes no audit row", afterNoop === beforeNoop,
+    `${beforeNoop} -> ${afterNoop}`);
+  ok("the trail grew overall", afterNoop > auditBefore, `${auditBefore} -> ${afterNoop}`);
+
+  // "reason" is a note, never a column.
+  const notAField = await api(`/api/admin/vetting/${ID}/profile`, {
+    method: "PATCH", body: JSON.stringify({ reason: "only a note" }),
+  });
+  ok("reason alone is not a profile field", notAField.status === 400, `status=${notAField.status}`);
+
   const opts = await api(`/api/admin/vetting/${ID}/preview`);
   ok("the editor is handed the allowed values",
     Array.isArray(opts.body?.trade_options) && opts.body.trade_options.includes("roofing contractor"),
