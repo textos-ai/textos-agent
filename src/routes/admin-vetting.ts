@@ -792,11 +792,24 @@ app.post("/vetting/manual", async (c) => {
   // Enforced here, not only in the UI. Refuses with the matches attached so
   // the operator can open one; `force` is how they say "I looked, make it
   // anyway", and that decision is recorded in the audit reason.
-  const dupes = await findDuplicates(supabase, v.fields.name, v.phoneDigits);
+  const dupes = await findDuplicates(supabase, v.fields.name, v.phoneDigits, v.fields.place_id);
   if (!dupes.ok) {
     log.error("[vetting] manual_duplicate_check_failed", { err: dupes.message });
     return c.json(errBody("internal", "duplicate_check_failed"), 500);
   }
+
+  // A place_id collision is NOT advisory and `force` cannot override it.
+  // place_id carries a UNIQUE index, so the insert would fail anyway - and it
+  // would fail as an opaque 500 rather than telling the operator that Google's
+  // own id for this business already belongs to a record they can open. Same
+  // business, by Google's definition, not a judgement call.
+  const placeClash = dupes.matches.filter((m) => m.matched_on === "place_id");
+  if (placeClash.length) {
+    return c.json(errBody("conflict",
+      "that Google place_id already belongs to a record — it is the same business, so open that one instead",
+      { matches: placeClash, forceable: false }), 409);
+  }
+
   if (dupes.matches.length && !force) {
     return c.json(errBody("conflict",
       dupes.matches.length === 1
@@ -835,7 +848,17 @@ app.post("/vetting/manual", async (c) => {
   const { data: created, error } = await supabase
     .from("coldcall_leads").insert(row).select("id, name").single();
   if (error || !created) {
-    log.error("[vetting] manual_insert_failed", { err: error?.message });
+    // 23505 is a unique violation. The place_id gate above catches the case we
+    // know about, but a race between the check and the insert would land here,
+    // and so would any future unique index. Answering with the constraint name
+    // beats a bare "could not create the record" - that message cost a real
+    // debugging session before this branch existed.
+    if (error?.code === "23505") {
+      log.warn("[vetting] manual_insert_conflict", { err: error.message });
+      return c.json(errBody("conflict",
+        `a record already exists with that value (${error.message})`), 409);
+    }
+    log.error("[vetting] manual_insert_failed", { err: error?.message, code: error?.code });
     return c.json(errBody("internal", "could not create the record"), 500);
   }
   const leadId = (created as { id: string }).id;

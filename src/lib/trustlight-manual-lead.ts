@@ -314,7 +314,7 @@ export interface DuplicateMatch {
   city: string | null;
   state: string | null;
   vetting_status: string | null;
-  matched_on: "name" | "phone";
+  matched_on: "name" | "phone" | "place_id";
 }
 
 /**
@@ -331,16 +331,35 @@ export interface DuplicateMatch {
  * false negative creates the second record for a business that is already
  * halfway through vetting, and nothing downstream will ever reconcile them.
  *
- * This NEVER decides anything by itself - it returns candidates for a person
- * to judge.
+ * PLACE_ID is different from the other two and is checked FIRST. It is
+ * Google's own id for the business and it carries a UNIQUE index
+ * (coldcall_leads_place_id_uniq, migration 115) because it is the key the
+ * scrape dedupes on. A collision there is not a suggestion that these might be
+ * the same business - it IS the same business, and the database will refuse
+ * the insert regardless of what anyone decides. So it is reported separately
+ * and cannot be overridden.
+ *
+ * This NEVER decides anything by itself for name and phone - it returns
+ * candidates for a person to judge.
  */
 export async function findDuplicates(
   supabase: { from: Function },
   name: string,
   phone: string,
+  placeId?: string,
 ): Promise<{ ok: true; matches: DuplicateMatch[] } | { ok: false; message: string }> {
   const cols = "id, name, phone, city, state, vetting_status";
   const byId = new Map<string, DuplicateMatch>();
+
+  const pid = String(placeId ?? "").trim();
+  if (pid) {
+    const { data, error } = await supabase
+      .from("coldcall_leads").select(cols).eq("place_id", pid).limit(2);
+    if (error) return { ok: false, message: error.message };
+    for (const r of (data ?? []) as Array<Record<string, unknown>>) {
+      byId.set(r.id as string, { ...(r as unknown as DuplicateMatch), matched_on: "place_id" });
+    }
+  }
 
   const digits = String(phone ?? "").replace(/\D+/g, "");
   const ten = digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits;
