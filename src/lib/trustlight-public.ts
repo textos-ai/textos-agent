@@ -35,9 +35,21 @@ export const VERIFIED_COLS =
  */
 export const PROFILE_CONTACT_COLS = "phone, website_url, address, zip, google_profile_url";
 
+/**
+ * Enrichment signals read for the profile's presence summary.
+ *
+ * These are NOT published as fields. They are reduced to a short list of
+ * plain-language gaps by presenceGaps(), so the page can tell a business what
+ * is missing from its own online presence. A homeowner sees the same text -
+ * there is no login - so every phrase has to be a neutral statement of fact
+ * about a website, never a judgement about the business.
+ */
+export const PROFILE_PRESENCE_COLS =
+  "has_website, has_schema_org, booking_tool, chat_widget, call_tracking, analytics_pixels";
+
 /** The ONLY columns readable for a full public profile. */
 export const PROFILE_COLS =
-  VERIFIED_COLS + ", " + PROFILE_CONTACT_COLS +
+  VERIFIED_COLS + ", " + PROFILE_CONTACT_COLS + ", " + PROFILE_PRESENCE_COLS +
   ", services, years_in_business, license_state, verified_at, expires_at, " +
   "chk_licensing_board, chk_license, chk_insurance, chk_business_filing, chk_court_records, " +
   "chk_address, chk_years_in_business, chk_contact, chk_reviews";
@@ -355,10 +367,35 @@ export function missingPublicFields(row: Record<string, unknown>): string[] {
 export type ProfileRow = VerifiedRow & {
   phone: string | null; website_url: string | null; address: string | null;
   zip: string | null; google_profile_url: string | null;
+  has_website: boolean | null; has_schema_org: boolean | null;
+  booking_tool: boolean | null; chat_widget: boolean | null;
+  call_tracking: boolean | null; analytics_pixels: boolean | null;
   services: string[] | null; years_in_business: number | null; license_state: string | null;
   verified_at: string | null; expires_at: string | null;
   [k: string]: unknown;
 };
+
+/**
+ * Plain-language gaps in a business's online presence.
+ *
+ * Duplicated deliberately rather than imported from lib/trustlight-enrich:
+ * this file is the public shape and must not depend on the probe. If the two
+ * ever disagree, THIS one is what the public sees.
+ */
+export function presenceGaps(row: {
+  has_website?: boolean | null; has_schema_org?: boolean | null;
+  booking_tool?: boolean | null; chat_widget?: boolean | null;
+  call_tracking?: boolean | null; analytics_pixels?: boolean | null;
+}): string[] {
+  const gaps: string[] = [];
+  if (row.has_website === false) gaps.push("no website");
+  if (row.has_schema_org === false) gaps.push("no structured data for search engines and AI");
+  if (row.booking_tool === false && row.chat_widget === false) gaps.push("no online booking or chat");
+  else if (row.booking_tool === false) gaps.push("no online booking");
+  if (row.call_tracking === false) gaps.push("no call tracking");
+  if (row.analytics_pixels === false) gaps.push("no analytics");
+  return gaps;
+}
 
 /**
  * The full public profile.
@@ -403,6 +440,11 @@ export function shapeProfile(r: ProfileRow) {
         zip: r.zip,
       },
     },
+    // What is missing from this business's online presence, in plain words.
+    // Only signals we actually CHECKED appear - a null is silence, never a
+    // claim. Empty means either a full presence or nothing measured, and the
+    // page renders nothing in both cases.
+    presence_gaps: presenceGaps(r),
     services: Array.isArray(r.services) ? r.services : [],
     years_in_business: r.years_in_business,
     license_state: r.license_state,

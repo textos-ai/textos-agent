@@ -70,6 +70,7 @@ import {
   type VerifiedRow, type ProfileRow,
 } from "../lib/trustlight-public";
 import { DTI_CONFIG_KEYS, scoreDti, type DtiWeights, type DtiRow } from "../lib/trustlight-dti";
+import { enrichSite, presenceGaps } from "../lib/trustlight-enrich";
 import {
   COMP_OFFER_STATUSES, CONFIG_KEYS, readConfig, removalToken,
   renderNotifyEmail, sendEmail, compGraceDeadline, senderAllowed,
@@ -779,12 +780,46 @@ app.post("/vetting/:id/status", async (c) => {
 
   log.info("[vetting] status_changed", { lead_id: id, from: prev, to: next, by: auth.email });
   const l = updated as unknown as Record<string, unknown>;
+
+  // ── Enrich on verification ───────────────────────────────────────────────
+  // A freshly verified business should not wait for a batch that may never run
+  // again. This probes the site and writes the enrichment columns, so the DTI
+  // has something to score.
+  //
+  // BEST EFFORT, NEVER FATAL. A slow or hostile website must not be able to
+  // fail a verification that has already been decided and written. robots.txt
+  // is honoured here with no override - an automatic run has nobody to attach
+  // the decision to, so if a site says no, the answer is no until an operator
+  // says otherwise on the record.
+  let enriched: Record<string, unknown> | null = null;
+  if (next === "verified") {
+    try {
+      const site = (l.website_url as string | null) ?? (l.domain as string | null);
+      const r = await enrichSite(site, { overrideRobots: false });
+      const { note, ...patchE } = r;
+      const { error: eErr } = await supabase.from("coldcall_leads").update(patchE).eq("id", id);
+      if (eErr) {
+        log.warn("[vetting] verify_enrich_write_failed", { lead_id: id, err: eErr.message });
+      } else {
+        enriched = { status: r.enrichment_status, note, presence_gaps: presenceGaps(r) };
+        await writeAudit(supabase, {
+          lead_id: id, actor_user_id: auth.user_id, actor_email: auth.email,
+          field: "enrichment_status", old_value: null, new_value: r.enrichment_status,
+          reason: "automatic enrichment on verification",
+        });
+      }
+    } catch (err) {
+      log.warn("[vetting] verify_enrich_failed", { lead_id: id, err: String(err) });
+    }
+  }
+
   return c.json({
     lead: l,
     checks_passed: countPasses(l as Record<CheckKey, string | null>),
     checks_total: CHECK_KEYS.length,
     can_verify: allNinePass(l as Record<CheckKey, string | null>),
     audit_recorded: audit.ok,
+    enrichment: enriched,
   });
 });
 
@@ -1807,6 +1842,88 @@ function coerceProfileField(key: string, raw: unknown, spec: FieldSpec):
   }
   return { ok: false, message: `${key} has no validator` };
 }
+
+// ── POST /api/admin/vetting/:id/enrich ──────────────────────────────────────
+// Probe this business's website now and write the enrichment columns.
+// Available as a manual admin action, and called automatically when a record
+// is verified (see the status endpoint).
+//
+// ROBOTS.TXT IS HONOURED BY DEFAULT.
+//
+// It can be overridden per record, but not casually. Overriding is defensible
+// when a business has actually engaged with us - they applied, or they granted
+// listing consent - because then there is a relationship to point at. It is
+// NOT defensible for a comped listing that never asked to be here: a business
+// that did not choose to be listed cannot be said to have consented to us
+// ignoring the one file it used to say no.
+//
+// So an override without that evidence is refused unless the operator supplies
+// a written reason, which is audited against the record. The point is not to
+// block a human who knows something the database does not - it is to make sure
+// the decision has a name on it.
+app.post("/vetting/:id/enrich", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const auth = c.get("auth");
+  const id = c.req.param("id");
+
+  let body: { override_robots?: unknown; reason?: unknown } = {};
+  try { body = await c.req.json(); } catch { /* body is optional */ }
+  const wantOverride = body.override_robots === true;
+  const reason = typeof body.reason === "string" && body.reason.trim()
+    ? body.reason.trim().slice(0, 500) : null;
+
+  const { data, error } = await supabase
+    .from("coldcall_leads")
+    .select("id, name, website_url, domain, vetting_status, is_comped, listing_consent, applied_at")
+    .eq("id", id).maybeSingle();
+  if (error) {
+    log.error("[vetting] enrich_read_failed", { lead_id: id, err: error.message });
+    return c.json(errBody("internal", "enrich_read_failed"), 500);
+  }
+  if (!data) return c.json(errBody("not_found", "lead not found"), 404);
+  const row = data as unknown as Record<string, unknown>;
+
+  if (wantOverride) {
+    const engaged = !!row.applied_at || row.listing_consent === "granted";
+    if (!engaged && !reason) {
+      return c.json(errBody("bad_request",
+        `${String(row.name)} has not applied and has not granted listing consent` +
+        (row.is_comped === true ? " (and is a comped listing it never asked for)" : "") +
+        ". Overriding its robots.txt needs an explicit reason, which is recorded against the record."), 400);
+    }
+  }
+
+  const result = await enrichSite(
+    (row.website_url as string | null) ?? (row.domain as string | null),
+    { overrideRobots: wantOverride },
+  );
+
+  // Write only the enrichment columns. `note` is for the operator, not a column.
+  const { note, ...patch } = result;
+  const { error: uErr } = await supabase.from("coldcall_leads").update(patch).eq("id", id);
+  if (uErr) {
+    log.error("[vetting] enrich_write_failed", { lead_id: id, err: uErr.message });
+    return c.json(errBody("internal", "enrich_write_failed"), 500);
+  }
+
+  const a = await writeAudit(supabase, {
+    lead_id: id, actor_user_id: auth.user_id, actor_email: auth.email,
+    field: "enrichment_status", old_value: null, new_value: result.enrichment_status,
+    reason: wantOverride
+      ? `enrichment run with robots.txt OVERRIDDEN. ${reason ?? "business has applied or granted consent"}`
+      : (reason ?? "enrichment run"),
+  });
+  if (!a.ok) log.error("[vetting] enrich_audit_failed", { lead_id: id, err: a.message });
+
+  log.info("[vetting] enriched", {
+    lead_id: id, status: result.enrichment_status, override: wantOverride, by: auth.email,
+  });
+  return c.json({
+    id, ...result,
+    robots_overridden: wantOverride,
+    presence_gaps: presenceGaps(result),
+  });
+});
 
 // ── POST /api/admin/vetting/:id/score-dti ───────────────────────────────────
 // Compute the Digital Trust Index from the enrichment signals on this record
