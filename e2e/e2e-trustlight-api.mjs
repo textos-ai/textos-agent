@@ -340,7 +340,38 @@ try {
   ok("200 for a live slug", p.status === 200, `status=${p.status}`);
   ok("nine checks reported passed", p.json?.contractor?.verification?.checks_passed?.length === 9);
   ok("checks_total is 9", p.json?.contractor?.verification?.checks_total === 9);
-  ok("five DTI pillars", Object.keys(p.json?.contractor?.dti_pillars ?? {}).length === 5);
+  // The five pillars are GONE from the public shape. Nothing ever populated
+  // them and three of the five cannot be computed from anything we collect;
+  // publishing empty numbers under a trust badge is worse than publishing
+  // none. One measured score replaces them.
+  ok("no dti_pillars in the public profile", p.json?.contractor?.dti_pillars === undefined);
+  for (const k of ["dti_findability", "dti_answerability", "dti_responsiveness",
+                   "dti_completeness", "dti_compliance"]) {
+    ok(`profile: no "${k}" key`, !p.raw.includes(`"${k}`));
+  }
+
+  // THE DTI MUST NEVER BE THE INTERNAL SALES SCORE.
+  // They are computed from overlapping signals. If the published score ever
+  // equals call_score, a public card has become a window onto the internal
+  // sales ranking - so this is asserted on every verified record, not just
+  // the one the fixture seeds.
+  const allPub = await get("/api/directory/search?per_page=75");
+  for (const v of (allPub.json.verified ?? [])) {
+    if (v.dti === null || v.dti === undefined) continue;
+    const { data: internal } = await db.from("coldcall_leads")
+      .select("call_score").eq("slug", v.slug).maybeSingle();
+    ok(`${v.slug}: dti does not equal call_score`,
+      internal?.call_score === null || v.dti !== internal?.call_score,
+      `dti=${v.dti} call_score=${internal?.call_score}`);
+  }
+  ok("no call_score key anywhere in the profile", !p.raw.includes('"call_score'));
+
+  // A record we could not probe scores NULL, never 0. A zero under a trust
+  // badge reads as a verdict on the business.
+  const unscored = (allPub.json.verified ?? []).filter((v) => v.dti === null);
+  ok("unprobed records carry dti null, not 0",
+    unscored.every((v) => v.dti === null) && !(allPub.json.verified ?? []).some((v) => v.dti === 0),
+    `${unscored.length} of ${(allPub.json.verified ?? []).length} unscored`);
   // Contact IS published here - a homeowner has to be able to reach a verified
   // contractor. This is the one endpoint where that is true.
   const contact = p.json?.contractor?.contact;

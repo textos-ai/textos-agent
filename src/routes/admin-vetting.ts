@@ -69,6 +69,7 @@ import {
   HOME_TRADE_CATEGORIES, canonicalTrade,
   type VerifiedRow, type ProfileRow,
 } from "../lib/trustlight-public";
+import { DTI_CONFIG_KEYS, scoreDti, type DtiWeights, type DtiRow } from "../lib/trustlight-dti";
 import {
   COMP_OFFER_STATUSES, CONFIG_KEYS, readConfig, removalToken,
   renderNotifyEmail, sendEmail, compGraceDeadline, senderAllowed,
@@ -1806,6 +1807,97 @@ function coerceProfileField(key: string, raw: unknown, spec: FieldSpec):
   }
   return { ok: false, message: `${key} has no validator` };
 }
+
+// ── POST /api/admin/vetting/:id/score-dti ───────────────────────────────────
+// Compute the Digital Trust Index from the enrichment signals on this record
+// and store it. Returns the full signal breakdown either way, so an operator
+// can see WHY a record scored what it did - or why it cannot be scored.
+//
+// Weights come from coldcall_config. A missing weight is a 500, not a
+// fallback: a score published under a trust badge must never be produced by
+// numbers nobody chose.
+app.post("/vetting/:id/score-dti", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const auth = c.get("auth");
+  const id = c.req.param("id");
+
+  const cfg = await readConfig(supabase, Object.values(DTI_CONFIG_KEYS));
+  if (!cfg.ok) {
+    log.error("[vetting] dti_config_missing", { missing: cfg.missing });
+    return c.json(errBody("not_configured",
+      `DTI weights missing from config: ${cfg.missing.join(", ")}. Apply migration 132.`), 500);
+  }
+  const weights: DtiWeights = {};
+  for (const [k, v] of Object.entries(cfg.values)) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) {
+      return c.json(errBody("not_configured", `config '${k}' is not a number: '${v}'`), 500);
+    }
+    weights[k] = n;
+  }
+
+  const { data, error } = await supabase
+    .from("coldcall_leads")
+    .select("id, dti_score, call_score, enrichment_status, site_state, has_schema_org, " +
+            "analytics_pixels, chat_widget, booking_tool, call_tracking, domain_age_days")
+    .eq("id", id).maybeSingle();
+  if (error) {
+    log.error("[vetting] dti_read_failed", { lead_id: id, err: error.message });
+    return c.json(errBody("internal", "dti_read_failed"), 500);
+  }
+  if (!data) return c.json(errBody("not_found", "lead not found"), 404);
+  const row = data as unknown as Record<string, unknown>;
+
+  let result;
+  try {
+    result = scoreDti(row as DtiRow, weights);
+  } catch (err) {
+    log.error("[vetting] dti_score_failed", { lead_id: id, err: String(err) });
+    return c.json(errBody("not_configured", String(err instanceof Error ? err.message : err)), 500);
+  }
+
+  // The published score must never be the internal Sales-Ready score. They
+  // are computed from overlapping signals, and a DTI that tracked call_score
+  // would put an internal sales ranking on a public card. Refuse rather than
+  // publish it and hope nobody notices.
+  const callScore = typeof row.call_score === "number" ? row.call_score : null;
+  if (result.score !== null && callScore !== null && result.score === callScore) {
+    log.error("[vetting] dti_equals_call_score", { lead_id: id, score: result.score });
+    return c.json(errBody("conflict",
+      `refusing to publish: computed DTI (${result.score}) equals the internal ` +
+      `call_score. Adjust the weights in coldcall_config.`), 409);
+  }
+
+  const prior = typeof row.dti_score === "number" ? row.dti_score : null;
+  if (prior !== result.score) {
+    const { error: uErr } = await supabase
+      .from("coldcall_leads").update({ dti_score: result.score }).eq("id", id);
+    if (uErr) {
+      log.error("[vetting] dti_write_failed", { lead_id: id, err: uErr.message });
+      return c.json(errBody("internal", "dti_write_failed"), 500);
+    }
+    const a = await writeAudit(supabase, {
+      lead_id: id, actor_user_id: auth.user_id, actor_email: auth.email,
+      field: "dti_score",
+      old_value: prior === null ? null : String(prior),
+      new_value: result.score === null ? null : String(result.score),
+      reason: result.reason ?? `computed from ${result.counted} enrichment signal(s)`,
+    });
+    if (!a.ok) log.error("[vetting] dti_audit_failed", { lead_id: id, err: a.message });
+  }
+
+  log.info("[vetting] dti_scored", { lead_id: id, score: result.score, by: auth.email });
+  return c.json({
+    id,
+    dti_score: result.score,
+    previous: prior,
+    reason: result.reason,
+    signals_checked: result.counted,
+    weight_available: result.weightAvailable,
+    signals: result.signals,
+    weights,
+  });
+});
 
 // ── PATCH /api/admin/vetting/:id/profile ───────────────────────────────────
 // Edit the published profile. Editable at ANY vetting_status by design — the

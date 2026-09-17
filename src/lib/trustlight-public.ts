@@ -39,7 +39,6 @@ export const PROFILE_CONTACT_COLS = "phone, website_url, address, zip, google_pr
 export const PROFILE_COLS =
   VERIFIED_COLS + ", " + PROFILE_CONTACT_COLS +
   ", services, years_in_business, license_state, verified_at, expires_at, " +
-  "dti_findability, dti_answerability, dti_responsiveness, dti_completeness, dti_compliance, " +
   "chk_licensing_board, chk_license, chk_insurance, chk_business_filing, chk_court_records, " +
   "chk_address, chk_years_in_business, chk_contact, chk_reviews";
 
@@ -339,13 +338,25 @@ export function missingPublicFields(row: Record<string, unknown>): string[] {
   });
 }
 
+/*
+ * THE FIVE PILLARS ARE NOT PUBLISHED.
+ *
+ * dti_findability / answerability / responsiveness / completeness /
+ * compliance were added for website copy and nothing ever populated them -
+ * 0 of 15,822 rows carried a value. Three of the five cannot be computed
+ * from any data we hold: nothing times how long a business takes to answer,
+ * and nothing collects hours, photos or accessibility.
+ *
+ * Publishing three numbers with nothing behind them is the same failure as
+ * the empty schema, only harder to notice. The columns stay in the table,
+ * nullable and unused, and the public shape carries ONE score computed from
+ * signals that were actually measured. See lib/trustlight-dti.ts.
+ */
 export type ProfileRow = VerifiedRow & {
   phone: string | null; website_url: string | null; address: string | null;
   zip: string | null; google_profile_url: string | null;
   services: string[] | null; years_in_business: number | null; license_state: string | null;
   verified_at: string | null; expires_at: string | null;
-  dti_findability: number | null; dti_answerability: number | null;
-  dti_responsiveness: number | null; dti_completeness: number | null; dti_compliance: number | null;
   [k: string]: unknown;
 };
 
@@ -395,13 +406,6 @@ export function shapeProfile(r: ProfileRow) {
     services: Array.isArray(r.services) ? r.services : [],
     years_in_business: r.years_in_business,
     license_state: r.license_state,
-    dti_pillars: {
-      findability: r.dti_findability,
-      answerability: r.dti_answerability,
-      responsiveness: r.dti_responsiveness,
-      completeness: r.dti_completeness,
-      compliance: r.dti_compliance,
-    },
     verification: {
       verified_at: r.verified_at,
       expires_at: r.expires_at,
