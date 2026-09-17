@@ -286,11 +286,18 @@ export const PUBLIC_CHECK_LABELS: Record<string, string> = {
   chk_license: "License verified",
   chk_insurance: "Insurance confirmed with carrier",
   chk_business_filing: "Business filing confirmed",
-  chk_court_records: "Court records reviewed",
+  // Was "Court records reviewed". The check is unchanged - public records
+  // including court filings - but the profile page is the one place a
+  // contractor reads about themselves, and "court" is the exact word stripped
+  // from every other page. The fact survives; the accusation in the phrasing
+  // does not. Matches the wording in privacy.html.
+  chk_court_records: "Public business records reviewed",
   chk_address: "Address confirmed",
   chk_years_in_business: "Years in business confirmed",
   chk_contact: "Contact details confirmed",
-  chk_reviews: "Review audit completed",
+  // Was "Review audit completed". "Audit" is on the same stripped list and was
+  // replaced everywhere else with plain language.
+  chk_reviews: "Reviews checked",
 };
 
 /**
