@@ -67,10 +67,14 @@ import {
 import {
   PROFILE_COLS, shapeVerified, shapeProfile, shapeUnvetted, visibilityOf,
   HOME_TRADE_CATEGORIES, canonicalTrade, REQUIRED_PUBLIC_FIELDS, missingPublicFields,
+  googleMapsUrl,
   type VerifiedRow, type ProfileRow,
 } from "../lib/trustlight-public";
 import { DTI_CONFIG_KEYS, scoreDti, type DtiWeights, type DtiRow } from "../lib/trustlight-dti";
 import { enrichSite, presenceGaps } from "../lib/trustlight-enrich";
+import {
+  validateManual, manualLeadColumns, findDuplicates, placeDetails,
+} from "../lib/trustlight-manual-lead";
 import {
   COMP_OFFER_STATUSES, CONFIG_KEYS, readConfig, removalToken,
   renderNotifyEmail, sendEmail, compGraceDeadline, senderAllowed,
@@ -673,6 +677,202 @@ app.get("/vetting/funnel", async (c) => {
     note: "journeys = distinct visits reaching that step; drop_off is against the step above. " +
           "applications_created is counted from coldcall_leads.applied_at, not from events.",
   });
+});
+
+// ── GET /api/admin/vetting/trade-options ───────────────────────────────────
+// The sixteen trades the public directory filters on.
+//
+// Served rather than duplicated into the admin bundle so the picker on the
+// add-a-business form cannot drift from the vocabulary the directory actually
+// filters on. A trade outside this list makes a business unfindable, which is
+// the failure that has already cost four of them.
+//
+// NOTE ON ORDER: literal, so it must stay above app.get("/vetting/:id").
+app.get("/vetting/trade-options", (c) =>
+  c.json({ trades: HOME_TRADE_CATEGORIES }));
+
+// ── GET /api/admin/vetting/duplicates ──────────────────────────────────────
+// Does a business with this name or phone already exist?
+//
+// Called before a manual create so the operator sees the answer while they are
+// still on the phone, and can open the existing record instead of starting a
+// second one. The same check runs server-side inside the create, so a UI that
+// skips this cannot produce a duplicate by accident.
+//
+// NOTE ON ORDER: literal, so it must stay above app.get("/vetting/:id").
+app.get("/vetting/duplicates", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const name = (c.req.query("name") ?? "").trim();
+  const phone = (c.req.query("phone") ?? "").trim();
+  if (!name && !phone) {
+    return c.json(errBody("bad_request", "give a name or a phone to check"), 400);
+  }
+  const found = await findDuplicates(supabase, name, phone);
+  if (!found.ok) {
+    log.error("[vetting] duplicate_check_failed", { err: found.message });
+    return c.json(errBody("internal", "duplicate_check_failed"), 500);
+  }
+  return c.json({ matches: found.matches, checked: { name: name || null, phone: phone || null } });
+});
+
+// ── GET /api/admin/vetting/place/:place_id ─────────────────────────────────
+// What Google holds for this place, so the form can fill itself in.
+//
+// Read-only and it writes nothing. The create endpoint does its OWN lookup
+// rather than trusting whatever the browser sends back, so this is purely a
+// convenience for the operator's eyes.
+app.get("/vetting/place/:place_id", async (c) => {
+  const placeId = c.req.param("place_id");
+  if (!/^[A-Za-z0-9_-]+$/.test(placeId)) {
+    return c.json(errBody("bad_request", "that does not look like a place_id"), 400);
+  }
+  const key = c.env.GOOGLE_PLACES_API_KEY;
+  if (!key) {
+    return c.json(errBody("not_configured",
+      "GOOGLE_PLACES_API_KEY is not set on this worker, so place lookup is unavailable"), 501);
+  }
+  const r = await placeDetails(placeId, key);
+  if (!r.ok) {
+    log.warn("[vetting] place_lookup_failed", { status: r.status });
+    // The Google status is passed through verbatim. REQUEST_DENIED means the
+    // key lacks Place Details; NOT_FOUND means the id is wrong. Collapsing
+    // those into one message would send someone hunting the wrong problem.
+    return c.json(errBody("upstream_error", `Google says: ${r.status}`, { google_status: r.status }), 502);
+  }
+  return c.json({ place: r.place, maps_url: googleMapsUrl(placeId) });
+});
+
+// ── POST /api/admin/vetting/manual ─────────────────────────────────────────
+// Create a lead by hand.
+//
+// The third way a business can enter the table, after the scrape and the
+// public application form. Neither of those works when Rob is on the phone
+// with somebody who was never scraped.
+//
+// It lands the SAME WAY an application does: a real row, vetting_status
+// 'invited', applied_at stamped, ready to move through vetting. The difference
+// is the paper trail, which carries an operator's name, because a person chose
+// to create this one.
+app.post("/vetting/manual", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const auth = c.get("auth");
+
+  let body: Record<string, unknown>;
+  try {
+    const parsed = await c.req.json();
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
+    body = parsed as Record<string, unknown>;
+  } catch {
+    return c.json(errBody("bad_request", "body must be a JSON object"), 400);
+  }
+  const force = body.force === true;
+
+  const validated = validateManual(body);
+  if (!validated.ok) {
+    return c.json(errBody("bad_request", "some details need fixing", { errors: validated.errors }), 400);
+  }
+  const v = validated.value;
+
+  // ── Duplicate gate ───────────────────────────────────────────────────────
+  // Enforced here, not only in the UI. Refuses with the matches attached so
+  // the operator can open one; `force` is how they say "I looked, make it
+  // anyway", and that decision is recorded in the audit reason.
+  const dupes = await findDuplicates(supabase, v.fields.name, v.phoneDigits);
+  if (!dupes.ok) {
+    log.error("[vetting] manual_duplicate_check_failed", { err: dupes.message });
+    return c.json(errBody("internal", "duplicate_check_failed"), 500);
+  }
+  if (dupes.matches.length && !force) {
+    return c.json(errBody("conflict",
+      dupes.matches.length === 1
+        ? "a business with that name or phone is already on the table"
+        : `${dupes.matches.length} businesses with that name or phone are already on the table`,
+      { matches: dupes.matches }), 409);
+  }
+
+  const nowIso = new Date().toISOString();
+  const row = manualLeadColumns(v, nowIso);
+
+  // ── Google fills what Google owns ────────────────────────────────────────
+  // rating and review_count are never accepted from the client. When a
+  // place_id is supplied they are read from Place Details here, server-side,
+  // and written only when Google actually returned a number. A place with no
+  // rating yet leaves both NULL rather than 0 - a zero would publish as a
+  // review score on the public card.
+  let placeNote: string | null = null;
+  if (v.fields.place_id && c.env.GOOGLE_PLACES_API_KEY) {
+    const r = await placeDetails(v.fields.place_id, c.env.GOOGLE_PLACES_API_KEY);
+    if (r.ok) {
+      if (r.place.rating !== null) row.rating = r.place.rating;
+      if (r.place.review_count !== null) row.review_count = r.place.review_count;
+      // Only fills what the operator LEFT BLANK. A value they typed is a value
+      // they meant, and Google does not get to overwrite it.
+      if (!row.address && r.place.formatted_address) row.address = r.place.formatted_address;
+      if (!row.zip && r.place.zip) row.zip = r.place.zip;
+      if (!row.website_url && r.place.website) row.website_url = r.place.website;
+      placeNote = "place details read from Google";
+    } else {
+      placeNote = `place lookup failed (${r.status}) - the record was still created`;
+      log.warn("[vetting] manual_place_lookup_failed", { status: r.status });
+    }
+  }
+
+  const { data: created, error } = await supabase
+    .from("coldcall_leads").insert(row).select("id, name").single();
+  if (error || !created) {
+    log.error("[vetting] manual_insert_failed", { err: error?.message });
+    return c.json(errBody("internal", "could not create the record"), 500);
+  }
+  const leadId = (created as { id: string }).id;
+
+  // ── The paper trail, with a name on it ───────────────────────────────────
+  const reason = force && dupes.matches.length
+    ? `manual creation by ${auth.email ?? auth.user_id} - created despite ${dupes.matches.length} possible duplicate(s)`
+    : `manual creation by ${auth.email ?? auth.user_id}`;
+  const audit = await writeAudit(supabase, {
+    lead_id: leadId, actor_user_id: auth.user_id, actor_email: auth.email,
+    field: "vetting_status", old_value: null, new_value: "invited", reason,
+  });
+  if (!audit.ok) log.error("[vetting] manual_audit_failed", { lead_id: leadId, err: audit.message });
+
+  // ── Enrichment, if there is a site to probe ──────────────────────────────
+  // Same best-effort contract as enrichment on verification: a slow or hostile
+  // website must never fail a record that has already been written. Every
+  // failure path inside enrichSite writes NULL, so nothing here can score a
+  // business as absent because our own probe timed out.
+  let enrichment: Record<string, unknown> | null = null;
+  const site = (row.website_url as string | null) ?? null;
+  if (site) {
+    try {
+      const r = await enrichSite(site, { overrideRobots: false });
+      const { note, ...patchE } = r;
+      const { error: eErr } = await supabase.from("coldcall_leads").update(patchE).eq("id", leadId);
+      if (eErr) {
+        log.warn("[vetting] manual_enrich_write_failed", { lead_id: leadId, err: eErr.message });
+      } else {
+        enrichment = { status: r.enrichment_status, note };
+        await writeAudit(supabase, {
+          lead_id: leadId, actor_user_id: auth.user_id, actor_email: auth.email,
+          field: "enrichment_status", old_value: null, new_value: r.enrichment_status,
+          reason: "automatic enrichment on manual creation",
+        });
+      }
+    } catch (err) {
+      log.warn("[vetting] manual_enrich_failed", { lead_id: leadId, err: String(err) });
+    }
+  }
+
+  log.info("[vetting] manual_created", { lead_id: leadId, by: auth.email, forced: force });
+  return c.json({
+    id: leadId,
+    name: (created as { name: string }).name,
+    vetting_status: "invited",
+    call_score: 0,
+    audit_recorded: audit.ok,
+    place_lookup: placeNote,
+    enrichment,
+    maps_url: googleMapsUrl((row.place_id as string | null) ?? null),
+  }, 201);
 });
 
 // NOTE ON ORDER: this literal route MUST stay above app.get("/vetting/:id").

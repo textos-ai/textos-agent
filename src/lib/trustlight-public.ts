@@ -33,7 +33,32 @@ export const VERIFIED_COLS =
  * dedupe applications against existing leads and is absent from every public
  * response, on purpose — it is not listed on any whitelist in this file.
  */
-export const PROFILE_CONTACT_COLS = "phone, website_url, address, zip, google_profile_url";
+export const PROFILE_CONTACT_COLS =
+  "phone, website_url, address, zip, google_profile_url, place_id";
+
+/**
+ * The public Google Maps URL for a place_id.
+ *
+ * WHY THIS IS DERIVED RATHER THAN STORED. `google_profile_url` is the column
+ * meant to hold this, and it is populated on 3 rows out of 15,825 — nothing
+ * fills it. `place_id` is populated on 15,821, because the scrape collected it.
+ * So the link a family actually wants is already on almost every record, one
+ * string concatenation away, and waiting for the other column to be backfilled
+ * would mean shipping nothing.
+ *
+ * `?q=place_id:<id>` is Google's own documented form for addressing a place by
+ * id. Verified against a real record rather than assumed: a valid id returns a
+ * page titled with the business name, and a malformed one returns a page
+ * titled only "Google Maps", so the check can actually fail.
+ *
+ * Returns null for a missing id. The caller omits the link entirely rather
+ * than rendering one that lands a homeowner on an empty map.
+ */
+export function googleMapsUrl(placeId: string | null | undefined): string | null {
+  const id = String(placeId ?? "").trim();
+  if (!id) return null;
+  return `https://www.google.com/maps/place/?q=place_id:${encodeURIComponent(id)}`;
+}
 
 /**
  * Enrichment signals read for the profile's presence summary.
@@ -366,7 +391,7 @@ export function missingPublicFields(row: Record<string, unknown>): string[] {
  */
 export type ProfileRow = VerifiedRow & {
   phone: string | null; website_url: string | null; address: string | null;
-  zip: string | null; google_profile_url: string | null;
+  zip: string | null; google_profile_url: string | null; place_id: string | null;
   has_website: boolean | null; has_schema_org: boolean | null;
   booking_tool: boolean | null; chat_widget: boolean | null;
   call_tracking: boolean | null; analytics_pixels: boolean | null;
@@ -432,7 +457,10 @@ export function shapeProfile(r: ProfileRow) {
     contact: {
       phone: r.phone,
       website: r.website_url,
-      google_profile: r.google_profile_url,
+      // The curated value wins when an operator has set one; otherwise the
+      // link is built from place_id. place_id itself is NOT published — only
+      // the URL derived from it.
+      google_profile: r.google_profile_url ?? googleMapsUrl(r.place_id as string | null),
       address: {
         street: r.address,
         city: r.city,
