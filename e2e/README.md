@@ -39,3 +39,21 @@ Contact details (phone, website, address, Google profile) are published on
 `/api/contractor/:slug` and **must never** appear on `/featured` or `/search`.
 `contact_email`, `contact_name`, `phone_e164_digits`, `license_number`,
 `gl_carrier` and check notes must never appear anywhere.
+
+## A note on the history before 6a210b0
+
+Three commits — `2e454a2`, `75662df`, `bb7630f` — describe e2e assertions in
+their messages that are not in those commits. The assertions were real and
+passing when written, but `scripts/` was gitignored, so only the `src/` changes
+landed and the suites stayed untracked.
+
+Those commits were already pushed, so the messages were not rewritten. Each
+carries a `git notes` correction instead:
+
+```bash
+git log --notes            # shows them inline
+git fetch origin refs/notes/commits:refs/notes/commits
+```
+
+From `6a210b0` onward the suites are in the repo, and a commit that says it
+changed an assertion actually contains it.
