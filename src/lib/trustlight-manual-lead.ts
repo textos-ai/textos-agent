@@ -228,22 +228,36 @@ export interface PlaceLookup {
 export async function placeDetails(
   placeId: string,
   apiKey: string,
-): Promise<{ ok: true; place: PlaceLookup } | { ok: false; status: string; message: string }> {
+): Promise<
+  | { ok: true; place: PlaceLookup }
+  | { ok: false; status: string; message: string; raw: string; url: string }
+> {
   const u = new URL("https://maps.googleapis.com/maps/api/place/details/json");
   u.searchParams.set("place_id", placeId);
   u.searchParams.set("fields",
     "name,formatted_address,formatted_phone_number,website,rating,user_ratings_total,address_component");
   u.searchParams.set("key", apiKey);
 
+  // The exact URL, with the key replaced. A failure here is almost always
+  // about WHICH endpoint and WHICH key, and reconstructing that from memory is
+  // how an afternoon disappears.
+  const safeUrl = u.toString().replace(encodeURIComponent(apiKey), "REDACTED").replace(apiKey, "REDACTED");
+
   let res: Response;
   try {
     res = await fetch(u.toString(), { signal: AbortSignal.timeout(10000) });
   } catch (err) {
-    return { ok: false, status: "fetch_failed", message: String(err) };
+    return { ok: false, status: "fetch_failed", message: String(err), raw: "", url: safeUrl };
   }
-  if (!res.ok) return { ok: false, status: `http_${res.status}`, message: `Places returned ${res.status}` };
+  // Read the body ONCE as text, so the raw response survives whatever shape it
+  // turns out to be. Google returns 200 with a status field even on refusal.
+  const bodyText = (await res.text()).slice(0, 4000);
+  if (!res.ok) {
+    return { ok: false, status: `http_${res.status}`, message: `Places returned ${res.status}`,
+             raw: bodyText, url: safeUrl };
+  }
 
-  const j = await res.json() as {
+  let j: {
     status?: string; error_message?: string;
     result?: {
       name?: string; formatted_address?: string; formatted_phone_number?: string;
@@ -251,8 +265,23 @@ export async function placeDetails(
       address_components?: Array<{ long_name?: string; short_name?: string; types?: string[] }>;
     };
   };
+  try {
+    j = JSON.parse(bodyText);
+  } catch {
+    return { ok: false, status: "unparseable", message: "Places did not return JSON",
+             raw: bodyText, url: safeUrl };
+  }
   if (j.status !== "OK" || !j.result) {
-    return { ok: false, status: j.status ?? "unknown", message: j.error_message ?? `Places status ${j.status}` };
+    // error_message is the ONLY field that says why. REQUEST_DENIED with it
+    // stripped is unactionable — it could be a disabled API, a referrer
+    // restriction, or unenabled billing, and those are three different fixes.
+    return {
+      ok: false,
+      status: j.status ?? "unknown",
+      message: j.error_message ?? `Places status ${j.status}`,
+      raw: bodyText,
+      url: safeUrl,
+    };
   }
 
   const comp = (type: string, short = false) => {

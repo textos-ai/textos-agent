@@ -733,11 +733,26 @@ app.get("/vetting/place/:place_id", async (c) => {
   }
   const r = await placeDetails(placeId, key);
   if (!r.ok) {
-    log.warn("[vetting] place_lookup_failed", { status: r.status });
-    // The Google status is passed through verbatim. REQUEST_DENIED means the
-    // key lacks Place Details; NOT_FOUND means the id is wrong. Collapsing
-    // those into one message would send someone hunting the wrong problem.
-    return c.json(errBody("upstream_error", `Google says: ${r.status}`, { google_status: r.status }), 502);
+    log.warn("[vetting] place_lookup_failed", { status: r.status, msg: r.message });
+    // Everything Google said, verbatim, plus which endpoint was called and a
+    // fingerprint of the key that called it.
+    //
+    // REQUEST_DENIED, NOT_FOUND and OVER_QUERY_LIMIT are three different
+    // problems with three different fixes, and `error_message` is the only
+    // field that distinguishes them. The fingerprint is first-8/last-4 only —
+    // enough to compare against the key in Google Cloud Console, far short of
+    // enough to use — and it is emitted ONLY on failure, on an admin-only
+    // route, because "the worker is holding a different key than you think"
+    // is the single most common cause of this and the hardest to see.
+    return c.json(errBody("upstream_error", `Google says: ${r.status} — ${r.message}`, {
+      google_status: r.status,
+      google_error_message: r.message,
+      google_raw: r.raw,
+      request_url: r.url,
+      endpoint: "legacy (maps.googleapis.com/maps/api/place/details/json)",
+      key_fingerprint: `${key.slice(0, 8)}…${key.slice(-4)}`,
+      key_length: key.length,
+    }), 502);
   }
   return c.json({ place: r.place, maps_url: googleMapsUrl(placeId) });
 });
