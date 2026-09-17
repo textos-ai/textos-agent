@@ -231,7 +231,14 @@ app.get("/directory/search", async (c) => {
   const tradeRaw = clean(c.req.query("trade"));
   const trade = canonicalTrade(tradeRaw);
   const city = clean(c.req.query("city"));
-  const q = clean(c.req.query("q"));
+  // A name search has to be a NAME. One or two characters is not a search,
+  // it is a way to page through the lead table, and /claim promotes this
+  // endpoint publicly. Below the minimum the term is dropped rather than
+  // rejected, so a half-typed query returns the unfiltered list instead of
+  // an error the page has to explain.
+  const MIN_Q = 3;
+  const qRaw = clean(c.req.query("q"));
+  const q = qRaw.length >= MIN_Q ? qRaw : "";
 
   const pageRaw = parseInt(c.req.query("page") ?? "", 10);
   const page = Number.isFinite(pageRaw) && pageRaw > 0 ? pageRaw : 1;
@@ -271,7 +278,12 @@ app.get("/directory/search", async (c) => {
     if (county) x = x.ilike("parish", county);
     if (trade) x = x.ilike("category", trade);
     if (city) x = x.ilike("city", city);
-    if (q) x = x.ilike("name", `%${q}%`);
+    // Same three name columns as the verified tier. Today every unvetted row
+    // carries only the scraped `name` - legal_name and trading_name are empty
+    // on all 15,816 - so this changes nothing yet. It matters the moment an
+    // operator curates a name, and it stops the two tiers behaving differently
+    // for no reason a user could ever guess.
+    if (q) x = x.or(nameSearchOr(q));
     return x as T;
   };
 
@@ -345,6 +357,48 @@ app.get("/directory/search", async (c) => {
     verified,
     unvetted,
   });
+});
+
+// ── POST /api/funnel ────────────────────────────────────────────────────────
+// One row per contractor-funnel step. Public and unauthenticated, like the
+// rest of this file, and deliberately the smallest thing that answers "where
+// do people stop".
+//
+// It stores a step name, a random per-tab id, and a short label. It does NOT
+// store an IP, a user agent, a business name, or anything typed into a search
+// box. The step list is a fixed enum and anything else is a 400 - this must
+// never become a general event sink that quietly accumulates whatever a page
+// decides to send.
+//
+// Failures are swallowed with a 204. A measurement endpoint must never be
+// able to break the page it is measuring.
+const FUNNEL_STEPS = new Set([
+  "claim_view", "claim_search", "claim_match", "start_view", "start_submit",
+]);
+
+app.post("/funnel", async (c) => {
+  if (await rateLimited(c.env, clientIp(c), "funnel")) {
+    return c.body(null, 204);
+  }
+  let body: { step?: unknown; visit?: unknown; detail?: unknown };
+  try { body = await c.req.json(); } catch { return c.body(null, 204); }
+
+  const step = String(body.step ?? "");
+  if (!FUNNEL_STEPS.has(step)) return c.body(null, 204);
+
+  // Both are ours, not the visitor's: `visit` is a random id we told the page
+  // to generate, `detail` is one of a handful of labels the page chooses from.
+  // Bounded and stripped so neither can smuggle content in.
+  const visit = String(body.visit ?? "").replace(/[^a-z0-9]/gi, "").slice(0, 32) || null;
+  const detail = String(body.detail ?? "").replace(/[^a-z0-9_-]/gi, "").slice(0, 40) || null;
+
+  try {
+    const supabase = createSupabaseClient(c.env);
+    await supabase.from("coldcall_funnel_events").insert({ step, visit, detail });
+  } catch (err) {
+    log.warn("[trustlight] funnel_write_failed", { step, err: String(err) });
+  }
+  return c.body(null, 204);
 });
 
 // ── GET /api/contractor/:slug ───────────────────────────────────────────────

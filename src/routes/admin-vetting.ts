@@ -595,6 +595,89 @@ app.post("/vetting/exclusivity-sweep", async (c) => {
   return c.json({ dry_run: false, freed: freed.length, ids: freed });
 });
 
+// ── GET /api/admin/vetting/funnel ───────────────────────────────────────────
+// The contractor funnel: how many reached each step, and where they stopped.
+//
+// Two views, because they answer different questions:
+//   steps     — raw counts per step over the window
+//   journeys  — how many DISTINCT visits reached each step, which is what
+//               "drop-off" actually means. A visitor who searches four times
+//               is one journey, not four.
+//
+// The application count is read from coldcall_leads rather than from the
+// event table, because a lead with applied_at is the thing that actually
+// happened. An event can be lost; a row cannot.
+app.get("/vetting/funnel", async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  const daysRaw = parseInt(c.req.query("days") ?? "30", 10);
+  const days = Number.isFinite(daysRaw) && daysRaw > 0 ? Math.min(365, daysRaw) : 30;
+  const since = new Date(Date.now() - days * 86400000).toISOString();
+
+  const ORDER = ["claim_view", "claim_search", "claim_match", "start_view", "start_submit"] as const;
+
+  const { data, error } = await supabase
+    .from("coldcall_funnel_events")
+    .select("step, visit, detail, occurred_at")
+    .gte("occurred_at", since)
+    .limit(50000);
+  if (error) {
+    // The table arrives with migration 133. Until then this reports zeroes and
+    // says so, rather than 500ing at an operator who just wants the number.
+    if (/coldcall_funnel_events/.test(error.message)) {
+      return c.json({
+        window_days: days, since, steps: [], applications_created: 0,
+        note: "migration 133 has not been applied yet, so no events are being stored. " +
+              "The site is already sending them; they are being dropped.",
+      });
+    }
+    log.error("[vetting] funnel_read_failed", { err: error.message });
+    return c.json(errBody("internal", "funnel_read_failed"), 500);
+  }
+  const rows = (data ?? []) as Array<{ step: string; visit: string | null; detail: string | null }>;
+
+  const events: Record<string, number> = {};
+  const visits: Record<string, Set<string>> = {};
+  const detail: Record<string, Record<string, number>> = {};
+  for (const st of ORDER) { events[st] = 0; visits[st] = new Set(); detail[st] = {}; }
+  for (const r of rows) {
+    if (!(r.step in events)) continue;
+    events[r.step]++;
+    if (r.visit) visits[r.step].add(r.visit);
+    if (r.detail) detail[r.step][r.detail] = (detail[r.step][r.detail] ?? 0) + 1;
+  }
+
+  // Applications, from the record rather than from an event.
+  const { count: applied } = await supabase
+    .from("coldcall_leads").select("id", { count: "exact", head: true })
+    .gte("applied_at", since);
+
+  const steps = ORDER.map((st, i) => {
+    const journeys = visits[st].size;
+    const prev = i === 0 ? null : visits[ORDER[i - 1]].size;
+    return {
+      step: st,
+      events: events[st],
+      journeys,
+      drop_off_from_previous: prev === null || prev === 0 ? null : Number(((1 - journeys / prev) * 100).toFixed(1)),
+      conversion_from_first: visits[ORDER[0]].size === 0 ? null
+        : Number(((journeys / visits[ORDER[0]].size) * 100).toFixed(1)),
+      detail: detail[st],
+    };
+  });
+
+  return c.json({
+    window_days: days,
+    since,
+    steps,
+    applications_created: applied ?? 0,
+    note: "journeys = distinct visits reaching that step; drop_off is against the step above. " +
+          "applications_created is counted from coldcall_leads.applied_at, not from events.",
+  });
+});
+
+// NOTE ON ORDER: this literal route MUST stay above app.get("/vetting/:id").
+// Hono matches in definition order, so declared after it, "/vetting/funnel"
+// is read as an :id of "funnel" and returns a 500 from the detail handler.
 app.get("/vetting/:id", async (c) => {
   const supabase = createSupabaseClient(c.env);
   const id = c.req.param("id");
