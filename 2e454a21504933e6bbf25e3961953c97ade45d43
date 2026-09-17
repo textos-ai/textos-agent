@@ -1,0 +1,10 @@
+CORRECTION (added 2026-09-16, see 6a210b0)
+
+This message describes e2e assertions added alongside the code change.
+Those assertions were real and passing, but they are NOT in this commit:
+scripts/ was gitignored at the time, so the suites were untracked and
+only the src/ files landed here.
+
+The suites were moved to a tracked e2e/ directory in 6a210b0. The
+assertions described above are in the repo from that commit onward.
+No history was rewritten - these commits were already pushed.
