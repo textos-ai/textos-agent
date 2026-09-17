@@ -44,6 +44,186 @@ export const PROFILE_COLS =
   "chk_address, chk_years_in_business, chk_contact, chk_reviews";
 
 /**
+ * ── WHAT THIS DIRECTORY IS FOR ────────────────────────────────────────────
+ *
+ * coldcall_leads holds 15,822 scraped businesses across 54 Google categories,
+ * and only 4,151 of them are home-repair trades. The rest are dentists,
+ * barber shops, lawyers, restaurants, gyms and car washes — 1,242 auto repair
+ * shops alone.
+ *
+ * Every one of those was appearing in the public directory under "Not yet
+ * verified", on a page that tells storm survivors these are contractors. A
+ * family looking for a roofer paged through nail salons. That is not a thin
+ * directory, it is a wrong one, and it undermines the premise of the site.
+ *
+ * So the unvetted tier is restricted to these categories. Deliberately NOT
+ * applied to the verified tier: `trade` there is a curated value an operator
+ * typed ("Roofing", "Foundation Repair"), not a scraped one, and an exact
+ * `in` match against this lowercase list would silently drop a business we
+ * verified on purpose. Verification is the editorial decision; this list only
+ * governs which unchecked businesses we surface.
+ *
+ * Values are the scraped `category` vocabulary exactly as stored — lowercase,
+ * no variants. Confirmed against all 15,822 rows: 54 distinct categories,
+ * zero differing only by case.
+ */
+export const HOME_TRADE_CATEGORIES = [
+  "general contractor",
+  "roofing contractor",
+  "plumber",
+  "electrician",
+  "hvac contractor",
+  "painter",
+  "landscaper",
+  "tree service",
+  "gutter service",
+  "fence contractor",
+  "foundation repair",
+  "garage door repair",
+  "pest control",
+  "pressure washing",
+  "locksmith",
+  "moving company",
+] as const;
+
+/**
+ * What a family types, mapped to what we actually store.
+ *
+ * The filter is a case-insensitive EQUALS, not a contains, so `roofer`
+ * matched nothing at all: the stored category is `roofing contractor`.
+ * `electrician` and `plumber` happened to work by luck, and nothing else a
+ * person types under stress did.
+ *
+ * Keys are lowercase. Values are members of HOME_TRADE_CATEGORIES. An input
+ * that is not a key is passed through untouched, so typing the stored value
+ * exactly still works and a new category needs no code change to be findable.
+ *
+ * KNOWN GAP, worth closing at the source: the curated `trade` column on a
+ * verified record is free text an operator typed, so it can read "Plumbing"
+ * where the scraped vocabulary says "plumber". The search route works around
+ * that by matching a verified row against BOTH the canonical form and the raw
+ * input. The real fix is to constrain the admin profile editor's `trade` field
+ * to HOME_TRADE_CATEGORIES so the two vocabularies cannot drift apart.
+ */
+export const TRADE_SYNONYMS: Record<string, string> = {
+  // Roofing
+  "roofer": "roofing contractor",
+  "roofers": "roofing contractor",
+  "roofing": "roofing contractor",
+  "roof": "roofing contractor",
+  "roof repair": "roofing contractor",
+  "roof replacement": "roofing contractor",
+  // Plumbing
+  "plumbing": "plumber",
+  "plumbers": "plumber",
+  "pipes": "plumber",
+  // Electrical
+  "electrical": "electrician",
+  "electric": "electrician",
+  "electricians": "electrician",
+  // HVAC. "ac" is the single most likely thing typed in a Gulf Coast summer.
+  "hvac": "hvac contractor",
+  "ac": "hvac contractor",
+  "a/c": "hvac contractor",
+  "air conditioning": "hvac contractor",
+  "air conditioner": "hvac contractor",
+  "aircon": "hvac contractor",
+  "heating": "hvac contractor",
+  "heat": "hvac contractor",
+  "furnace": "hvac contractor",
+  "cooling": "hvac contractor",
+  // General building
+  "contractor": "general contractor",
+  "general": "general contractor",
+  "builder": "general contractor",
+  "construction": "general contractor",
+  "remodeling": "general contractor",
+  "remodeler": "general contractor",
+  "renovation": "general contractor",
+  "handyman": "general contractor",
+  // Painting
+  "painting": "painter",
+  "painters": "painter",
+  // Yard
+  "landscaping": "landscaper",
+  "landscapers": "landscaper",
+  "lawn": "landscaper",
+  "lawn care": "landscaper",
+  "yard": "landscaper",
+  // Trees
+  "tree": "tree service",
+  "tree removal": "tree service",
+  "tree trimming": "tree service",
+  "arborist": "tree service",
+  "stump removal": "tree service",
+  // Gutters
+  "gutter": "gutter service",
+  "gutters": "gutter service",
+  "gutter repair": "gutter service",
+  // Fencing
+  "fence": "fence contractor",
+  "fencing": "fence contractor",
+  "fences": "fence contractor",
+  // Foundations
+  "foundation": "foundation repair",
+  "foundations": "foundation repair",
+  "slab": "foundation repair",
+  "house leveling": "foundation repair",
+  "piers": "foundation repair",
+  // Garage doors
+  "garage": "garage door repair",
+  "garage door": "garage door repair",
+  "garage doors": "garage door repair",
+  // Pest
+  "pest": "pest control",
+  "exterminator": "pest control",
+  "termite": "pest control",
+  "termites": "pest control",
+  // Washing
+  "power washing": "pressure washing",
+  "pressure wash": "pressure washing",
+  "power wash": "pressure washing",
+  "soft wash": "pressure washing",
+  // Locks
+  "locks": "locksmith",
+  "locksmiths": "locksmith",
+  "lockout": "locksmith",
+  // Moving
+  "mover": "moving company",
+  "movers": "moving company",
+  "moving": "moving company",
+  "removals": "moving company",
+};
+
+/**
+ * Resolve what someone typed to what we store. Unknown input is returned
+ * trimmed and unchanged rather than rejected — an unmapped word should still
+ * be allowed to match a stored value exactly.
+ */
+export function canonicalTrade(input: string | null | undefined): string {
+  const s = String(input ?? "").trim();
+  if (!s) return "";
+  return TRADE_SYNONYMS[s.toLowerCase()] ?? s;
+}
+
+/**
+ * The columns a public name search looks at, in the same order the public
+ * display name resolves (trading_name || legal_name || name).
+ *
+ * Searching only trading_name meant a verified business whose card shows a
+ * name drawn from legal_name could not be found by searching the name it
+ * displays. What is searchable now matches what is shown.
+ *
+ * `clean()` at the call site has already stripped %, comma, parens and star,
+ * which are the characters that would otherwise break PostgREST's or()
+ * grammar, so the term can be interpolated safely.
+ */
+export const NAME_SEARCH_COLUMNS = ["trading_name", "legal_name", "name"] as const;
+
+export const nameSearchOr = (term: string) =>
+  NAME_SEARCH_COLUMNS.map((c) => `${c}.ilike.*${term}*`).join(",");
+
+/**
  * Unvetted rows expose FOUR fields and nothing else. Note `category`, not
  * `trade`: an unvetted business has no curated trade, so the scraped Google
  * category is shown — a neutral descriptor, not a judgement.

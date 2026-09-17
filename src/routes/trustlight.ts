@@ -56,6 +56,7 @@ import {
 import {
   VERIFIED_COLS, PROFILE_COLS, UNVETTED_COLS,
   shapeVerified, shapeUnvetted, shapeProfile, publishable,
+  HOME_TRADE_CATEGORIES, canonicalTrade, nameSearchOr,
   type VerifiedRow, type ProfileRow,
 } from "../lib/trustlight-public";
 
@@ -218,7 +219,17 @@ app.get("/directory/search", async (c) => {
 
   const state = clean(c.req.query("state"));
   const county = clean(c.req.query("county"));
-  const trade = clean(c.req.query("trade"));
+  // "roofer" is what a family types; "roofing contractor" is what we store.
+  // The filter is a case-insensitive EQUALS, so without this the obvious word
+  // matches nothing at all. See TRADE_SYNONYMS.
+  //
+  // BOTH forms are kept. The scraped `category` column uses one vocabulary and
+  // the curated `trade` column on a verified record uses whatever an operator
+  // typed - "Plumbing" rather than "plumber". Canonicalising alone would make
+  // a verified business unfindable by the very word that now finds the
+  // unvetted ones, so the verified side matches either form.
+  const tradeRaw = clean(c.req.query("trade"));
+  const trade = canonicalTrade(tradeRaw);
   const city = clean(c.req.query("city"));
   const q = clean(c.req.query("q"));
 
@@ -234,15 +245,28 @@ app.get("/directory/search", async (c) => {
     let x = qq as T & Record<string, Function>;
     if (state) x = x.ilike("state", state);
     if (county) x = x.ilike("parish", county);
-    if (trade) x = x.ilike("trade", trade);
+    if (trade) {
+      x = trade.toLowerCase() === tradeRaw.toLowerCase()
+        ? x.ilike("trade", trade)
+        : x.or(`trade.ilike."${trade}",trade.ilike."${tradeRaw}"`);
+    }
     if (city) x = x.ilike("city", city);
-    if (q) x = x.ilike("trading_name", `%${q}%`);
+    // All three name columns, not just trading_name: a business whose card
+    // shows a name drawn from legal_name could not previously be found by
+    // searching the name it displays.
+    if (q) x = x.or(nameSearchOr(q));
     return x as T;
   };
   // Unvetted has no curated trade, so the trade filter matches the scraped
   // category, and the name search matches the scraped name.
+  //
+  // The category restriction is NOT optional and is applied before any filter:
+  // 12,191 of the 15,822 scraped rows are dentists, salons, lawyers and car
+  // washes, and surfacing them on a page that calls them contractors is worse
+  // than showing nothing. See HOME_TRADE_CATEGORIES.
   const applyUnvetted = <T extends { ilike: Function }>(qq: T): T => {
     let x = qq as T & Record<string, Function>;
+    x = x.in("category", HOME_TRADE_CATEGORIES as unknown as string[]);
     if (state) x = x.ilike("state", state);
     if (county) x = x.ilike("parish", county);
     if (trade) x = x.ilike("category", trade);
