@@ -199,13 +199,28 @@ export function scoreDti(row: DtiRow, weights: DtiWeights): DtiResult {
   // ai_voice_agent is deliberately absent: 0 of 509 enriched businesses have
   // one, so it is a constant and would only dilute the weights.
 
-  const counted = signals.filter((s) => s.value !== null);
+  // ── A WEIGHT OF 0 REMOVES A SIGNAL FROM THE PUBLIC SCORE ────────────────
+  // Not "scores it as nothing" - removes it. A zero-weight signal left in the
+  // list would still count toward min_signals, so a business could clear the
+  // minimum on signals worth no points and be scored on almost nothing.
+  //
+  // This is what retires domain_age from the public DTI. It remains collected
+  // and remains the strongest storm-chaser tell we have - a domain registered
+  // three weeks ago - but that is an INTERNAL judgement about risk, not a
+  // measure of online presence, and it was 20 of the 100 points while being
+  // the one thing TrustLight Growth can never change. A score we sell against
+  // has to be a score the product can move.
+  //
+  // Which signals count is therefore config, not code: set a weight to 0 in
+  // coldcall_config and it leaves the score.
+  const scored = signals.filter((s) => s.weight > 0);
+  const counted = scored.filter((s) => s.value !== null);
   const minSignals = weightOf(weights, DTI_CONFIG_KEYS.minSignals);
   if (counted.length < minSignals) {
     return {
       score: null,
       reason: `not scored: ${counted.length} signal(s) checked, minimum is ${minSignals}`,
-      signals, counted: counted.length, weightAvailable: 0,
+      signals: scored, counted: counted.length, weightAvailable: 0,
     };
   }
 
@@ -213,10 +228,10 @@ export function scoreDti(row: DtiRow, weights: DtiWeights): DtiResult {
   // is the whole blank-vs-false rule expressed in one line.
   const weightAvailable = counted.reduce((a, s) => a + s.weight, 0);
   if (weightAvailable <= 0) {
-    return { score: null, reason: "not scored: no weight available", signals, counted: counted.length, weightAvailable: 0 };
+    return { score: null, reason: "not scored: no weight available", signals: scored, counted: counted.length, weightAvailable: 0 };
   }
   const earned = counted.reduce((a, s) => a + s.weight * (s.value as number), 0);
   const score = Math.round((earned / weightAvailable) * 100);
 
-  return { score, reason: null, signals, counted: counted.length, weightAvailable };
+  return { score, reason: null, signals: scored, counted: counted.length, weightAvailable };
 }

@@ -415,9 +415,32 @@ export function presenceGaps(row: {
   const gaps: string[] = [];
   if (row.has_website === false) gaps.push("no website");
   if (row.has_schema_org === false) gaps.push("no structured data for search engines and AI");
-  if (row.booking_tool === false && row.chat_widget === false) gaps.push("no online booking or chat");
-  else if (row.booking_tool === false) gaps.push("no online booking");
-  if (row.call_tracking === false) gaps.push("no call tracking");
+
+  // ── CONTACT TOOLING MUST AGREE WITH THE SCORE ────────────────────────────
+  // The scorer treats chat, booking and call tracking as ONE signal satisfied
+  // by ANY of the three: a business reachable by chat is reachable, and three
+  // separate weights would count the same quality three times.
+  //
+  // This list used to report them separately, so a business with booking and
+  // no call tracking was told "no call tracking" while the scorer had already
+  // given it full marks for being reachable. Two businesses were sitting at
+  // 100 with a gap printed underneath, which reads as either a broken score or
+  // a broken list, and undermines both.
+  //
+  // So: if ANY contact tool is present, the business is reachable and nothing
+  // here is missing. Only when none of the three is present do the specific
+  // absences get named - and they stay specific, because "no online booking
+  // and no chat" tells a contractor what to do and "no contact tooling" does
+  // not.
+  const tools = [row.booking_tool, row.chat_widget, row.call_tracking];
+  const anyTool = tools.some((t) => t === true);
+  if (!anyTool) {
+    if (row.booking_tool === false && row.chat_widget === false) gaps.push("no online booking or chat");
+    else if (row.booking_tool === false) gaps.push("no online booking");
+    else if (row.chat_widget === false) gaps.push("no chat");
+    if (row.call_tracking === false) gaps.push("no call tracking");
+  }
+
   if (row.analytics_pixels === false) gaps.push("no analytics");
   return gaps;
 }
