@@ -17,7 +17,11 @@
 /** The ONLY columns readable for a directory card. */
 export const VERIFIED_COLS =
   "slug, legal_name, trading_name, name, trade, city, state, parish, " +
-  "rating, review_count, dti_score, blurb, verified_year, plan, exclusive_until";
+  "rating, review_count, dti_score, blurb, verified_year, plan, exclusive_until, " +
+  // Read to EXPLAIN a score, never published raw. A 0 with no reason beside it
+  // reads as a verdict on the business; these turn it into a statement about a
+  // website. See dtiZero().
+  "enrichment_status, website_url, domain, site_state";
 
 /**
  * Contact columns, readable ONLY on the profile endpoint.
@@ -264,7 +268,11 @@ export const nameSearchOr = (term: string) =>
  * `trade`: an unvetted business has no curated trade, so the scraped Google
  * category is shown — a neutral descriptor, not a judgement.
  */
-export const UNVETTED_COLS = "name, category, city, state";
+// The unvetted card is the sales surface - 4,151 contractors who can find
+// their own listing - so it carries the same score and the same explanation a
+// verified card does. It still publishes no contact details and no checks.
+export const UNVETTED_COLS =
+  "name, category, city, state, dti_score, enrichment_status, website_url, domain, site_state";
 
 export type VerifiedRow = {
   slug: string | null; legal_name: string | null; trading_name: string | null; name: string | null;
@@ -300,6 +308,7 @@ export function shapeVerified(r: VerifiedRow) {
     rating: r.rating,
     reviews: r.review_count,
     dti: r.dti_score,
+    dti_zero: dtiZero(r),
     blurb: r.blurb,
     verified_year: r.verified_year,
     exclusive: isExclusive(r),
@@ -307,9 +316,73 @@ export function shapeVerified(r: VerifiedRow) {
 }
 
 /** The four neutral fields of an unvetted entry, built explicitly. */
-export function shapeUnvetted(r: { name: string | null; category: string | null; city: string | null; state: string | null }) {
-  return { name: r.name, trade: titleCase(r.category), city: r.city, state: r.state };
+export function shapeUnvetted(r: {
+  name: string | null; category: string | null; city: string | null; state: string | null;
+  dti_score?: number | null; enrichment_status?: string | null;
+  website_url?: string | null; domain?: string | null;
+}) {
+  return {
+    name: r.name, trade: titleCase(r.category), city: r.city, state: r.state,
+    dti: r.dti_score ?? null,
+    dti_zero: dtiZero(r),
+  };
 }
+
+/**
+ * Why a score is 0, in a form the card can label.
+ *
+ * A bare 0 on a trust page reads as a verdict on the BUSINESS. It is not: it
+ * is a statement about a website, and it is only ever printed when we actually
+ * checked. This returns the reason so the card can say which kind of nothing
+ * it found, and returns null when the score is not 0 or when the reason is not
+ * one we are willing to state.
+ *
+ *   "no_website"  Google Place Details was asked about this business by its
+ *                 own place_id and returned no website.
+ *   "social_only" their listed site is a social profile or a directory entry —
+ *                 not a site they own or control. Site BUILDERS are excluded
+ *                 on purpose; a Wix site is their own website.
+ *
+ * Anything we could not check has a NULL score and never reaches here.
+ */
+export function dtiZero(r: {
+  dti_score?: number | null; enrichment_status?: string | null;
+  website_url?: string | null; domain?: string | null; site_state?: string | null;
+}): { reason: "no_website" | "social_only" | "site_unreachable" | "nothing_readable"; host: string | null } | null {
+  if (r.dti_score !== 0) return null;
+  const raw = String(r.website_url ?? r.domain ?? "").trim();
+  if (raw) {
+    const withScheme = /^https?:\/\//i.test(raw) ? raw : "https://" + raw;
+    let host: string | null = null;
+    try { host = new URL(withScheme).hostname.replace(/^www\./i, "").toLowerCase(); } catch { host = null; }
+    if (host && NOT_A_WEBSITE_HOSTS.some((d) => host === d || host!.endsWith("." + d))) {
+      return { reason: "social_only", host };
+    }
+  }
+  if (r.enrichment_status === "no_website_found") return { reason: "no_website", host: null };
+  // A site we DID fetch that still scores nothing. Two different findings, and
+  // conflating them would tell a business with a working site that they have
+  // none.
+  if (r.site_state === "dead_http_error" || r.site_state === "parked_or_lead_gen") {
+    return { reason: "site_unreachable", host: null };
+  }
+  if (r.enrichment_status === "fully_enriched") return { reason: "nothing_readable", host: null };
+  return null;
+}
+
+/** Mirrors NOT_A_WEBSITE in lib/trustlight-dti.ts. Duplicated deliberately:
+ *  this file is the public shape and must not depend on the scorer. */
+export const NOT_A_WEBSITE_HOSTS = [
+  "facebook.com", "fb.com", "m.facebook.com", "instagram.com", "linkedin.com",
+  "twitter.com", "x.com", "tiktok.com", "youtube.com", "youtu.be",
+  "pinterest.com", "nextdoor.com", "threads.net",
+  "yelp.com", "angi.com", "angieslist.com", "homeadvisor.com", "thumbtack.com",
+  "bbb.org", "houzz.com", "porch.com", "manta.com", "yellowpages.com",
+  "superpages.com", "foursquare.com", "alignable.com", "buildzoom.com",
+  "networx.com", "expertise.com", "chamberofcommerce.com", "mapquest.com",
+  "linktr.ee", "linkin.bio", "beacons.ai", "bit.ly", "tinyurl.com",
+  "campsite.bio", "carrd.co",
+] as const;
 
 /**
  * The public-facing labels for the nine checks. Deliberately separate from the

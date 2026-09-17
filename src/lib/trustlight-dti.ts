@@ -88,6 +88,8 @@ export type DtiRow = {
   booking_tool?: boolean | null;
   call_tracking?: boolean | null;
   domain_age_days?: number | null;
+  website_url?: string | null;
+  domain?: string | null;
 };
 
 export type DtiSignal = {
@@ -106,7 +108,51 @@ export type DtiResult = {
   signals: DtiSignal[];
   counted: number;
   weightAvailable: number;
+  /** Why the score is 0, when it is. Drives the label on the card. */
+  zeroReason?: "no_website" | "social_only" | "site_unreachable" | "nothing_readable";
+  /** For social_only: which host, so the card can name it. */
+  zeroDetail?: string;
 };
+
+/**
+ * Hosts that are NOT a website, for scoring purposes.
+ *
+ * A business whose only web presence is a Facebook page has no website: it
+ * cannot be found the way a site can, it carries no structured data we can
+ * read, and it belongs to the platform rather than to them.
+ *
+ * WHAT IS DELIBERATELY ABSENT: site builders. wixsite.com, godaddysites.com,
+ * weebly.com, square.site, squarespace.com, wordpress.com, webflow.io,
+ * business.site and sites.google.com are all REAL websites — the business's
+ * own content, on their own page. Ten Louisiana home-trade businesses in this
+ * table use one, including Christison Fence and Deck, Carboni Electric and
+ * Affordable Plumbing, and zeroing them would be indefensible.
+ *
+ * Measured across the table: 29 home-trade businesses match this list, 25 of
+ * them facebook.com.
+ */
+export const NOT_A_WEBSITE = [
+  // Social profiles
+  "facebook.com", "fb.com", "m.facebook.com", "instagram.com", "linkedin.com",
+  "twitter.com", "x.com", "tiktok.com", "youtube.com", "youtu.be",
+  "pinterest.com", "nextdoor.com", "threads.net",
+  // Directory listings
+  "yelp.com", "angi.com", "angieslist.com", "homeadvisor.com", "thumbtack.com",
+  "bbb.org", "houzz.com", "porch.com", "manta.com", "yellowpages.com",
+  "superpages.com", "foursquare.com", "alignable.com", "buildzoom.com",
+  "networx.com", "expertise.com", "chamberofcommerce.com", "mapquest.com",
+  // Link aggregators and shorteners
+  "linktr.ee", "linkin.bio", "beacons.ai", "bit.ly", "tinyurl.com",
+  "campsite.bio", "carrd.co",
+] as const;
+
+function hostOf(raw: string | null | undefined): string | null {
+  const s = String(raw ?? "").trim();
+  if (!s) return null;
+  const withScheme = /^https?:\/\//i.test(s) ? s : "https://" + s;
+  try { return new URL(withScheme).hostname.replace(/^www\./i, "").toLowerCase(); }
+  catch { return null; }
+}
 
 /** A weight from config, or a hard failure — never a quiet default. */
 function weightOf(weights: DtiWeights, key: string): number {
@@ -120,18 +166,64 @@ function weightOf(weights: DtiWeights, key: string): number {
 /**
  * Score one row.
  *
- * ONLY `fully_enriched` rows are scored. The other four enrichment states all
- * mean some version of "we did not get to look":
- *   no_website_found   — checked, genuinely absent. Still NOT zero: a 0 under
- *                        a trust badge reads as a verdict on the business, and
- *                        having no website is not a trust failing.
- *   skipped_robots_txt — the site told us not to look. Their right.
- *   probe_failed       — our problem, not theirs.
- *   not_enriched       — never attempted (14,822 of 15,822 rows).
+ * Three outcomes, and the difference between them is the whole design:
+ *
+ *   ZERO, because we checked and the answer is nothing:
+ *     no_website_found  — Google Place Details was asked about this business
+ *                         by its own place_id and returned no website. 2,027
+ *                         home trades are in this state after the 2026-09-17
+ *                         run. (This USED to score NULL, on the reasoning that
+ *                         a 0 under a trust badge reads as a verdict. It is
+ *                         labelled on the card instead — "No website found for
+ *                         this business" — so the number is explained rather
+ *                         than left to be misread.)
+ *     social_only       — their listed site is a Facebook page or a directory
+ *                         listing. See NOT_A_WEBSITE.
+ *
+ *   A REAL SCORE, from measured signals:
+ *     fully_enriched    — the site was fetched and read.
+ *
+ *   NULL, because nobody could look:
+ *     skipped_robots_txt — the site told us not to. Their right.
+ *     probe_failed       — our problem, not theirs.
+ *     not_enriched       — never attempted. A 0 here would be a claim built
+ *                          out of our own missing record, which is the exact
+ *                          mistake that had to be reverted across 14,820 rows.
  */
 export function scoreDti(row: DtiRow, weights: DtiWeights): DtiResult {
   const empty = (reason: string): DtiResult =>
     ({ score: null, reason, signals: [], counted: 0, weightAvailable: 0 });
+
+  // ── A CHECKED ABSENCE SCORES ZERO ───────────────────────────────────────
+  // 'no_website_found' now means something it did not used to: Google Place
+  // Details was asked about this specific business, by its own place_id, and
+  // returned no website. That is a checked, sourced answer, so 0 is a true
+  // statement about their online presence — not a punishment for a probe we
+  // never ran.
+  //
+  // The distinction that makes this safe is the one that had to be enforced
+  // the hard way: 'not_enriched' means NOBODY LOOKED and still scores NULL.
+  // Writing 0 there would be a claim built out of our own missing data.
+  if (row.enrichment_status === "no_website_found") {
+    return {
+      score: 0, reason: null, signals: [], counted: 0, weightAvailable: 0,
+      zeroReason: "no_website",
+    };
+  }
+
+  // ── A SOCIAL OR DIRECTORY PAGE IS NOT A WEBSITE ─────────────────────────
+  // A Facebook page cannot be found the way a website can, and it is not the
+  // business's to control. Site BUILDERS are deliberately excluded from this
+  // list — a Wix site on a free subdomain is still their own site with their
+  // own content, and zeroing 10 real Louisiana contractors for using one
+  // would be exactly the kind of wrong call that loses an argument.
+  const host = hostOf(row.website_url ?? row.domain ?? null);
+  if (host && NOT_A_WEBSITE.some((d) => host === d || host.endsWith("." + d))) {
+    return {
+      score: 0, reason: null, signals: [], counted: 0, weightAvailable: 0,
+      zeroReason: "social_only", zeroDetail: host,
+    };
+  }
 
   if (row.enrichment_status !== "fully_enriched") {
     return empty(`not scored: enrichment_status is '${row.enrichment_status ?? "null"}'`);
@@ -232,6 +324,20 @@ export function scoreDti(row: DtiRow, weights: DtiWeights): DtiResult {
   }
   const earned = counted.reduce((a, s) => a + s.weight * (s.value as number), 0);
   const score = Math.round((earned / weightAvailable) * 100);
+
+  // ── A COMPUTED ZERO STILL NEEDS A REASON ────────────────────────────────
+  // A site we fetched successfully can still score 0: it returns an HTTP
+  // error, it is a parked holding page, or it loads and carries none of the
+  // four signals. Those are real findings, but without a label the card shows
+  // a bare 0 — and a bare 0 under a trust badge reads as a verdict on the
+  // business. Fourteen rows were in this state before this branch existed.
+  if (score === 0) {
+    const dead = row.site_state === "dead_http_error" || row.site_state === "parked_or_lead_gen";
+    return {
+      score, reason: null, signals: scored, counted: counted.length, weightAvailable,
+      zeroReason: dead ? "site_unreachable" : "nothing_readable",
+    };
+  }
 
   return { score, reason: null, signals: scored, counted: counted.length, weightAvailable };
 }
