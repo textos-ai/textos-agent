@@ -77,6 +77,13 @@ app.use(
       if (/^https:\/\/([a-z0-9-]+\.)*textos-web-test\.pages\.dev$/.test(origin)) return origin;
       // Allow textos-web.pages.dev preview deploys (production frontend's preview URLs).
       if (/^https:\/\/([a-z0-9-]+\.)*textos-web\.pages\.dev$/.test(origin)) return origin;
+      // Allow the TrustLight public site: the apex + the Pages project that
+      // serves it, including preview deploys. In production trustlight.com/api/*
+      // is same-origin via the zone route and never needs CORS; a preview at
+      // <branch>.trustlight-com.pages.dev calls this Worker cross-origin and
+      // would otherwise be blocked by the browser.
+      if (/^https:\/\/([a-z0-9-]+\.)*trustlight\.com$/.test(origin)) return origin;
+      if (/^https:\/\/([a-z0-9-]+\.)*trustlight-com\.pages\.dev$/.test(origin)) return origin;
       if (/^https:\/\/([a-z0-9-]+\.)*claude\.ai$/.test(origin)) return origin;
       if (/^https:\/\/([a-z0-9-]+\.)*claude\.site$/.test(origin)) return origin;
       if (/^https:\/\/([a-z0-9-]+\.)*anthropic\.com$/.test(origin)) return origin;
