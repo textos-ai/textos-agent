@@ -19,9 +19,26 @@ export const VERIFIED_COLS =
   "slug, legal_name, trading_name, name, trade, city, state, parish, " +
   "rating, review_count, dti_score, blurb, verified_year, plan, exclusive_until";
 
+/**
+ * Contact columns, readable ONLY on the profile endpoint.
+ *
+ * Deliberately NOT part of VERIFIED_COLS. A directory card is a preview and
+ * /search returns up to 75 of them per request across ~15,800 rows; putting a
+ * phone number on a card would turn the directory into a bulk-harvestable
+ * phone list behind a rate limit that fails open. The profile needs a slug you
+ * already hold and returns one record, so contact details live here and only
+ * here. See the note on shapeProfile().
+ *
+ * `phone` is the DISPLAY format. `phone_e164_digits` is the match key used to
+ * dedupe applications against existing leads and is absent from every public
+ * response, on purpose — it is not listed on any whitelist in this file.
+ */
+export const PROFILE_CONTACT_COLS = "phone, website_url, address, zip, google_profile_url";
+
 /** The ONLY columns readable for a full public profile. */
 export const PROFILE_COLS =
-  VERIFIED_COLS + ", services, years_in_business, license_state, verified_at, expires_at, " +
+  VERIFIED_COLS + ", " + PROFILE_CONTACT_COLS +
+  ", services, years_in_business, license_state, verified_at, expires_at, " +
   "dti_findability, dti_answerability, dti_responsiveness, dti_completeness, dti_compliance, " +
   "chk_licensing_board, chk_license, chk_insurance, chk_business_filing, chk_court_records, " +
   "chk_address, chk_years_in_business, chk_contact, chk_reviews";
@@ -136,6 +153,8 @@ export function missingPublicFields(row: Record<string, unknown>): string[] {
 }
 
 export type ProfileRow = VerifiedRow & {
+  phone: string | null; website_url: string | null; address: string | null;
+  zip: string | null; google_profile_url: string | null;
   services: string[] | null; years_in_business: number | null; license_state: string | null;
   verified_at: string | null; expires_at: string | null;
   dti_findability: number | null; dti_answerability: number | null;
@@ -149,6 +168,25 @@ export type ProfileRow = VerifiedRow & {
  * `checks_passed` lists ONLY checks that passed, never the notes, and never
  * anything about a check that did not — a 'fail' or 'na' is simply absent, so
  * the response cannot be read as an accusation against the business.
+ *
+ * ── THE CONTACT BLOCK ───────────────────────────────────────────────────
+ * A homeowner who has found a verified contractor has to be able to reach
+ * them, so the profile carries the business's own public contact path: the
+ * phone, the website, the street address and the Google listing. All of it is
+ * business information the business already publishes itself.
+ *
+ * WHAT STAYS INTERNAL, ON EVERY ENDPOINT INCLUDING THIS ONE:
+ *   contact_email, contact_name  — the owner's personal details, given to us
+ *                                  for verification. Publishing them puts a
+ *                                  private inbox on the open web to be scraped.
+ *                                  The phone and website ARE the contact path.
+ *   license_number, gl_carrier   — given to us to check, not to broadcast.
+ *   application_note, chk_* notes— ours.
+ *   phone_e164_digits            — the match key, never the published value.
+ *
+ * None of those appear on any whitelist in this file, which is what keeps them
+ * out: there is no select("*") and no row spread anywhere, so a field cannot
+ * reach a response without being named here on purpose.
  */
 export function shapeProfile(r: ProfileRow) {
   const passed = Object.keys(PUBLIC_CHECK_LABELS)
@@ -156,6 +194,17 @@ export function shapeProfile(r: ProfileRow) {
     .map((k) => PUBLIC_CHECK_LABELS[k]);
   return {
     ...shapeVerified(r),
+    contact: {
+      phone: r.phone,
+      website: r.website_url,
+      google_profile: r.google_profile_url,
+      address: {
+        street: r.address,
+        city: r.city,
+        state: r.state,
+        zip: r.zip,
+      },
+    },
     services: Array.isArray(r.services) ? r.services : [],
     years_in_business: r.years_in_business,
     license_state: r.license_state,

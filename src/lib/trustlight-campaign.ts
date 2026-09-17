@@ -62,6 +62,9 @@ export interface NotifyLead {
   rating: number | null; review_count: number | null; dti_score: number | null;
   blurb: string | null; verified_year: number | null; slug: string | null;
   expires_at: string | null;
+  // Published on the profile endpoint, so the email must list them too.
+  phone: string | null; website_url: string | null;
+  address: string | null; zip: string | null;
 }
 
 const esc = (s: unknown) => String(s ?? "").replace(/[&<>"']/g, (c) =>
@@ -98,6 +101,10 @@ export function renderNotifyEmail(
   }
   if (typeof lead.dti_score === "number") shown.push(`Digital Trust Index: ${lead.dti_score} out of 100`);
   if (lead.blurb) shown.push(`Description: ${lead.blurb}`);
+  if (lead.phone) shown.push(`Phone: ${lead.phone}`);
+  if (lead.website_url) shown.push(`Website: ${lead.website_url}`);
+  const street = [lead.address, lead.city, lead.state, lead.zip].filter(Boolean).join(", ");
+  if (street) shown.push(`Address: ${street}`);
   shown.push(`Verified: ${year}`);
 
   const subject = `${name} has been verified on TrustLight — no cost, and you can remove it`;
@@ -119,8 +126,8 @@ export function renderNotifyEmail(
     ``,
     ...shown.map((l) => `  ${l}`),
     ``,
-    `That is all of it. We do not publish your phone number, your email, your`,
-    `license number, your insurance carrier, or any of our notes.`,
+    `That is all of it. We do not publish your email address, your license`,
+    `number, your insurance carrier, or any of our notes.`,
     ``,
     `Your listing and verified badge:`,
     `  ${urls.profileUrl}`,
@@ -148,7 +155,7 @@ export function renderNotifyEmail(
   <div style="background:#f6f7f9;border:1px solid #e5e8ee;border-radius:8px;padding:14px 16px;margin:0 0 16px">
     ${shown.map((l) => `<div style="margin:3px 0;font-size:14px">${esc(l)}</div>`).join("")}
   </div>
-  <p style="margin:0 0 16px;font-size:14px;color:#5a626f">That is all of it. We do not publish your phone number, your email, your license number, your insurance carrier, or any of our notes.</p>
+  <p style="margin:0 0 16px;font-size:14px;color:#5a626f">That is all of it. We do not publish your email address, your license number, your insurance carrier, or any of our notes.</p>
   <p style="margin:0 0 20px"><a href="${esc(urls.profileUrl)}" style="display:inline-block;background:#0a0f1c;color:#fff;text-decoration:none;padding:11px 18px;border-radius:8px;font-weight:600">See your listing and badge</a></p>
   <div style="border-top:1px solid #e5e8ee;padding-top:18px;margin-top:4px">
     <p style="margin:0 0 10px"><strong>If you do not want to be listed</strong></p>

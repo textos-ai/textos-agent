@@ -1046,9 +1046,13 @@ app.post("/vetting/:id/notify", async (c) => {
 
   const { data, error } = await supabase
     .from("coldcall_leads")
+    // phone/website_url/address/zip are here because the profile endpoint now
+    // publishes them: the email promises to list "exactly what your listing
+    // will show", so omitting them here would make that sentence false.
     .select("id, name, legal_name, trading_name, trade, city, state, rating, review_count, " +
             "dti_score, blurb, verified_year, slug, expires_at, is_comped, vetting_status, " +
-            "notified_at, listing_consent, removal_token")
+            "notified_at, listing_consent, removal_token, " +
+            "phone, website_url, address, zip")
     .eq("id", id).maybeSingle();
   if (error) {
     log.error("[campaign] notify_read_failed", { lead_id: id, err: error.message });
