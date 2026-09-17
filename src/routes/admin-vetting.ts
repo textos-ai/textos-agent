@@ -66,6 +66,7 @@ import {
 // public shape.
 import {
   PROFILE_COLS, shapeVerified, shapeProfile, shapeUnvetted, visibilityOf,
+  HOME_TRADE_CATEGORIES, canonicalTrade,
   type VerifiedRow, type ProfileRow,
 } from "../lib/trustlight-public";
 import {
@@ -1671,7 +1672,11 @@ app.post("/vetting/:id/exclusivity/release", async (c) => {
 const PROFILE_FIELDS = {
   legal_name:         { type: "text",  max: 200 },
   trading_name:       { type: "text",  max: 200 },
-  trade:              { type: "text",  max: 80 },
+  // NOT free text. See the "trade" branch in coerceProfileField: an operator
+  // typing a word the public filter cannot match is the same class of bug as
+  // the parish case-collision, and it fails silently - the business simply
+  // never appears for its own trade.
+  trade:              { type: "trade" },
   city:               { type: "text",  max: 120 },
   state:              { type: "state" },
   parish:             { type: "text",  max: 120 },   // the brief's county_parish
@@ -1722,6 +1727,26 @@ function coerceProfileField(key: string, raw: unknown, spec: FieldSpec):
     if (spec.min !== undefined && n < spec.min) return { ok: false, message: `${key} must be at least ${spec.min}` };
     if (spec.max !== undefined && n > spec.max) return { ok: false, message: `${key} must be at most ${spec.max}` };
     return { ok: true, value: spec.type === "num" ? Math.round(n * 10) / 10 : n };
+  }
+  if (spec.type === "trade") {
+    // Constrained to HOME_TRADE_CATEGORIES, the same list the public search
+    // filters on. Two vocabularies that can drift apart is exactly how a
+    // verified business ends up invisible to a search for its own trade.
+    //
+    // The input is canonicalised first, so "Roofing", "roofer" and "Roofing
+    // Contractor" all land on the stored "roofing contractor" instead of
+    // being rejected. Only a genuinely unknown trade is refused, and the
+    // message names the valid values rather than leaving the operator to
+    // guess.
+    const canon = canonicalTrade(String(raw)).toLowerCase();
+    if (!(HOME_TRADE_CATEGORIES as readonly string[]).includes(canon)) {
+      return {
+        ok: false,
+        message: `'${String(raw).trim()}' is not a trade this directory covers. ` +
+          `Use one of: ${HOME_TRADE_CATEGORIES.join(", ")}.`,
+      };
+    }
+    return { ok: true, value: canon };
   }
   if (spec.type === "array") {
     const arr = Array.isArray(raw) ? raw : String(raw).split("\n").map((x) => x.trim()).filter(Boolean);
@@ -1826,6 +1851,9 @@ app.get("/vetting/:id/preview", async (c) => {
       name: row.name, category: row.category, city: row.city, state: row.state,
     }),
     editable_fields: Object.keys(PROFILE_FIELDS),
+    // The only accepted values for `trade`, so the editor can offer a picker
+    // instead of a text box the operator can get wrong.
+    trade_options: HOME_TRADE_CATEGORIES,
   });
 });
 
