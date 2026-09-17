@@ -1,0 +1,5 @@
+CORRECTION (added 2026-09-16, see 6a210b0)
+
+As with 2e454a2: the e2e-vetting-api assertions this message describes
+were real and passing, but scripts/ was gitignored so they are not in
+this commit. They enter the repo at 6a210b0.
