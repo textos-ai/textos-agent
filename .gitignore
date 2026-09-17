@@ -13,6 +13,10 @@ dist/
 worker-configuration.d.ts
 .idea/
 .vscode/
+# scripts/ is a scratch drawer - 60+ one-off debug and diagnostic scripts.
+# It stays ignored. The TrustLight end-to-end suites used to live here, which
+# meant the only verification of the public API existed on one machine and in
+# no commit; they are tracked under e2e/ instead.
 scripts/
 test-fetch.js
 
