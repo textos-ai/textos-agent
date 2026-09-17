@@ -222,13 +222,26 @@ app.get("/vetting-queue", async (c) => {
       id: r.id,
       name: r.name,
       // The curated trade once it exists, else the scraped category.
-      trade: (r.trade as string | null) || (r.category as string | null) || null,
+      // THE CURATED TRADE, NOT A FALLBACK.
+      //
+      // This used to read `r.trade || r.category`, which meant a record with
+      // no curated trade displayed the scraped Google category instead. An
+      // operator saw "roofing contractor", verified the record, and the
+      // published profile had trade = null - so the public API excluded it
+      // while the admin showed it as Live. The scraped value is still sent,
+      // under its own name, so the UI can show it as the hint it is.
+      trade: r.trade ?? null,
+      scraped_category: (r.category as string | null) ?? null,
       city: r.city,
       state: r.state,
       parish: r.parish,
       vetting_status: r.vetting_status,
       slug: r.slug,
       is_published: r.is_published,
+      // Whether the PUBLIC can actually see this, by the same function the
+      // public API uses. `is_published` is one of four conditions and on its
+      // own it is not an answer - see visibilityOf() in lib/trustlight-public.
+      ...publicVisibility(r),
       checks_passed: countPasses(r as unknown as Record<CheckKey, string | null>),
       checks_total: CHECK_KEYS.length,
       status_since: since,
@@ -288,10 +301,12 @@ app.get("/vetting/campaign", async (c) => {
     return {
       id: r.id,
       name: r.trading_name || r.legal_name || r.name,
-      trade: r.trade || r.category,
+      trade: r.trade ?? null,
+      scraped_category: (r.category as string | null) ?? null,
       city: r.city, state: r.state,
       vetting_status: r.vetting_status,
       is_published: r.is_published,
+      ...publicVisibility(r),
       slug: r.slug,
       comp_reason: r.comp_reason,
       checks_passed: countPasses(r as Record<CheckKey, string | null>),
@@ -374,9 +389,12 @@ app.get("/vetting/reverification", async (c) => {
   const { data, error } = await applyReverifySort(
     supabase
       .from("coldcall_leads")
+      // trade/city/state are here so visibilityOf() can be evaluated: a record
+      // can be verified, published and unexpired and still be invisible to the
+      // public for want of a required field.
       .select("id, name, trading_name, legal_name, slug, rank, call_score, " +
               "verified_at, verified_year, expires_at, reverify_due, is_published, " +
-              "plan, is_comped, vetting_status")
+              "plan, is_comped, vetting_status, trade, city, state")
       .eq("vetting_status", "verified")
       .or(`reverify_due.lte.${horizon},expires_at.lte.${nowIso}`),
     sort,
@@ -406,6 +424,7 @@ app.get("/vetting/reverification", async (c) => {
       // Already out of the public directory, whatever the admin view says.
       is_expired: !!expiresAt && expiresAt <= nowIso,
       is_published: r.is_published === true,
+      ...publicVisibility(r),
       plan: (r.plan as string) ?? "none",
       is_comped: r.is_comped === true,
     };
@@ -599,6 +618,8 @@ app.get("/vetting/:id", async (c) => {
   const passes = countPasses(lead as Record<CheckKey, string | null>);
   return c.json({
     lead,
+    // The detail header must not claim "Live" from is_published alone.
+    ...publicVisibility(lead),
     checks: CHECK_KEYS.map((k) => ({
       key: k,
       label: CHECK_LABELS[k],
@@ -1659,6 +1680,27 @@ app.post("/vetting/:id/exclusivity/release", async (c) => {
     note: "The area is free. The commercial plan was left as it was — change it on the plan control if this is a downgrade.",
   });
 });
+
+/**
+ * Is this record actually visible to the public, and if not, why not?
+ *
+ * ONE ANSWER, FROM THE SAME FUNCTION THE PUBLIC API USES.
+ *
+ * Four admin surfaces used to render "Live" straight from `is_published`.
+ * That column is one of four conditions publishable() applies, so a record
+ * could be verified, published and unexpired - and still be invisible to the
+ * public for want of a required field. The queue said Live, the detail header
+ * said "Live on trustlight.com", and the public directory showed nothing. Rob
+ * acted on that, which is the whole cost of a admin that guesses.
+ *
+ * Three of six verified records were in exactly that state, all missing the
+ * same field. The preview panel had been right all along because it already
+ * called visibilityOf(); every other surface now calls the same thing.
+ */
+function publicVisibility(r: Record<string, unknown>) {
+  const vis = visibilityOf(r as Parameters<typeof visibilityOf>[0]);
+  return { public_visible: vis.visible, public_blockers: vis.blockers };
+}
 
 // ── The published profile ──────────────────────────────────────────────────
 // Editable fields, with their validators. Anything not on this list cannot be
