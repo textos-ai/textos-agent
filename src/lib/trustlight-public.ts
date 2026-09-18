@@ -298,6 +298,34 @@ export type VerifiedRow = {
   plan: string | null; exclusive_until: string | null;
 };
 
+/**
+ * Is this business already on TrustLight Growth?
+ *
+ * ── THE ONE LINE TO CHANGE ────────────────────────────────────────────────
+ * Today this returns false for everybody, and that is CORRECT rather than a
+ * placeholder: `coldcall_lead_signups` holds exactly one row, a cancelled
+ * `trustlight` signup, and zero leads have an active core service. Nobody is
+ * on Growth, so nobody is wrongly shown the calculator link.
+ *
+ * `growth_active` was proposed as a column and never built. It does not need
+ * to be. The data model already exists and the coldcall admin already writes
+ * to it — the Website / AI Automation / FB Ads checkboxes in the lead modal
+ * create `coldcall_lead_signups` rows against `coldcall_services`
+ * ('website', 'ai_automation', 'fb_ads', billing_group 'core').
+ *
+ * So when the first Growth customer signs up, the change is here and only
+ * here: read the lead's active core signups and return whether any exist.
+ * Every surface that hides the calculator link — directory cards on /search
+ * and the homepage, /b/<slug>, and the contractor profile — already reads
+ * `growth_active` off the shape, so none of them changes.
+ *
+ * Pitching a voice agent to somebody who is already paying us for one is the
+ * failure this exists to prevent.
+ */
+export function growthActive(_r: Record<string, unknown>): boolean {
+  return false;
+}
+
 /** Public display name: the curated names win; the scraped one is the last resort. */
 export const displayName = (r: VerifiedRow) => r.trading_name || r.legal_name || r.name || "";
 
@@ -351,6 +379,7 @@ export function shapeVerified(r: VerifiedRow) {
     // month from the day count would be off by one around a month boundary.
     verified_at: r.verified_at ?? null,
     verified_days: daysSince(r.verified_at),
+    growth_active: growthActive(r as unknown as Record<string, unknown>),
     exclusive: isExclusive(r),
   };
 }
@@ -368,6 +397,7 @@ export function shapeUnvetted(r: {
     dti: r.dti_score ?? null,
     dti_zero: dtiZero(r),
     dti_signals: dtiSignals(r as unknown as Record<string, unknown>),
+    growth_active: growthActive(r as unknown as Record<string, unknown>),
   };
 }
 
@@ -469,6 +499,7 @@ export function shapeBusinessPage(r: Record<string, unknown>) {
     dti: (r.dti_score as number | null) ?? null,
     dti_zero: dtiZero(r as Parameters<typeof dtiZero>[0]),
     dti_signals: dtiSignals(r),
+    growth_active: growthActive(r),
     // Lets the page send a visitor to the real profile instead of the pitch.
     verified,
   };
@@ -715,6 +746,7 @@ export function shapeProfile(r: ProfileRow) {
     // claim. Empty means either a full presence or nothing measured, and the
     // page renders nothing in both cases.
     presence_gaps: presenceGaps(r),
+    growth_active: growthActive(r as unknown as Record<string, unknown>),
     services: Array.isArray(r.services) ? r.services : [],
     years_in_business: r.years_in_business,
     license_state: r.license_state,
