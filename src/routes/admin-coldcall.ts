@@ -61,7 +61,14 @@ const ASSIGN_MAX = 5000;
 // is a "call this one now" flag independent of call_score.
 const BROWSE_COLS =
   "id, name, phone, category, parish, market, rating, review_count, call_score, " +
-  "status, callable, assigned_to, hijack_flag, has_website, site_state, ai_voice_agent";
+  "status, callable, assigned_to, hijack_flag, has_website, site_state, ai_voice_agent, " +
+  // slug + vetting_status carry the share link for /b/<slug>. The link is built
+  // from the STORED slug and never derived from the name in the browser: 146 of
+  // the generated slugs carry a numeric suffix because the name collided, so a
+  // name-to-slug guess would sooner or later hand a contractor a link to a
+  // different business. vetting_status is what decides whether that link is a
+  // pitch page or a redirect to a live profile.
+  "slug, vetting_status";
 
 // Demo site embed. coldcall_demo_sites.lead_id is UNIQUE, so PostgREST returns
 // an OBJECT (or null) here, not an array — verified against the live schema.

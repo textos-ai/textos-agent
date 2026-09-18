@@ -18,6 +18,10 @@
 export const VERIFIED_COLS =
   "slug, legal_name, trading_name, name, trade, city, state, parish, " +
   "rating, review_count, dti_score, blurb, verified_year, plan, exclusive_until, " +
+  // How long they have been verified. Time on the directory is a trust signal
+  // in its own right - somebody checked 400 days ago and still listed has been
+  // through a re-check the newcomer has not.
+  "verified_at, " +
   // Read to EXPLAIN a score, never published raw. A 0 with no reason beside it
   // reads as a verdict on the business; these turn it into a statement about a
   // website. See dtiZero().
@@ -277,7 +281,11 @@ export const nameSearchOr = (term: string) =>
 // their own listing - so it carries the same score and the same explanation a
 // verified card does. It still publishes no contact details and no checks.
 export const UNVETTED_COLS =
-  "name, category, city, state, dti_score, enrichment_status, website_url, domain, site_state, " +
+  // `slug` makes the card clickable through to /b/<slug>, the business's own
+  // page. Without it an unvetted card is a dead end: 4,105 contractors can find
+  // their listing and then have nowhere to go. The slug is derived from the
+  // name, which this same card already publishes, so it exposes nothing new.
+  "slug, name, category, city, state, dti_score, enrichment_status, website_url, domain, site_state, " +
   "has_https, has_viewport, phone_listed, has_business_hours, " +
   "reviews_linked, has_faq_or_blog, service_area_count, has_schema_org, " +
   "booking_tool, chat_widget, call_tracking";
@@ -286,12 +294,30 @@ export type VerifiedRow = {
   slug: string | null; legal_name: string | null; trading_name: string | null; name: string | null;
   trade: string | null; city: string | null; state: string | null; parish: string | null;
   rating: number | null; review_count: number | null; dti_score: number | null;
-  blurb: string | null; verified_year: number | null;
+  blurb: string | null; verified_year: number | null; verified_at?: string | null;
   plan: string | null; exclusive_until: string | null;
 };
 
 /** Public display name: the curated names win; the scraped one is the last resort. */
 export const displayName = (r: VerifiedRow) => r.trading_name || r.legal_name || r.name || "";
+
+/**
+ * Whole days since a timestamp, or null.
+ *
+ * COMPUTED HERE, NOT IN THE BROWSER. A visitor's device clock can be wrong by
+ * days, and this number is printed as a trust claim next to a verification
+ * badge. One clock, ours, decides it.
+ *
+ * A future timestamp yields null rather than a negative number: that is bad
+ * data, and "verified for -3 days" is worse than saying nothing.
+ */
+export function daysSince(ts: string | null | undefined): number | null {
+  if (!ts) return null;
+  const t = Date.parse(ts);
+  if (!Number.isFinite(t)) return null;
+  const d = Math.floor((Date.now() - t) / 86_400_000);
+  return d >= 0 ? d : null;
+}
 
 export const isExclusive = (r: VerifiedRow) =>
   r.plan === "exclusive" && !!r.exclusive_until && new Date(r.exclusive_until) > new Date();
@@ -320,17 +346,24 @@ export function shapeVerified(r: VerifiedRow) {
     dti_signals: dtiSignals(r as Record<string, unknown>),
     blurb: r.blurb,
     verified_year: r.verified_year,
+    // Both: the day count drives the trust line once it is meaningful, and the
+    // timestamp is what the site prints as a month before then. Deriving the
+    // month from the day count would be off by one around a month boundary.
+    verified_at: r.verified_at ?? null,
+    verified_days: daysSince(r.verified_at),
     exclusive: isExclusive(r),
   };
 }
 
 /** The four neutral fields of an unvetted entry, built explicitly. */
 export function shapeUnvetted(r: {
+  slug?: string | null;
   name: string | null; category: string | null; city: string | null; state: string | null;
   dti_score?: number | null; enrichment_status?: string | null;
   website_url?: string | null; domain?: string | null;
 }) {
   return {
+    slug: r.slug ?? null,
     name: r.name, trade: titleCase(r.category), city: r.city, state: r.state,
     dti: r.dti_score ?? null,
     dti_zero: dtiZero(r),
@@ -389,6 +422,56 @@ export function dtiSignals(r: Record<string, unknown>): Array<{
   });
   // Nothing measured at all -> no meter. The card falls back to its label.
   return out.some((g) => g.value !== null) ? out : null;
+}
+
+/**
+ * The shape behind /b/<slug> — a business's own share page.
+ *
+ * SEPARATE FROM THE DIRECTORY CARD ON PURPOSE. The unvetted card on /search
+ * publishes name, trade, city and state and nothing else; widening that to add
+ * a rating would change what 4,105 unchecked businesses expose on a public
+ * index page. This shape is read one record at a time, by a slug somebody was
+ * handed, and carries the extra fields that page needs.
+ *
+ * WHAT IS NEW HERE, stated plainly: `rating` and `reviews` become readable for
+ * an UNVETTED business. Both are Google's public numbers, already visible on
+ * the business's own Maps listing, and they are what makes the page
+ * recognisable as theirs. No contact details, no checks, no internal columns.
+ */
+export const BUSINESS_PAGE_COLS =
+  "slug, name, category, trade, city, state, parish, rating, review_count, place_id, " +
+  "vetting_status, is_published, expires_at, " +
+  "dti_score, enrichment_status, website_url, domain, site_state, " +
+  "has_https, has_viewport, phone_listed, has_business_hours, " +
+  "reviews_linked, has_faq_or_blog, service_area_count, has_schema_org, " +
+  "booking_tool, chat_widget, call_tracking";
+
+export function shapeBusinessPage(r: Record<string, unknown>) {
+  const verified = r.vetting_status === "verified";
+  return {
+    slug: (r.slug as string | null) ?? null,
+    name: (r.name as string | null) ?? null,
+    // A verified record's trade is the operator's curated value; an unvetted
+    // one only has the scraped category. Same precedence the directory uses.
+    trade: titleCase((verified ? (r.trade as string | null) : null) ?? (r.category as string | null)),
+    city: (r.city as string | null) ?? null,
+    state: (r.state as string | null) ?? null,
+    // The page names their parish back to them ("No electrician in Tangipahoa
+    // Parish is verified"), so it has to travel with the record.
+    parish: (r.parish as string | null) ?? null,
+    rating: (r.rating as number | null) ?? null,
+    reviews: (r.review_count as number | null) ?? null,
+    // The same Google listing the rating above is taken from. Printing a score
+    // with no way to read a single review asks the business to take our number
+    // on faith, which is the one thing this site is built not to do - and on
+    // this page the reader is the business itself.
+    google_profile: googleMapsUrl(r.place_id as string | null),
+    dti: (r.dti_score as number | null) ?? null,
+    dti_zero: dtiZero(r as Parameters<typeof dtiZero>[0]),
+    dti_signals: dtiSignals(r),
+    // Lets the page send a visitor to the real profile instead of the pitch.
+    verified,
+  };
 }
 
 /**
@@ -637,6 +720,7 @@ export function shapeProfile(r: ProfileRow) {
     license_state: r.license_state,
     verification: {
       verified_at: r.verified_at,
+      verified_days: daysSince(r.verified_at),
       expires_at: r.expires_at,
       checks_passed: passed,
       checks_total: Object.keys(PUBLIC_CHECK_LABELS).length,

@@ -57,6 +57,7 @@ import {
   VERIFIED_COLS, PROFILE_COLS, UNVETTED_COLS,
   shapeVerified, shapeUnvetted, shapeProfile, publishable,
   HOME_TRADE_CATEGORIES, canonicalTrade, nameSearchOr,
+  BUSINESS_PAGE_COLS, shapeBusinessPage,
   type VerifiedRow, type ProfileRow,
 } from "../lib/trustlight-public";
 
@@ -399,6 +400,192 @@ app.post("/funnel", async (c) => {
     log.warn("[trustlight] funnel_write_failed", { step, err: String(err) });
   }
   return c.body(null, 204);
+});
+
+/**
+ * How many businesses the directory lists but has not checked.
+ *
+ * Counted live, never baked. The share page says "one of N listings we have
+ * not checked", and N drops every time somebody gets verified — a number
+ * frozen into the HTML would be quietly wrong within a week, on a page whose
+ * entire argument is that we check things.
+ *
+ * Same filter the directory's own unvetted tier uses, so the two can never
+ * disagree.
+ */
+async function unvettedCount(supabase: ReturnType<typeof createSupabaseClient>): Promise<number | null> {
+  const { count, error } = await supabase
+    .from("coldcall_leads")
+    .select("id", { count: "exact", head: true })
+    .eq("vetting_status", "lead")
+    .not("name", "is", null)
+    .in("category", HOME_TRADE_CATEGORIES as unknown as string[]);
+  if (error) {
+    log.warn("[trustlight] unvetted_count_failed", { err: error.message });
+    return null;   // the page omits the clause rather than inventing a number
+  }
+  return count ?? null;
+}
+
+/**
+ * The verified businesses around one unverified business, counted.
+ *
+ * WHY THIS IS A SEPARATE QUERY AND NOT A COUNT PER FIGURE. There are 47
+ * verified rows in total. Reading all of them once and counting in memory is
+ * one round trip instead of four, and it keeps every figure on the page
+ * consistent with every other one — four separate count queries can disagree
+ * with each other if a business is verified between them, and this page prints
+ * them side by side.
+ *
+ * `avg_days` is the average time the verified businesses in this parish have
+ * been on TrustLight. It is returned raw; the SITE decides whether to show it.
+ * The rule there is 30 days, because the directory launched in September 2026
+ * and "an average of 1 day" is an argument against signing up.
+ *
+ * Every figure can come back null. A failed count is not zero: "no verified
+ * contractor in your parish" and "we could not count" are different statements,
+ * and only the first one is a reason to act.
+ */
+type Peers = {
+  verified_total: number | null;
+  in_parish: number | null;
+  in_trade_parish: number | null;
+  in_state: number | null;
+  avg_days_in_parish: number | null;
+  /** Other UNCHECKED businesses in the same trade and parish — the ones this
+   *  business is actually competing with for the one exclusive slot. Excludes
+   *  the business itself. */
+  unvetted_in_trade_parish: number | null;
+};
+
+const NO_PEERS: Peers = {
+  verified_total: null, in_parish: null, in_trade_parish: null,
+  in_state: null, avg_days_in_parish: null, unvetted_in_trade_parish: null,
+};
+
+async function verifiedPeers(
+  supabase: ReturnType<typeof createSupabaseClient>,
+  row: Record<string, unknown>,
+): Promise<Peers> {
+  const { data, error } = await supabase
+    .from("coldcall_leads")
+    .select("parish, trade, state, verified_at")
+    .eq("vetting_status", "verified");
+  if (error) {
+    log.warn("[trustlight] peer_count_failed", { err: error.message });
+    return NO_PEERS;
+  }
+
+  const all = (data ?? []) as Array<{
+    parish: string | null; trade: string | null; state: string | null; verified_at: string | null;
+  }>;
+
+  const parish = (row.parish as string | null) ?? null;
+  const state = (row.state as string | null) ?? null;
+  // An unvetted business has no curated trade, only the scraped category. Same
+  // precedence the rest of the public shape uses.
+  const trade = ((row.trade as string | null) ?? (row.category as string | null))?.toLowerCase() ?? null;
+
+  const samePar = parish ? all.filter((v) => v.parish === parish) : [];
+  const days = samePar
+    .map((v) => (v.verified_at ? Math.floor((Date.now() - Date.parse(v.verified_at)) / 86_400_000) : null))
+    .filter((d): d is number => d !== null && Number.isFinite(d) && d >= 0);
+
+  // Their actual competition, counted with a HEAD query rather than by reading
+  // the rows: there are 4,106 unchecked businesses and this endpoint is public.
+  // Counted on `category`, which every unvetted row carries (`trade` was
+  // backfilled from it), so the two can never disagree here.
+  let rivals: number | null = null;
+  const category = (row.category as string | null) ?? null;
+  if (parish && category) {
+    const { count, error: rErr } = await supabase
+      .from("coldcall_leads")
+      .select("id", { count: "exact", head: true })
+      .neq("vetting_status", "verified")
+      .not("slug", "is", null)
+      .eq("parish", parish)
+      .eq("category", category);
+    if (rErr) {
+      log.warn("[trustlight] rival_count_failed", { err: rErr.message });
+    } else if (typeof count === "number") {
+      // "Others", not "including you". A contractor who counts the listings
+      // himself and finds one fewer than we claimed stops believing the page.
+      rivals = Math.max(0, count - 1);
+    }
+  }
+
+  return {
+    verified_total: all.length,
+    unvetted_in_trade_parish: rivals,
+    // null, not 0, when we do not know the parish — we cannot claim the slot is
+    // open in a parish we cannot name.
+    in_parish: parish ? samePar.length : null,
+    in_trade_parish: parish && trade
+      ? samePar.filter((v) => (v.trade ?? "").toLowerCase() === trade).length
+      : null,
+    in_state: state ? all.filter((v) => v.state === state).length : null,
+    avg_days_in_parish: days.length
+      ? Math.round(days.reduce((a, b) => a + b, 0) / days.length)
+      : null,
+  };
+}
+
+// ── GET /api/business/:slug ────────────────────────────────────────────────
+// One business, by slug, for its own share page at /b/<slug>.
+//
+// DIFFERENT FROM /contractor/:slug IN ONE IMPORTANT WAY. That endpoint serves
+// only businesses that are verified AND published AND unexpired — it is the
+// public profile. This one serves a business REGARDLESS of status, because the
+// whole point of the page is to show an unverified business what it looks like
+// today and what verification would change.
+//
+// It is still not a hole in the wall:
+//   - one record per request, by a slug somebody was given
+//   - no contact details, no check results, no internal columns; the column
+//     whitelist is BUSINESS_PAGE_COLS and the projection is explicit
+//   - `verified` comes back so the page can send a visitor to the real profile
+//     instead of showing them a pitch for something they already bought
+//
+// No rate limit beyond the shared public one. The data here is a business name
+// and Google's own public rating; there is nothing to harvest that Google does
+// not already publish.
+app.get("/business/:slug", async (c) => {
+  const slug = c.req.param("slug");
+  if (!slug || !/^[a-z0-9-]+$/.test(slug)) {
+    return c.json(errBody("bad_request", "bad slug"), 400);
+  }
+  const supabase = createSupabaseClient(c.env);
+  const { data, error } = await supabase
+    .from("coldcall_leads")
+    .select(BUSINESS_PAGE_COLS)
+    .eq("slug", slug)
+    .maybeSingle();
+
+  if (error) {
+    log.error("[trustlight] business_read_failed", { err: error.message });
+    return c.json(errBody("internal", "could not load that business"), 500);
+  }
+  if (!data) return c.json(errBody("not_found", "not found"), 404);
+
+  const row = data as unknown as Record<string, unknown>;
+
+  // A removed business is not shown at all. Somebody who asked to come off the
+  // directory must not still have a page arguing they should pay to stay on it.
+  if (row.vetting_status === "removed" || row.vetting_status === "declined") {
+    return c.json(errBody("not_found", "not found"), 404);
+  }
+
+  return c.json({
+    generated_at: new Date().toISOString(),
+    business: shapeBusinessPage(row),
+    // The live directory size, so the page can say "one of N listings we have
+    // not checked" without baking a number that goes stale the next time
+    // somebody gets verified.
+    unvetted_total: await unvettedCount(supabase),
+    // The verified businesses around them, counted live. The site decides what
+    // to print; the API only reports what is true.
+    peers: await verifiedPeers(supabase, row),
+  });
 });
 
 // ── GET /api/contractor/:slug ───────────────────────────────────────────────
