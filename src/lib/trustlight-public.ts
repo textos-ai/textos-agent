@@ -21,7 +21,12 @@ export const VERIFIED_COLS =
   // Read to EXPLAIN a score, never published raw. A 0 with no reason beside it
   // reads as a verdict on the business; these turn it into a statement about a
   // website. See dtiZero().
-  "enrichment_status, website_url, domain, site_state";
+  "enrichment_status, website_url, domain, site_state, " +
+  // The seven signals, read to build the three meter segments. Published as
+  // GROUPS with their constituent names, never as raw columns.
+  "has_https, has_viewport, phone_listed, has_business_hours, " +
+  "reviews_linked, has_faq_or_blog, service_area_count, has_schema_org, " +
+  "booking_tool, chat_widget, call_tracking";
 
 /**
  * Contact columns, readable ONLY on the profile endpoint.
@@ -272,7 +277,10 @@ export const nameSearchOr = (term: string) =>
 // their own listing - so it carries the same score and the same explanation a
 // verified card does. It still publishes no contact details and no checks.
 export const UNVETTED_COLS =
-  "name, category, city, state, dti_score, enrichment_status, website_url, domain, site_state";
+  "name, category, city, state, dti_score, enrichment_status, website_url, domain, site_state, " +
+  "has_https, has_viewport, phone_listed, has_business_hours, " +
+  "reviews_linked, has_faq_or_blog, service_area_count, has_schema_org, " +
+  "booking_tool, chat_widget, call_tracking";
 
 export type VerifiedRow = {
   slug: string | null; legal_name: string | null; trading_name: string | null; name: string | null;
@@ -309,6 +317,7 @@ export function shapeVerified(r: VerifiedRow) {
     reviews: r.review_count,
     dti: r.dti_score,
     dti_zero: dtiZero(r),
+    dti_signals: dtiSignals(r as Record<string, unknown>),
     blurb: r.blurb,
     verified_year: r.verified_year,
     exclusive: isExclusive(r),
@@ -325,7 +334,61 @@ export function shapeUnvetted(r: {
     name: r.name, trade: titleCase(r.category), city: r.city, state: r.state,
     dti: r.dti_score ?? null,
     dti_zero: dtiZero(r),
+    dti_signals: dtiSignals(r as unknown as Record<string, unknown>),
   };
+}
+
+/**
+ * The three meter segments, each with what is present and what is missing.
+ *
+ * The card shows three weighted bars; tapping one names the signals behind it.
+ * That is the whole reason the score is grouped rather than flat — a
+ * contractor has to be able to see WHICH thing to fix, and twelve segments on
+ * a card is unreadable.
+ *
+ * `got` is null, not false, when a signal was not measured. A group with
+ * nothing measured returns value:null and the bar renders unfilled-and-unknown
+ * rather than empty-and-failed.
+ */
+export function dtiSignals(r: Record<string, unknown>): Array<{
+  key: string; label: string; weight: number; value: number | null;
+  present: string[]; missing: string[];
+}> | null {
+  const b = (v: unknown) => (v === true ? 1 : v === false ? 0 : null);
+  const tools = [r.booking_tool, r.chat_widget, r.call_tracking];
+  const toolsKnown = tools.some((t) => t === true || t === false);
+
+  const GROUPS: Array<{ key: string; label: string; weight: number; parts: Array<[string, number | null]> }> = [
+    { key: "findable", label: "Findable", weight: 40, parts: [
+      ["live website", r.site_state == null ? null : r.site_state === "alive" ? 1 : 0],
+      ["HTTPS", b(r.has_https)],
+      ["mobile-ready", b(r.has_viewport)],
+      ["structured data for search and AI", b(r.has_schema_org)],
+    ] },
+    { key: "reachable", label: "Reachable", weight: 35, parts: [
+      ["phone on the page", b(r.phone_listed)],
+      ["booking, chat or call handling", toolsKnown ? (tools.some((t) => t === true) ? 1 : 0) : null],
+      ["business hours", b(r.has_business_hours)],
+    ] },
+    { key: "credible", label: "Credible", weight: 25, parts: [
+      ["reviews linked", b(r.reviews_linked)],
+      ["serves multiple areas", typeof r.service_area_count === "number"
+        ? (r.service_area_count >= 3 ? 1 : 0) : null],
+      ["FAQ or blog", b(r.has_faq_or_blog)],
+    ] },
+  ];
+
+  const out = GROUPS.map((g) => {
+    const known = g.parts.filter(([, v]) => v !== null);
+    return {
+      key: g.key, label: g.label, weight: g.weight,
+      value: known.length ? known.reduce((a, [, v]) => a + (v as number), 0) / known.length : null,
+      present: known.filter(([, v]) => (v as number) > 0).map(([n]) => n),
+      missing: known.filter(([, v]) => (v as number) === 0).map(([n]) => n),
+    };
+  });
+  // Nothing measured at all -> no meter. The card falls back to its label.
+  return out.some((g) => g.value !== null) ? out : null;
 }
 
 /**

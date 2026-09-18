@@ -43,11 +43,9 @@
 
 /** Config keys. Weights live in coldcall_config, never in code. */
 export const DTI_CONFIG_KEYS = {
-  siteAlive: "dti_weight_site_alive",
-  schemaOrg: "dti_weight_schema_org",
-  domainAge: "dti_weight_domain_age",
-  analytics: "dti_weight_analytics",
-  contactTooling: "dti_weight_contact_tooling",
+  findable: "dti_weight_findable",
+  reachable: "dti_weight_reachable",
+  credible: "dti_weight_credible",
   minSignals: "dti_min_signals",
 } as const;
 
@@ -58,22 +56,19 @@ export const DTI_CONFIG_KEYS = {
  * silent fallback to numbers nobody chose.
  */
 export const DTI_SEED_WEIGHTS = {
-  [DTI_CONFIG_KEYS.siteAlive]: 30,
-  [DTI_CONFIG_KEYS.schemaOrg]: 25,
-  [DTI_CONFIG_KEYS.domainAge]: 20,
-  [DTI_CONFIG_KEYS.contactTooling]: 15,
-  [DTI_CONFIG_KEYS.analytics]: 10,
-  [DTI_CONFIG_KEYS.minSignals]: 3,
+  [DTI_CONFIG_KEYS.findable]: 40,
+  [DTI_CONFIG_KEYS.reachable]: 35,
+  [DTI_CONFIG_KEYS.credible]: 25,
+  // One group is enough to score. Two of three would leave a business with a
+  // live site but nothing else unscored, and "unscored" is what we are trying
+  // to get rid of.
+  [DTI_CONFIG_KEYS.minSignals]: 1,
 } as const;
 
 /**
- * A domain this old or older counts as fully established. Below it the signal
- * scales linearly, so a six-month-old domain scores about a sixth of the
- * weight rather than nothing.
- *
- * Three years is deliberate: storm-chaser domains are registered days before
- * they are used, and `recently_registered` is true for 24 of the 509 enriched
- * businesses. Age is the one signal here that is hard to fake quickly.
+ * Domain maturity threshold. NO LONGER USED BY THE PUBLIC SCORE - kept because
+ * the hijack check reads it: a domain registered days before it is used is the
+ * strongest storm-chaser tell we have.
  */
 export const DTI_DOMAIN_MATURE_DAYS = 1095;
 
@@ -90,15 +85,26 @@ export type DtiRow = {
   domain_age_days?: number | null;
   website_url?: string | null;
   domain?: string | null;
+  has_https?: boolean | null;
+  has_viewport?: boolean | null;
+  phone_listed?: boolean | null;
+  has_business_hours?: boolean | null;
+  reviews_linked?: boolean | null;
+  has_faq_or_blog?: boolean | null;
+  service_area_count?: number | null;
 };
 
 export type DtiSignal = {
   key: string;
   label: string;
   weight: number;
-  /** 0..1, or null when the signal was not checked. */
+  /** 0..1, or null when the signal was not checked. A GROUP scores the mean
+   *  of the signals measured inside it. */
   value: number | null;
   detail: string;
+  /** The individual signals behind the group, so the card can list what is
+   *  present and what is missing when someone taps a segment. */
+  parts?: Array<{ name: string; value: number | null }>;
 };
 
 export type DtiResult = {
@@ -232,14 +238,11 @@ export function scoreDti(row: DtiRow, weights: DtiWeights): DtiResult {
   const bool = (v: boolean | null | undefined) =>
     v === true ? 1 : v === false ? 0 : null;
 
-  // Domain age scales; everything else is present/absent.
-  let ageValue: number | null = null;
-  let ageDetail = "not checked";
-  if (typeof row.domain_age_days === "number" && Number.isFinite(row.domain_age_days)) {
-    const d = Math.max(0, row.domain_age_days);
-    ageValue = Math.min(1, d / DTI_DOMAIN_MATURE_DAYS);
-    ageDetail = `${d} days old`;
-  }
+  // domain_age is deliberately absent from the score. It was 20 of 100 points
+  // and it is the one thing TrustLight Growth cannot change - a business on a
+  // new domain was capped at 80 whatever it bought. It is still collected and
+  // still the strongest storm-chaser signal we have, but that is an internal
+  // judgement about risk, not a measure of online presence.
 
   // Any one contact tool counts. A business with a booking tool and no chat
   // widget is as reachable as the reverse, so this is an OR rather than three
@@ -253,38 +256,75 @@ export function scoreDti(row: DtiRow, weights: DtiWeights): DtiResult {
     row.call_tracking === true ? "call tracking" : null,
   ].filter(Boolean);
 
+  // ── THREE GROUPS, SEVEN SIGNALS ─────────────────────────────────────────
+  // Twelve segments on a card meter is unreadable, so the signals are grouped
+  // into three weighted bands. Each band scores as the MEAN of the signals we
+  // actually measured inside it — a NULL signal drops out of its own group's
+  // denominator exactly as a NULL group drops out of the score. The
+  // blank-vs-false rule applies at both levels.
+  //
+  // Findable 40 / Reachable 35 / Credible 25. Every one of the seven is
+  // something TrustLight Growth supplies, which is what makes "Growth takes
+  // this to 100" a promise we can keep.
+  const sub = (
+    label: string,
+    parts: Array<{ name: string; value: number | null }>,
+  ): { value: number | null; detail: string; parts: typeof parts } => {
+    const known = parts.filter((p) => p.value !== null);
+    if (!known.length) return { value: null, detail: "not checked", parts };
+    const got = known.filter((p) => (p.value as number) > 0).map((p) => p.name);
+    const missing = known.filter((p) => (p.value as number) === 0).map((p) => p.name);
+    return {
+      value: known.reduce((a, p) => a + (p.value as number), 0) / known.length,
+      detail: missing.length ? `missing: ${missing.join(", ")}` : `all present: ${got.join(", ")}`,
+      parts,
+    };
+  };
+
+  const findable = sub("Findable", [
+    { name: "live website", value: row.site_state == null ? null : row.site_state === "alive" ? 1 : 0 },
+    { name: "HTTPS", value: bool(row.has_https) },
+    { name: "mobile-ready", value: bool(row.has_viewport) },
+    { name: "structured data", value: bool(row.has_schema_org) },
+  ]);
+
+  const reachable = sub("Reachable", [
+    { name: "phone on the page", value: bool(row.phone_listed) },
+    // Any ONE contact tool counts. A business reachable by chat is reachable,
+    // and three separate weights would count the same quality three times.
+    { name: "booking, chat or call handling", value: toolingValue },
+    { name: "business hours", value: bool(row.has_business_hours) },
+  ]);
+
+  const credible = sub("Credible", [
+    { name: "reviews linked", value: bool(row.reviews_linked) },
+    {
+      name: "multiple service areas",
+      value: typeof row.service_area_count === "number"
+        ? (row.service_area_count >= 3 ? 1 : 0)
+        : null,
+    },
+    { name: "FAQ or blog", value: bool(row.has_faq_or_blog) },
+  ]);
+
   const signals: DtiSignal[] = [
     {
-      key: "site_alive", label: "Website is live",
-      weight: weightOf(weights, DTI_CONFIG_KEYS.siteAlive),
-      value: row.site_state == null ? null : row.site_state === "alive" ? 1 : 0,
-      detail: row.site_state == null ? "not checked" : `site_state = ${row.site_state}`,
+      key: "findable", label: "Findable",
+      weight: weightOf(weights, DTI_CONFIG_KEYS.findable),
+      value: findable.value, detail: findable.detail,
+      parts: findable.parts,
     },
     {
-      key: "schema_org", label: "Machine-readable (schema.org)",
-      weight: weightOf(weights, DTI_CONFIG_KEYS.schemaOrg),
-      value: bool(row.has_schema_org),
-      detail: row.has_schema_org == null ? "not checked"
-        : row.has_schema_org ? "structured data present" : "no structured data",
+      key: "reachable", label: "Reachable",
+      weight: weightOf(weights, DTI_CONFIG_KEYS.reachable),
+      value: reachable.value, detail: reachable.detail,
+      parts: reachable.parts,
     },
     {
-      key: "domain_age", label: "Established domain",
-      weight: weightOf(weights, DTI_CONFIG_KEYS.domainAge),
-      value: ageValue, detail: ageDetail,
-    },
-    {
-      key: "contact_tooling", label: "Contact tooling",
-      weight: weightOf(weights, DTI_CONFIG_KEYS.contactTooling),
-      value: toolingValue,
-      detail: !toolingKnown ? "not checked"
-        : toolingNames.length ? toolingNames.join(", ") : "none detected",
-    },
-    {
-      key: "analytics", label: "Site is maintained",
-      weight: weightOf(weights, DTI_CONFIG_KEYS.analytics),
-      value: bool(row.analytics_pixels),
-      detail: row.analytics_pixels == null ? "not checked"
-        : row.analytics_pixels ? "analytics present" : "no analytics",
+      key: "credible", label: "Credible",
+      weight: weightOf(weights, DTI_CONFIG_KEYS.credible),
+      value: credible.value, detail: credible.detail,
+      parts: credible.parts,
     },
   ];
 

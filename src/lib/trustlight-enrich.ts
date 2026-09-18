@@ -61,6 +61,15 @@ export type EnrichResult = {
   domain_registered_on: string | null;
   domain_registrar: string | null;
   signal_confidence: string | null;
+  // The seven signals. NULL on every failure path, like everything else here.
+  has_https: boolean | null;
+  has_viewport: boolean | null;
+  phone_listed: boolean | null;
+  has_business_hours: boolean | null;
+  reviews_linked: boolean | null;
+  has_faq_or_blog: boolean | null;
+  service_area_count: number | null;
+  service_areas: string[] | null;
   /** Operator-facing explanation. Not a column; returned to the caller. */
   note: string;
 };
@@ -240,6 +249,178 @@ function detect(html: string) {
   return hits;
 }
 
+
+// ── THE SEVEN SIGNALS ───────────────────────────────────────────────────────
+// Added 2026-09-17 after measuring thirteen candidates against 36 real
+// contractor homepages. Six were rejected and the reasons are in migration
+// 135; the short version is that a signal we detect wrongly is worse than one
+// we do not measure, because the score has to survive a contractor disputing
+// it.
+
+/**
+ * Cities we have actually seen, from coldcall_leads.city.
+ *
+ * This is the whole defence of the service-area detector. Without it, reading
+ * capitalised words after a "Service Areas" heading harvested "Fascia",
+ * "Soffit", "Please", "Links", a form label and, on one site, the owner's
+ * name. A bare token only counts as a service area if it is a city we hold
+ * independently.
+ *
+ * Known limit, stated rather than hidden: it only recognises cities in our
+ * coverage area, so a contractor listing a town we have never scraped is
+ * under-counted. That is the safe direction — we never invent a service area
+ * a business does not claim.
+ */
+const CITY_GAZETTEER = new Set([
+  "abita springs", "ama", "amite city", "angie", "arabi", "avondale",
+  "bay st louis", "belle chasse", "bogalusa", "bourg", "boutte",
+  "bridge city", "buras", "bush", "carriere", "chalmette", "chauvin",
+  "convent", "covington", "cut off", "des allemands", "destrehan",
+  "diamondhead", "dulac", "edgard", "elmwood", "estelle", "folsom",
+  "franklinton", "galliano", "garyville", "golden meadow", "gramercy",
+  "gray", "gretna", "hahnville", "hammond", "harahan", "harvey", "hester",
+  "houma", "independence", "jefferson", "kenner", "kentwood", "kiln",
+  "lacombe", "lafitte", "laplace", "larose", "lockport", "loranger",
+  "luling", "lutcher", "madisonville", "mandeville", "marrero", "mathews",
+  "meraux", "metairie", "montegut", "montz", "mt hermon", "new orleans",
+  "new sarpy", "norco", "paradis", "paulina", "pearl river", "pearlington",
+  "picayune", "ponchatoula", "poplarville", "port sulphur", "raceland",
+  "reserve", "river ridge", "robert", "roseland", "schriever", "slidell",
+  "st bernard", "st rose", "terrytown", "theriot", "thibodaux", "tickfaw",
+  "vacherie", "venice", "violet", "waveland", "westwego",
+]);
+
+const US_STATES_RE = "AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY";
+
+/** A token before a city name meaning we are reading a STREET ADDRESS. Every
+ *  site has one, and counting it would credit a business for having premises. */
+const STREET_TOKENS = new Set(["street","st","avenue","ave","road","rd","drive","dr","lane","ln",
+  "boulevard","blvd","highway","hwy","way","court","ct","place","pl","circle","cir","parkway","pkwy",
+  "suite","ste","unit","apt","floor","fl","box","route","rt","terrace","ter","trail","trl","loop"]);
+
+// "new" is NOT here, deliberately. It is a legitimate first word — New Orleans
+// is the commonest city in this table at 1,661 records — and listing it caused
+// the trim to render "New Orleans" as "Orleans, LA" in the stored evidence.
+// The evidence is what a contractor gets shown when they dispute the signal,
+// so it has to be the name they actually wrote.
+const NOT_A_CITY = new Set(["the","and","in","near","serving","greater","all","we","our","your",
+  "contact","call","email","home","about","services","service","areas","area","copyright","rights",
+  "monday","tuesday","wednesday","thursday","friday","saturday","sunday","january","february","march",
+  "april","may","june","july","august","september","october","november","december"]);
+
+/** Strip script, style and tags so prose matching is not fooled by JS string
+ *  literals — the biggest source of false positives in text detection. */
+function visibleText(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/\s+/g, " ");
+}
+
+/**
+ * Distinct service-area cities named on the page.
+ *
+ * HAND-VALIDATED on 36 real contractor sites: 16 detected, 16 correct on
+ * reading the page — 100% precision. It misses 3 (two list cities with no
+ * heading; one serves parishes, not cities), so recall is about 84%. It
+ * under-counts and never invents, which is the direction that survives an
+ * argument.
+ *
+ * Two strategies, because sites use both:
+ *   1. "City, ST" anywhere, minus street addresses.
+ *   2. A bare city list under a service-area heading, filtered by the
+ *      gazetteer. Craig's Electrical lists SIXTEEN cities with no state on
+ *      any of them; strategy 1 alone saw two.
+ */
+export function serviceAreas(html: string): string[] {
+  const text = visibleText(html);
+  const cities = new Map<string, string>();
+
+  // BACKSLASHES ARE DOUBLED ON PURPOSE. This is a template literal, so `\s`
+  // would be eaten by the string parser as an escape and `\b` would become an
+  // actual backspace character before RegExp ever saw it. The first version of
+  // this line used single backslashes and matched nothing at all.
+  const re = new RegExp(
+    `(\\S+)?\\s*\\b([A-Z][a-zA-Z]+(?:\\s[A-Z][a-zA-Z]+){0,2}),\\s*(${US_STATES_RE})\\b`, "g");
+  for (const m of text.matchAll(re)) {
+    const prev = String(m[1] ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    const city = m[2].trim();
+    const st = m[3];
+    const first = city.split(/\s+/)[0].toLowerCase();
+    const last = city.split(/\s+/).slice(-1)[0].toLowerCase();
+    if (STREET_TOKENS.has(prev) || /^\d+$/.test(prev)) continue;
+    // TRIM leading non-city words, do not reject the whole match. The pattern
+    // allows three capitalised words, so "Serving Lockport, LA" captures
+    // "Serving Lockport" — rejecting it lost a real service area instead of
+    // dropping one word. Only the LAST word being junk is fatal.
+    let words = city.split(/\s+/);
+    while (words.length > 1 &&
+           (NOT_A_CITY.has(words[0].toLowerCase()) || STREET_TOKENS.has(words[0].toLowerCase()))) {
+      words = words.slice(1);
+    }
+    const trimmed = words.join(" ");
+    const first2 = words[0].toLowerCase();
+    if (NOT_A_CITY.has(first2) || NOT_A_CITY.has(last) || STREET_TOKENS.has(first2)) continue;
+    // Dedupe on the LAST word: the pattern greedily eats preceding capitalised
+    // noise ("Google Review Metairie, LA"), and counting those as distinct
+    // inflated totals past the threshold.
+    const key = `${last},${st}`.toLowerCase();
+    const display = `${trimmed.split(/\s+/).slice(-2).join(" ")}, ${st}`;
+    if (!cities.has(key) || display.length < (cities.get(key) as string).length) cities.set(key, display);
+  }
+
+  const heading = /(service area[s]?|areas? we serve|areas? served|communities we serve|where we (?:work|serve)|(?:proudly )?serving)\s*:?/i.exec(text);
+  if (heading) {
+    const from = heading.index + heading[0].length;
+    const chunk = text.slice(from, from + 400)
+      .split(/\b(?:Contact|About|Blog|Home|Services|Free Estimate|Call|Privacy|Copyright)\b/)[0];
+    for (const m of chunk.matchAll(/\b([A-Z][a-z]{2,}(?:\s(?:St\.?|Saint)?\s?[A-Z][a-z]{2,}){0,2})\b/g)) {
+      const name = m[1].trim();
+      const lower = name.toLowerCase();
+      const lastW = name.split(/\s+/).slice(-1)[0].toLowerCase();
+      if (!CITY_GAZETTEER.has(lower) && !CITY_GAZETTEER.has(lastW)) continue;
+      const bareKey = `${CITY_GAZETTEER.has(lower) ? lower : lastW},bare`;
+      if (![...cities.keys()].some((k) => k.startsWith(lastW + ","))) cities.set(bareKey, name);
+    }
+  }
+  return [...cities.values()];
+}
+
+/** >=3 distinct cities means "serves a region" rather than "has an address".
+ *  The distribution is bimodal at exactly this point. */
+export const SERVICE_AREA_THRESHOLD = 3;
+
+/** Reviews linked or embedded. All eight sampled matches were genuine Google
+ *  Maps CID, g.page review or Yelp biz links — a solid detector. */
+function detectReviewsLinked(html: string): boolean {
+  return /href=["'][^"']*(google\.[a-z.]+\/maps|search\.google\.com\/local\/reviews|g\.page\/r\/|yelp\.com\/biz)[^"']*["']/i.test(html)
+    || /(elfsight[^"']*review|trustindex|reviewsonmywebsite|shapo\.io|embedsocial|sociablekit[^"']*review|birdeye[^"']*review)/i.test(html);
+}
+
+/** schema.org openingHours. Verified against real markup on five sites. */
+function detectHours(html: string): boolean {
+  return /"openingHours(Specification)?"\s*:/i.test(html);
+}
+
+/** FAQPage schema is solid; a /faq or /blog link is a weaker proxy and is
+ *  accepted because AEO presence is genuinely either. */
+function detectFaqOrBlog(html: string): boolean {
+  return /"@type"\s*:\s*"FAQPage"/i.test(html)
+    || /href=["'][^"']*\/(faqs?|frequently-asked[a-z-]*)\/?["']/i.test(html)
+    || /href=["'][^"']*\/(blog|news|articles|resources|tips)\/?["']/i.test(html);
+}
+
+/** A tel: link. Not prose: a phone number in text may be an image caption or
+ *  a competitor's number in a testimonial. */
+const detectPhone = (html: string) => /href=["']tel:\+?[\d\-(). ]{7,}["']/i.test(html);
+
+const detectViewport = (html: string) =>
+  /<meta[^>]+name=["']?viewport["']?[^>]*>/i.test(html.slice(0, 40000));
+
 /**
  * The full probe for one record.
  *
@@ -260,6 +441,9 @@ export async function enrichSite(
     call_tracking_detail: null, ai_voice_agent_detail: null,
     platform: null, domain: null, domain_age_days: null,
     domain_registered_on: null, domain_registrar: null, signal_confidence: null,
+    has_https: null, has_viewport: null, phone_listed: null,
+    has_business_hours: null, reviews_linked: null, has_faq_or_blog: null,
+    service_area_count: null, service_areas: null,
     note, ...extra,
   });
 
@@ -317,6 +501,8 @@ export async function enrichSite(
   const age = domain ? await domainAge(domain) : { registered_on: null, age_days: null, registrar: null };
   const join = (a: string[]) => (a.length ? JSON.stringify(a) : null);
 
+  const areas = serviceAreas(html);
+
   return {
     enrichment_status: "fully_enriched",
     enriched_at: now,
@@ -340,7 +526,21 @@ export async function enrichSite(
     domain_registered_on: age.registered_on,
     domain_registrar: age.registrar,
     signal_confidence: "probed_live",
-    note: `Probed ${domain}: HTTP ${res.status}, platform ${platform}.`,
+    // ── The seven, all from this one fetched page ─────────────────────────
+    // `url` is the FINAL url after redirects, so https reflects where the
+    // visitor actually lands rather than what was typed.
+    has_https: /^https:/i.test(res.url || url),
+    has_viewport: detectViewport(html),
+    phone_listed: detectPhone(html),
+    has_business_hours: detectHours(html),
+    reviews_linked: detectReviewsLinked(html),
+    has_faq_or_blog: detectFaqOrBlog(html),
+    service_area_count: areas.length,
+    // The evidence, stored so a contractor disputing the signal can be shown
+    // exactly which cities we read off their page.
+    service_areas: areas.length ? areas : null,
+    note: `Probed ${domain}: HTTP ${res.status}, platform ${platform}, ` +
+          `${areas.length} service area(s).`,
   };
 }
 
