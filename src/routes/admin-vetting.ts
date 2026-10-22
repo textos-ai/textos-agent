@@ -680,7 +680,7 @@ app.get("/vetting/funnel", async (c) => {
 });
 
 // ── GET /api/admin/vetting/trade-options ───────────────────────────────────
-// The sixteen trades the public directory filters on.
+// The trades the public directory filters on (twenty-five since the Gulf import).
 //
 // Served rather than duplicated into the admin bundle so the picker on the
 // add-a-business form cannot drift from the vocabulary the directory actually

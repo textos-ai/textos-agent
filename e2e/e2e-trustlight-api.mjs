@@ -58,18 +58,30 @@ const PROFILE_CONTACT_FIELDS = ["phone", "website", "google_profile", "address"]
 
 // The allow-list as the public sees it (shapeUnvetted title-cases the stored
 // lowercase category). Anything outside this set must never reach the public
-// directory: 12,191 of 15,822 scraped rows are dentists, salons and car washes.
+// directory: the great majority of scraped rows are dentists, salons and car
+// washes.
+//
+// MIRRORS HOME_TRADE_CATEGORIES in src/lib/trustlight-public.ts. Duplicated
+// because this suite runs against the DEPLOYED worker and must not import from
+// src/ — if the two ever disagree, src/ is correct and this list is the bug.
+// Twenty-five since the Gulf Coast import (2026-10-21) added nine trades.
 const HOME_TRADES_STORED = new Set([
   "general contractor", "roofing contractor", "plumber", "electrician",
   "hvac contractor", "painter", "landscaper", "tree service", "gutter service",
   "fence contractor", "foundation repair", "garage door repair", "pest control",
   "pressure washing", "locksmith", "moving company",
+  "window installation", "flooring contractor", "septic service",
+  "concrete contractor", "insulation contractor", "drywall contractor",
+  "handyman", "tile contractor", "pool service",
 ]);
 const HOME_TRADES_DISPLAY = new Set([
   "General Contractor", "Roofing Contractor", "Plumber", "Electrician",
   "Hvac Contractor", "Painter", "Landscaper", "Tree Service", "Gutter Service",
   "Fence Contractor", "Foundation Repair", "Garage Door Repair", "Pest Control",
   "Pressure Washing", "Locksmith", "Moving Company",
+  "Window Installation", "Flooring Contractor", "Septic Service",
+  "Concrete Contractor", "Insulation Contractor", "Drywall Contractor",
+  "Handyman", "Tile Contractor", "Pool Service",
 ]);
 const VERIFIED_FIELDS = ["slug","name","trade","city","state","county","rating","reviews","dti","blurb","verified_year","exclusive"].sort();
 
@@ -302,8 +314,12 @@ try {
   const offList = (fAll.json.unvetted ?? []).filter((u) => !HOME_TRADES_DISPLAY.has(u.trade));
   ok("unvetted tier is restricted to home trades", offList.length === 0,
     JSON.stringify([...new Set(offList.map((u) => u.trade))].slice(0, 8)));
+  // The bound is a sanity check that the allow-list is doing SOMETHING, not an
+  // exact population count. Raised from 6000 to 8000 for the Gulf Coast import:
+  // ~4,150 Louisiana home trades + up to 2,536 new Gulf rows. The real
+  // assertion is the one above — zero off-list trades in the payload.
   ok("non-home businesses are excluded from the count",
-    fAll.json.total_unvetted > 0 && fAll.json.total_unvetted < 6000,
+    fAll.json.total_unvetted > 0 && fAll.json.total_unvetted < 8000,
     `total_unvetted=${fAll.json.total_unvetted}`);
 
   // Trade synonyms: the stored category is "roofing contractor", and before

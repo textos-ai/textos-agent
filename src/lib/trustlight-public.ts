@@ -115,6 +115,11 @@ export const PROFILE_COLS =
  * Values are the scraped `category` vocabulary exactly as stored — lowercase,
  * no variants. Confirmed against all 15,822 rows: 54 distinct categories,
  * zero differing only by case.
+ *
+ * 2026-10-21: twenty-five values, not sixteen. The Gulf Coast import (FL/AL/MS)
+ * brought nine trades the Louisiana scrape never produced. The claim above
+ * still holds for the Louisiana set; the Gulf categories were checked the same
+ * way before being added, and none of them collides with an existing value.
  */
 export const HOME_TRADE_CATEGORIES = [
   "general contractor",
@@ -133,6 +138,25 @@ export const HOME_TRADE_CATEGORIES = [
   "pressure washing",
   "locksmith",
   "moving company",
+  // ── Added 2026-10-21 with the Gulf Coast import (FL/AL/MS) ──────────
+  // Nine trades the Louisiana scrape never produced. ZERO of the 15,827
+  // existing rows carry any of these categories, verified before adding, so
+  // widening the allow-list changes nothing about which EXISTING business is
+  // publicly visible — it only admits the new Gulf rows.
+  //
+  // `handyman` was previously a SYNONYM for `general contractor` here. It is
+  // now a category in its own right, and the synonym has been removed: leaving
+  // it would canonicalise the word to `general contractor` and make all 126
+  // handyman businesses unfindable by searching the one word on their van.
+  "window installation",
+  "flooring contractor",
+  "septic service",
+  "concrete contractor",
+  "insulation contractor",
+  "drywall contractor",
+  "handyman",
+  "tile contractor",
+  "pool service",
 ] as const;
 
 /**
@@ -189,7 +213,10 @@ export const TRADE_SYNONYMS: Record<string, string> = {
   "remodeling": "general contractor",
   "remodeler": "general contractor",
   "renovation": "general contractor",
-  "handyman": "general contractor",
+  // NOTE: "handyman" used to live here, mapping to general contractor. It is a
+  // HOME_TRADE_CATEGORY of its own since 2026-10-21, so mapping it away would
+  // hide the 126 businesses stored under it from a search for their own trade.
+  // Do not reinstate it.
   // Painting
   "painting": "painter",
   "painters": "painter",
@@ -242,6 +269,52 @@ export const TRADE_SYNONYMS: Record<string, string> = {
   "movers": "moving company",
   "moving": "moving company",
   "removals": "moving company",
+  // ── Gulf Coast trades, added 2026-10-21 ─────────────────────────────
+  // The short forms are not guesses: they are the slug vocabulary the Gulf
+  // export itself used in its `category` column (windows, flooring, septic,
+  // concrete, insulation, drywall, tile, pool-service), which is the best
+  // available evidence of what these trades get called locally.
+  // Windows
+  "window": "window installation",
+  "windows": "window installation",
+  "window replacement": "window installation",
+  "window repair": "window installation",
+  // Flooring
+  "flooring": "flooring contractor",
+  "floors": "flooring contractor",
+  "floor": "flooring contractor",
+  "hardwood": "flooring contractor",
+  "carpet": "flooring contractor",
+  // Septic
+  "septic": "septic service",
+  "septic tank": "septic service",
+  "septic repair": "septic service",
+  // Concrete
+  "concrete": "concrete contractor",
+  "driveway": "concrete contractor",
+  "driveways": "concrete contractor",
+  "slab pour": "concrete contractor",
+  // Insulation
+  "insulation": "insulation contractor",
+  "spray foam": "insulation contractor",
+  "attic insulation": "insulation contractor",
+  // Drywall
+  "drywall": "drywall contractor",
+  "sheetrock": "drywall contractor",
+  "plaster": "drywall contractor",
+  // Handyman — maps to ITSELF on purpose. See the note in the general
+  // building block above: this word used to resolve to general contractor.
+  "handymen": "handyman",
+  "odd jobs": "handyman",
+  // Tile
+  "tile": "tile contractor",
+  "tiling": "tile contractor",
+  "backsplash": "tile contractor",
+  // Pools
+  "pool": "pool service",
+  "pools": "pool service",
+  "pool cleaning": "pool service",
+  "pool repair": "pool service",
 };
 
 /**

@@ -93,7 +93,7 @@ export function validateManual(
     else phoneDigits = ten;
   }
 
-  // The vocabulary is the SAME sixteen the public directory filters on. A trade
+  // The vocabulary is the SAME twenty-five the public directory filters on. A trade
   // outside it cannot be found by anyone using the site, which makes the record
   // invisible in exactly the way that has already cost four businesses.
   const category = str("category", 80);
@@ -172,7 +172,7 @@ export function validateManual(
  * `category` AND `trade` both get the operator's chosen value. The public
  * unvetted tier reads `category` and the verified tier reads `trade`; writing
  * one and not the other is precisely the split that made four paid businesses
- * invisible. The operator picked it from the canonical sixteen, so both
+ * invisible. The operator picked it from the canonical twenty-five, so both
  * columns can hold it honestly from the start.
  */
 export function manualLeadColumns(v: ValidatedManual, nowIso: string): Record<string, unknown> {
