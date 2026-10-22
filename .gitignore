@@ -31,3 +31,4 @@ docs/trustlight-south-louisiana-mission.html
 # NEVER commit these.
 victora_leads*.csv
 *_COLUMN_MAP.csv
+coldcall_leads_*.csv
