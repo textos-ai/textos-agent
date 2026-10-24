@@ -29,6 +29,10 @@ import { errBody } from "../lib/errors";
 import { log } from "../lib/logger";
 import { createSupabaseClient } from "../services/supabase";
 import { parseSettingsPatch, SETTINGS_COLS } from "../lib/coldcall-settings";
+// The ONE home-trade vocabulary. Same constant the public directory filters on
+// and the admin trade validator enforces - deliberately imported rather than
+// copied, so "home trades" cannot come to mean two different things.
+import { HOME_TRADE_CATEGORIES } from "../lib/trustlight-public";
 // One logging path, shared with the caller worklist.
 import {
   logCallAttempt, CALL_OUTCOMES, LEAD_STATUSES, STATUS_FOR_OUTCOME,
@@ -141,7 +145,11 @@ app.get("/coldcall-callers", async (c) => {
     if (rows.length < PAGE_SIZE) break;
   }
 
-  // The pool available to split right now.
+  // The pool available to split right now. BOTH numbers are returned, because
+  // the split has two modes and the admin has to see the figure for the mode
+  // actually selected BEFORE dealing leads out. Reporting only the total was
+  // misleading the moment non-trade leads were imported: 46,341 rows, of which
+  // the great majority are restaurants and dentists.
   const { count: unassignedCount, error: unErr } = await supabase
     .from("coldcall_leads")
     .select("id", { count: "exact", head: true })
@@ -152,9 +160,23 @@ app.get("/coldcall-callers", async (c) => {
     return c.json(errBody("internal", "unassigned_count_failed"), 500);
   }
 
+  const { count: unassignedTradeCount, error: unTradeErr } = await supabase
+    .from("coldcall_leads")
+    .select("id", { count: "exact", head: true })
+    .is("assigned_to", null)
+    .eq("callable", true)
+    .in("category", HOME_TRADE_CATEGORIES as unknown as string[]);
+  if (unTradeErr) {
+    log.error("[coldcall-admin] unassigned_trade_count_failed", { err: unTradeErr.message });
+    return c.json(errBody("internal", "unassigned_trade_count_failed"), 500);
+  }
+
   return c.json({
     callers: callers.map((r) => ({ ...r, assigned_leads: assigned[r.id] ?? 0 })),
     unassigned_callable: unassignedCount ?? 0,
+    // The default mode's pool. The UI shows this one unless the admin turns
+    // "Home trades only" off.
+    unassigned_callable_home_trades: unassignedTradeCount ?? 0,
   });
 });
 
@@ -1074,7 +1096,7 @@ app.post("/coldcall-leads/assign", async (c) => {
 app.post("/coldcall-leads/assign-split", async (c) => {
   const supabase = createSupabaseClient(c.env);
 
-  let body: { caller_ids?: unknown };
+  let body: { caller_ids?: unknown; home_trades_only?: unknown };
   try {
     body = await c.req.json();
   } catch {
@@ -1088,6 +1110,25 @@ app.post("/coldcall-leads/assign-split", async (c) => {
     return c.json(errBody("bad_request", "caller_ids must be a non-empty array of ids"), 400);
   }
   const requested = [...new Set(body.caller_ids as string[])];
+
+  // home_trades_only DEFAULTS TO TRUE.
+  //
+  // The default changed when the AL/FL import landed: the unassigned callable
+  // pool went from mostly contractors to roughly 28,000 non-trade businesses -
+  // restaurants, dentists, salons - because neither the pool query nor the
+  // /coldcall worklist filters on category. Splitting that pool deals a caller
+  // a book that is mostly not the thing they are selling.
+  //
+  // Passing false restores the previous behaviour EXACTLY: the whole unassigned
+  // callable pool, no category filter.
+  //
+  // No-fallbacks: a present-but-not-boolean value is refused rather than
+  // coerced, because the two modes differ by ~28,000 leads and a truthy string
+  // silently picking one of them is not a thing to find out afterwards.
+  if (body.home_trades_only !== undefined && typeof body.home_trades_only !== "boolean") {
+    return c.json(errBody("bad_request", "home_trades_only must be true or false"), 400);
+  }
+  const homeTradesOnly = body.home_trades_only === undefined ? true : body.home_trades_only;
 
   // No-fallbacks: every requested caller must exist AND be active. Silently
   // dropping an inactive id would produce a split that looks even but isn't.
@@ -1113,15 +1154,21 @@ app.post("/coldcall-leads/assign-split", async (c) => {
   // Keep the caller order the admin sent, so the split is predictable.
   const callers = requested.map((id) => found.find((r) => r.id === id)!);
 
-  // Pull the whole unassigned callable pool, best score first. Paged — the
-  // pool routinely exceeds Supabase's 1000-row cap.
+  // Pull the unassigned callable pool, best score first. Paged — the pool
+  // routinely exceeds Supabase's 1000-row cap.
+  //
+  // The ONLY thing homeTradesOnly changes is which rows enter this pool. It
+  // does not touch existing assignments, the /coldcall worklist, or hand
+  // assignment — all three read their own queries elsewhere in this file.
   const pool: string[] = [];
   for (let from = 0; ; from += PAGE_SIZE) {
-    const { data: page, error: poolErr } = await supabase
+    let q = supabase
       .from("coldcall_leads")
       .select("id")
       .is("assigned_to", null)
-      .eq("callable", true)
+      .eq("callable", true);
+    if (homeTradesOnly) q = q.in("category", HOME_TRADE_CATEGORIES as unknown as string[]);
+    const { data: page, error: poolErr } = await q
       .order("call_score", { ascending: false })
       .order("id", { ascending: true }) // stable tiebreak across pages
       .range(from, from + PAGE_SIZE - 1);
@@ -1138,6 +1185,7 @@ app.post("/coldcall-leads/assign-split", async (c) => {
     return c.json({
       assigned: 0,
       pool_size: 0,
+      home_trades_only: homeTradesOnly,
       per_caller: callers.map((r) => ({ caller_id: r.id, email: r.email, name: r.name, count: 0 })),
     });
   }
@@ -1190,9 +1238,15 @@ app.post("/coldcall-leads/assign-split", async (c) => {
     pool_size: pool.length,
     assigned: assignedTotal,
     callers: callers.length,
+    home_trades_only: homeTradesOnly,
   });
 
-  return c.json({ assigned: assignedTotal, pool_size: pool.length, per_caller: perCaller });
+  return c.json({
+    assigned: assignedTotal,
+    pool_size: pool.length,
+    home_trades_only: homeTradesOnly,
+    per_caller: perCaller,
+  });
 });
 
 export default app;
