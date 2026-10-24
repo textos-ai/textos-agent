@@ -64,7 +64,8 @@ const PROFILE_CONTACT_FIELDS = ["phone", "website", "google_profile", "address"]
 // MIRRORS HOME_TRADE_CATEGORIES in src/lib/trustlight-public.ts. Duplicated
 // because this suite runs against the DEPLOYED worker and must not import from
 // src/ — if the two ever disagree, src/ is correct and this list is the bug.
-// Twenty-five since the Gulf Coast import (2026-10-21) added nine trades.
+// Twenty-nine: the Gulf Coast import (2026-10-21) added nine, the
+// Alabama + Florida import (2026-10-24) added four.
 const HOME_TRADES_STORED = new Set([
   "general contractor", "roofing contractor", "plumber", "electrician",
   "hvac contractor", "painter", "landscaper", "tree service", "gutter service",
@@ -73,6 +74,8 @@ const HOME_TRADES_STORED = new Set([
   "window installation", "flooring contractor", "septic service",
   "concrete contractor", "insulation contractor", "drywall contractor",
   "handyman", "tile contractor", "pool service",
+  "solar panel installation", "irrigation system", "hurricane shutters",
+  "screen enclosure",
 ]);
 const HOME_TRADES_DISPLAY = new Set([
   "General Contractor", "Roofing Contractor", "Plumber", "Electrician",
@@ -82,6 +85,8 @@ const HOME_TRADES_DISPLAY = new Set([
   "Window Installation", "Flooring Contractor", "Septic Service",
   "Concrete Contractor", "Insulation Contractor", "Drywall Contractor",
   "Handyman", "Tile Contractor", "Pool Service",
+  "Solar Panel Installation", "Irrigation System", "Hurricane Shutters",
+  "Screen Enclosure",
 ]);
 const VERIFIED_FIELDS = ["slug","name","trade","city","state","county","rating","reviews","dti","blurb","verified_year","exclusive"].sort();
 
@@ -319,7 +324,7 @@ try {
   // ~4,150 Louisiana home trades + up to 2,536 new Gulf rows. The real
   // assertion is the one above — zero off-list trades in the payload.
   ok("non-home businesses are excluded from the count",
-    fAll.json.total_unvetted > 0 && fAll.json.total_unvetted < 8000,
+    fAll.json.total_unvetted > 0 && fAll.json.total_unvetted < 16000,
     `total_unvetted=${fAll.json.total_unvetted}`);
 
   // Trade synonyms: the stored category is "roofing contractor", and before

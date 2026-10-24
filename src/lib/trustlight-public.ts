@@ -116,7 +116,7 @@ export const PROFILE_COLS =
  * no variants. Confirmed against all 15,822 rows: 54 distinct categories,
  * zero differing only by case.
  *
- * 2026-10-21: twenty-five values, not sixteen. The Gulf Coast import (FL/AL/MS)
+ * 2026-10-24: twenty-nine values, not sixteen. The Gulf Coast import (FL/AL/MS)
  * brought nine trades the Louisiana scrape never produced. The claim above
  * still holds for the Louisiana set; the Gulf categories were checked the same
  * way before being added, and none of them collides with an existing value.
@@ -157,6 +157,20 @@ export const HOME_TRADE_CATEGORIES = [
   "handyman",
   "tile contractor",
   "pool service",
+  // ── Added 2026-10-24 with the Alabama + Florida import ──────────────
+  // Four trades the Gulf and Louisiana scrapes never produced. Checked the
+  // same way before adding: none collides with an existing value, and zero
+  // existing rows carry any of them, so the public directory gains only the
+  // new AL/FL rows.
+  //
+  // That import also loads ~21,000 NON-trade businesses (restaurants,
+  // dentists, salons). Those are deliberately NOT here: they are callable
+  // cold-call leads only, and stay out of the public directory exactly as the
+  // 11,674 existing Louisiana non-trades do.
+  "solar panel installation",
+  "irrigation system",
+  "hurricane shutters",
+  "screen enclosure",
 ] as const;
 
 /**
@@ -310,6 +324,23 @@ export const TRADE_SYNONYMS: Record<string, string> = {
   "tile": "tile contractor",
   "tiling": "tile contractor",
   "backsplash": "tile contractor",
+  // Solar / irrigation / storm protection (AL+FL import, 2026-10-24)
+  "solar": "solar panel installation",
+  "solar panel": "solar panel installation",
+  "solar panels": "solar panel installation",
+  "solar installer": "solar panel installation",
+  "irrigation": "irrigation system",
+  "sprinkler": "irrigation system",
+  "sprinklers": "irrigation system",
+  "sprinkler system": "irrigation system",
+  "hurricane shutter": "hurricane shutters",
+  "storm shutters": "hurricane shutters",
+  "shutters": "hurricane shutters",
+  "hurricane protection": "hurricane shutters",
+  "screen enclosures": "screen enclosure",
+  "pool cage": "screen enclosure",
+  "lanai": "screen enclosure",
+  "pool screen": "screen enclosure",
   // Pools
   "pool": "pool service",
   "pools": "pool service",

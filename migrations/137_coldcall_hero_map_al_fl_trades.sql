@@ -1,0 +1,123 @@
+-- =====================================================================
+-- Migration 137: coldcall_hero_map — four new AL/FL trades + three non-trades
+-- =====================================================================
+-- Source: "NEW IMPORT: two more lead files" brief, 2026-10-24.
+-- Apply via:
+--   https://supabase.com/dashboard/project/gnpohaxkwbvoscqhdezu/sql/new
+-- Safe to re-run: ON CONFLICT (category) DO NOTHING, so a second apply writes
+-- nothing and cannot clobber a folder re-point made by hand (the 124 pattern).
+--
+-- ── WHY ──────────────────────────────────────────────────────────────
+-- The Alabama + Florida import (wave 'al-fl-2026-10', 28,562 file rows)
+-- resolves to 53 distinct stored categories. 46 already have a
+-- coldcall_hero_map row; the seven below do not, and resolveHeroFolder() in
+-- src/lib/coldcall-demo.ts treats an unmapped category as a SEEDING BUG
+-- rather than falling back. Without these rows, 1,431 of the new leads could
+-- never get a demo.
+--
+-- This migration is a precondition of the import, not a follow-up to it.
+--
+-- ── TRADES vs NON-TRADES ─────────────────────────────────────────────
+-- This import deliberately loads BOTH, because Rob wants the non-trade
+-- businesses for other uses. The two get different treatment, and that
+-- difference is already the established convention here, not a new rule —
+-- verified against the 11,674 existing Louisiana non-trades before writing:
+--
+--   every existing non-trade category maps to folder 'generic', with the two
+--   auto categories as the only exceptions ('auto repair' -> 'auto-repair',
+--   'auto body' -> 'auto-body', which have their own image sets).
+--
+-- So the three non-trades below get 'generic'. They are deliberately NOT
+-- added to HOME_TRADE_CATEGORIES, which means no slug, no Places lookup, no
+-- DTI score and no TrustLight listing — again matching how the existing
+-- non-trades behave.
+--
+-- Note what non-trades DO get, because it is easy to miss: they are callable
+-- and they ARE in the Split-evenly pool and the /coldcall worklist, neither of
+-- which filters on category. 10,281 existing non-trades already sit in that
+-- pool.
+--
+-- ── FOLDER CHOICES (trades) ──────────────────────────────────────────
+-- From the brief. Every target folder already exists in R2 and already has a
+-- coldcall_demo_theme row (keyed on folder, migration 122), so no theme rows
+-- are added here.
+--
+--   solar panel installation -> electrician         electrical work on a roof
+--   irrigation system        -> landscaper          yard work
+--   hurricane shutters       -> general-contractor  exterior build work
+--   screen enclosure         -> general-contractor  exterior build work
+--
+-- 'irrigation system' rather than the brief's shorter "irrigation": the file's
+-- own category_raw is "irrigation system", and every other value in this
+-- import's mapping table takes the file's human name. Flagged to Rob.
+--
+-- NOT in this file: 'locksmith'. The brief lists it as a new trade mapping to
+-- 'generic', but it has been a HOME_TRADE_CATEGORY since the original sixteen
+-- and migration 120 already seeded ('locksmith','generic'). Nothing to add —
+-- its 305 rows in this import resolve against the existing row.
+--
+-- ── ALSO NOT IN THIS FILE ────────────────────────────────────────────
+-- Adding the four trades to HOME_TRADE_CATEGORIES (src/lib/trustlight-public.ts
+-- and scripts/bulk-enrich/home-trades.mjs) is a code change in the same
+-- commit, not SQL. There is no DB CHECK on coldcall_leads.category or .trade
+-- to widen.
+-- =====================================================================
+
+INSERT INTO public.coldcall_hero_map (category, folder) VALUES
+  -- ── new HOME TRADES (also added to HOME_TRADE_CATEGORIES in code) ──
+  ('solar panel installation', 'electrician'),
+  ('irrigation system',        'landscaper'),
+  ('hurricane shutters',       'general-contractor'),
+  ('screen enclosure',         'general-contractor'),
+  -- ── new NON-TRADES: 'generic', per the existing convention ──
+  ('food truck',               'generic'),
+  ('auto detailing',           'generic'),
+  ('wedding photographer',     'generic')
+ON CONFLICT (category) DO NOTHING;
+
+
+-- == Verify (paste after applying) =============================================
+-- All seven exist and point where this file says — expect 7 rows:
+--   SELECT category, folder FROM public.coldcall_hero_map
+--    WHERE category IN ('solar panel installation','irrigation system',
+--                       'hurricane shutters','screen enclosure','food truck',
+--                       'auto detailing','wedding photographer')
+--    ORDER BY folder, category;
+--
+-- Every hero-map folder still has a theme — expect 0 rows:
+--   SELECT DISTINCT m.folder
+--     FROM public.coldcall_hero_map m
+--     LEFT JOIN public.coldcall_demo_theme t ON t.folder = m.folder
+--    WHERE t.folder IS NULL;
+--
+-- The non-trade convention still holds — every non-auto non-trade on
+-- 'generic'. Expect only the two auto rows outside it:
+--   SELECT folder, count(*) FROM public.coldcall_hero_map GROUP BY 1 ORDER BY 2 DESC;
+--
+-- Total hero_map size — expect 70 (63 + 7):
+--   SELECT count(*) FROM public.coldcall_hero_map;
+--
+-- THE IMPORT GATE. All 53 categories this wave loads must resolve; the
+-- importer refuses to write unless this returns 0 rows:
+--   SELECT c.category
+--     FROM (VALUES ('solar panel installation'),('irrigation system'),
+--                  ('hurricane shutters'),('screen enclosure'),('food truck'),
+--                  ('auto detailing'),('wedding photographer'),
+--                  ('locksmith'),('tile contractor'),('window installation'),
+--                  ('flooring contractor'),('concrete contractor'),
+--                  ('insulation contractor'),('drywall contractor'),
+--                  ('handyman'),('pool service'),('septic service'),
+--                  ('gutter service'),('fence contractor'),('hvac contractor'),
+--                  ('moving company'),('roofing contractor'),('electrician'),
+--                  ('plumber'),('painter'),('landscaper'),('pressure washing'),
+--                  ('garage door repair'),('foundation repair'),
+--                  ('restaurant'),('auto repair'),('real estate agency'),
+--                  ('insurance agency'),('hair salon'),('dentist'),('doctor'),
+--                  ('accountant'),('beauty salon'),('event venue'),
+--                  ('barber shop'),('cafe'),('bakery'),('laundry'),
+--                  ('physical therapy'),('gym'),('catering service'),
+--                  ('car wash'),('bar'),('spa'),('nail salon'),('florist'),
+--                  ('pet store'),('yoga studio')) AS c(category)
+--     LEFT JOIN public.coldcall_hero_map m ON m.category = c.category
+--    WHERE m.category IS NULL;
+-- =====================================================================
