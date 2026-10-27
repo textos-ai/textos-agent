@@ -398,8 +398,18 @@ app.get("/coldcall-activity", async (c) => {
 // ── GET /api/admin/coldcall-leads ──────────────────────────────────────────
 // The hand-pick browser. Filters: q (name), market, parish, category, status,
 // assigned (unassigned | any | <caller_id>), callable (all | only | not),
-// demo (all | has | none), and the enrichment chips: hijack, no_website,
-// dead_site, no_voice.
+// demo (all | has | none), trades_only (1 | 0), and the enrichment chips:
+// hijack, no_website, dead_site, no_voice.
+//
+// Every filter ANDs with every other one, because they all go through the same
+// withFilters() builder.
+//
+// trades_only DEFAULTS TO OFF here, even though the admin UI turns it on by
+// default. The two are deliberately different: this endpoint is also read by
+// scripts/e2e-demo-filter.mjs and scripts/probe-demo-all.mjs, which assert that
+// an unfiltered browse totals EVERY lead. Flipping the server-side default
+// would quietly change what "no filters" means for anything that already calls
+// this route. The UI opts in explicitly instead.
 //
 // Each row carries its demo site (slug + status) or null, so the list can link
 // straight to /demo/{slug} without a second round trip per lead.
@@ -437,6 +447,16 @@ app.get("/coldcall-leads", async (c) => {
   }
   const demoEmbed = DEMO_EMBED[demo];
 
+  // trades_only: '1' | '0' | absent. Halt loudly on anything else rather than
+  // treating it as falsy - the difference is ~28,000 rows, and a typo silently
+  // showing the unfiltered list is exactly the kind of quiet wrong answer the
+  // no-fallbacks rule exists for.
+  const tradesRaw = c.req.query("trades_only");
+  if (tradesRaw !== undefined && tradesRaw !== "1" && tradesRaw !== "0") {
+    return c.json(errBody("bad_request", `trades_only must be '1' or '0', got '${tradesRaw}'`), 400);
+  }
+  const tradesOnly = tradesRaw === "1";
+
   // Every filter lives here so the row query and the ids_only query can never
   // drift apart — "select all N matching" must mean the same N the table shows.
   const withFilters = <T extends { ilike: Function; eq: Function; is: Function }>(qq: T): T => {
@@ -466,6 +486,12 @@ app.get("/coldcall-leads", async (c) => {
     // demo=has is already enforced by the !inner join in the select string.
     // demo=none needs the explicit "the left join produced nothing" test.
     if (demo === "none") x = x.is("coldcall_demo_sites", null);
+
+    // Home trades only. Lives HERE rather than at either call site so the row
+    // query, the exact count and the ids_only "select all N matching" query can
+    // never disagree about what the filter set is - the same reason every other
+    // filter is in this function.
+    if (tradesOnly) x = x.in("category", HOME_TRADE_CATEGORIES as unknown as string[]);
     return x as T;
   };
 
@@ -502,6 +528,10 @@ app.get("/coldcall-leads", async (c) => {
       parishes: sorted(parishes),
       categories: sorted(categories),
       statuses: LEAD_STATUSES,
+      // The home-trade vocabulary, so the UI can narrow its category dropdown
+      // to trades without keeping a second copy of the list. Same constant the
+      // trades_only filter above applies and the public directory reads.
+      home_trades: HOME_TRADE_CATEGORIES,
     });
   }
 
