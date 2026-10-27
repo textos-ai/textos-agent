@@ -14,10 +14,48 @@ worker-configuration.d.ts
 .idea/
 .vscode/
 # scripts/ is a scratch drawer - 60+ one-off debug and diagnostic scripts.
-# It stays ignored. The TrustLight end-to-end suites used to live here, which
-# meant the only verification of the public API existed on one machine and in
-# no commit; they are tracked under e2e/ instead.
-scripts/
+# It stays ignored BY DEFAULT. The TrustLight end-to-end suites used to live
+# here, which meant the only verification of the public API existed on one
+# machine and in no commit; they are tracked under e2e/ instead.
+#
+# 2026-10-27: the same thing had happened again, to the LEAD IMPORT PIPELINE.
+# The importer with its three regional profiles, the --wave and --trades-only
+# scoping, the write-retry that is the only reason a full enrichment pass can
+# finish, and the shared home-trade vocabulary all existed on exactly one
+# machine. Three imports (Louisiana, Gulf Coast, Alabama+Florida) had been run
+# with tooling that no commit contained.
+#
+# So the pipeline is now tracked, file by file. The ignore covers DATA, never
+# code:
+#   - lead CSVs are matched above (victora_leads*.csv, coldcall_leads_*.csv)
+#   - run checkpoints live in %TEMP%, never in the repo
+#   - per-business snapshots and logs stay ignored by the catch-all below
+#
+# Anything NOT listed here is still ignored, which keeps the drawer a drawer.
+# To track a new pipeline script, add a '!' line for it - do not un-ignore the
+# directory.
+scripts/*
+!scripts/IMPORTS.md
+!scripts/import-coldcall-leads.mjs
+!scripts/al-fl-category-map.mjs
+
+# The bulk-enrich pipeline. The directory has to be re-included before any file
+# inside it can be: git will not re-include a file whose parent is excluded.
+!scripts/bulk-enrich/
+scripts/bulk-enrich/*
+!scripts/bulk-enrich/home-trades.mjs
+!scripts/bulk-enrich/run.mjs
+!scripts/bulk-enrich/slugs.mjs
+!scripts/bulk-enrich/places-run.mjs
+!scripts/bulk-enrich/parish-backfill.mjs
+!scripts/bulk-enrich/parish-gazetteer.json
+!scripts/bulk-enrich/verify-all.mjs
+# enrich.mjs and dti.mjs are esbuild bundles of src/lib/trustlight-enrich.ts and
+# src/lib/trustlight-dti.ts. Tracked because run.mjs imports them and will not
+# start without them - a checkout that cannot run the pipeline is the problem
+# this change exists to fix. Regenerate them from src/, never hand-edit.
+!scripts/bulk-enrich/enrich.mjs
+!scripts/bulk-enrich/dti.mjs
 test-fetch.js
 
 # scratch / debug scripts
