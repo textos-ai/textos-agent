@@ -131,7 +131,7 @@ hand assignment filters on category. Split evenly does, by default, since
 |---|---|---|---|
 | (Louisiana, untagged) | `louisiana` | 15,822 | first load, 2026-08. 47-column export. |
 | `gulf-coast-2026-10` | `gulf-coast` | 2,536 | of 2,585: −21 collisions, −28 LA/GA rows. |
-| `al-fl-2026-10` | `al-fl` | 27,978 | of 28,562: −20 non-AL/FL, −11 cross-file dupes, −553 collisions. 6,968 trades / 21,010 non-trades. |
+| `al-fl-2026-10` | `al-fl` | 27,978 | of 28,562: −20 non-AL/FL, −11 cross-file dupes, −553 collisions. 6,968 trades / 21,010 non-trades. Enriched trades-only, 6,020 scored. |
 
 Table total after all three: **46,341**.
 
@@ -157,10 +157,37 @@ Table total after all three: **46,341**.
 
 ## Things that bite
 
+**`node` can abort with exit 127 and no error line.** On Node 24 / Windows a
+run can die with `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file
+src\win\async.c` and exit **127**. That is the runtime aborting, NOT "command
+not found", and it swallows whatever was being printed. It killed the AL/FL
+probe at 2,575 of 5,172. Two consequences:
+
+- **A wrapper's exit code hides it.** `node run.mjs ... ; echo EXIT=$?` exits 0
+  because the `echo` succeeded, so a background runner reports success. Check
+  the script's own last line, not the shell's status.
+- **Just re-run it.** The checkpoint (`%TEMP%/trustlight-bulk-enrich/done.jsonl`)
+  means a resume reprobes nothing. AL/FL finished on the second pass with no
+  duplicated work and no double writes.
+
+**A degraded network turns the probe into an overnight job, silently.** The
+AL/FL trades-only pass was estimated at ~1.6 h and took **20.6 h** for 2,577
+rows: throughput decayed from 1.7/sec to ~0.03/sec and stayed there, because
+there is no per-request timeout floor and no stall detector. The run keeps
+crawling rather than failing, and the only symptom is the `/sec` figure in the
+progress line. **Watch that number.** If it collapses by more than ~5x and
+stays down, kill the run and restart later - the checkpoint makes that free.
+Worth fixing before the next wave: a hard per-request timeout plus a throughput
+floor that aborts.
+
 **`run.mjs` dies on one bad write.** It used to `process.exit(1)` on any single
 Supabase error; over a half-hour pass a transient `TypeError: fetch failed` is
 near-certain, and it killed two runs at 4 and 60 rows. Every write now goes
-through `writeWithRetry` — 3 attempts, 500ms/1500ms. A genuine refusal still
+through `writeWithRetry` — 3 attempts, 500ms/1500ms. It fires regularly and
+recovers: 4 times on the AL/FL probe (`TypeError: fetch failed`) and once on the
+score pass, where Supabase answered with an HTML **502 Bad Gateway** instead of
+a JSON error — so a non-JSON body has to count as retryable too. A genuine
+refusal still
 exits non-zero, just later. **Reads are not covered**: `readAll` can still die
 on a flaky connection. `--score` is idempotent, so just re-run it.
 
