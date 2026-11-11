@@ -44,7 +44,7 @@ function stripFences(s: string): string {
 
 async function fetchPageText(url: string): Promise<string> {
   const res = await fetch(url, {
-    headers: { "User-Agent": "TextOS-Agent/1.0 (research bot)" },
+    headers: { "User-Agent": "Victora-Agent/1.0 (research bot)" },
     redirect: "follow",
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
