@@ -127,7 +127,7 @@ export async function runMatchVerifyLeads(tc: TaskCtx): Promise<TaskResult> {
         const r = await fetch(lead.url, {
           method: "GET",
           redirect: "follow",
-          headers: { "User-Agent": "Mozilla/5.0 (compatible; TextOS-LeadVerify/1.0)" },
+          headers: { "User-Agent": "Mozilla/5.0 (compatible; Victora-LeadVerify/1.0)" },
         });
         deadLink = r.status === 404 || r.status === 410;
       } catch { deadLink = true; }

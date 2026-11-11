@@ -254,7 +254,7 @@ export const c_tx_bind: ComponentCatalogEntry = {
   text_mode: 'visual-only',
   text_mode_notes: 'Text mode: present final number, no live preview.',
   reliability_tier: 'core',
-  reliability_notes: 'Custom TextOS helper. Expression evaluator uses new Function() — safe in our context (LLM-generated expressions are sanitized + sandboxed).',
+  reliability_notes: 'Custom Victora helper. Expression evaluator uses new Function() — safe in our context (LLM-generated expressions are sanitized + sandboxed).',
   source_verification: 'custom',
   archetype_fits: ['calculator'],
   example_usage: 'Calculator with live-updating projection as inputs change.',

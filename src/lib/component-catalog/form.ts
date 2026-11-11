@@ -664,7 +664,7 @@ export const c_star_rating: ComponentCatalogEntry = {
   text_mode: 'adapted',
   text_mode_notes: 'Telegram: 5 inline-keyboard buttons "★ ★★ ★★★ ★★★★ ★★★★★".',
   reliability_tier: 'core',
-  reliability_notes: 'Custom TextOS component. Pure CSS+JS, no third-party deps.',
+  reliability_notes: 'Custom Victora component. Pure CSS+JS, no third-party deps.',
   source_verification: 'custom',
   archetype_fits: ['assessment'],
   example_usage: 'Self-assessment ratings on rubric questions.',

@@ -38,7 +38,7 @@ OPERATOR SCHOOL CONTEXT:
 - Vibe coders are becoming operators whether they realize it or not
 - Audience: young first-time entrepreneurs, vibe coders, solopreneurs who can build but have never run a business
 
-TEXTOS CAPABILITIES (use these as source material):
+VICTORA CAPABILITIES (use these as source material):
 - Business entity setup (LLC vs C-Corp, tax structure, exit strategy)
 - Trademark searches
 - Mission/vision documents

@@ -1,7 +1,7 @@
 import type { TaskCtx, TaskResult } from "./types";
 import { extractErrorMessage } from "../extract-error";
 
-const SYSTEM = `You are the TextOS research agent — a world-class business strategist and market researcher.
+const SYSTEM = `You are the Victora research agent — a world-class business strategist and market researcher.
 Your output feeds every downstream task, so be thorough and precise.
 Return ONLY a valid JSON object. No markdown fences, no prose, no explanation — just the JSON object starting with { and ending with }.`;
 
@@ -10,7 +10,7 @@ Return ONLY a valid JSON object. No markdown fences, no prose, no explanation �
 // TextOS's autonomous engine (ad ops, paywall, digital product fulfillment) only
 // works for businesses that can be operated end-to-end through the internet.
 const ONLINE_ONLY_CONSTRAINT = `CRITICAL CONSTRAINT — ONLINE-ONLY BUSINESSES:
-TextOS operates businesses fully autonomously. Every business you propose MUST be runnable 100% online with no human-in-the-loop physical operations. The business must:
+Victora operates businesses fully autonomously. Every business you propose MUST be runnable 100% online with no human-in-the-loop physical operations. The business must:
 - Sell digital products, software, content, or remote services
 - Require NO physical inventory, NO in-person services, NO location-dependent operations
 - Be fulfillable end-to-end through the internet (payment, delivery, customer interaction)

@@ -28,7 +28,7 @@ import {
 } from "./facts";
 
 export interface JsonLdOptions {
-  canonicalUrl: string;   // absolute, e.g. https://app.textos.ai/sites/jkqualityelectric
+  canonicalUrl: string;   // absolute, e.g. https://app.victora.ai/sites/jkqualityelectric
   /** The site's HOME url. The business entity is anchored here, not to the page
    *  being rendered — see the @id note below. */
   siteHomeUrl: string;

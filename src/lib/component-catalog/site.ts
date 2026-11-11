@@ -64,7 +64,7 @@ export const c_site_nav: ComponentCatalogEntry = {
   mobile_responsive: true,
   text_mode: 'visual-only',
   reliability_tier: 'core',
-  reliability_notes: 'Custom TextOS component. No vendor JS — the drawer toggle is a 3-line inline listener.',
+  reliability_notes: 'Custom Victora component. No vendor JS — the drawer toggle is a 3-line inline listener.',
   archetype_fits: ['site'],
   capabilities: {
     when_to_use:
@@ -121,7 +121,7 @@ export const c_site_footer: ComponentCatalogEntry = {
   mobile_responsive: true,
   text_mode: 'visual-only',
   reliability_tier: 'core',
-  reliability_notes: 'Custom TextOS component. Static markup, no JS.',
+  reliability_notes: 'Custom Victora component. Static markup, no JS.',
   archetype_fits: ['site'],
   capabilities: {
     when_to_use: 'The footer of a public client site. Use once per page, last element before any fixed bars.',
@@ -146,7 +146,7 @@ export const c_mobile_sticky_bar: ComponentCatalogEntry = {
   mobile_responsive: true,
   text_mode: 'visual-only',
   reliability_tier: 'core',
-  reliability_notes: 'Custom TextOS component. Visibility is pure CSS media query — no JS.',
+  reliability_notes: 'Custom Victora component. Visibility is pure CSS media query — no JS.',
   archetype_fits: ['site'],
   capabilities: {
     when_to_use: 'Persistent call/book actions on mobile for a local service business.',
@@ -176,7 +176,7 @@ export const c_star_rating_static: ComponentCatalogEntry = {
   text_mode_notes: 'Telegram: render as literal "★★★★☆".',
   reliability_tier: 'core',
   reliability_notes:
-    'Custom TextOS component. Display-only sibling of `star-rating`. Currently unused on rendered sites — the reviews section shows its empty state until a real google_place_id exists (AI-generated review content is prohibited).',
+    'Custom Victora component. Display-only sibling of `star-rating`. Currently unused on rendered sites — the reviews section shows its empty state until a real google_place_id exists (AI-generated review content is prohibited).',
   archetype_fits: ['site'],
   capabilities: {
     when_to_use: 'Showing an existing, real rating next to a review or an aggregate badge. Never for collecting input — use `star-rating` for that.',
@@ -242,7 +242,7 @@ export const c_hero_media: ComponentCatalogEntry = {
   text_mode_notes: 'Telegram: headline + subhead as text, CTAs as inline-keyboard buttons, trust items as a bullet line.',
   reliability_tier: 'core',
   reliability_notes:
-    'Custom TextOS component. No vendor JS; video uses native autoplay/muted/loop/playsinline and always carries a poster frame.',
+    'Custom Victora component. No vendor JS; video uses native autoplay/muted/loop/playsinline and always carries a poster frame.',
   archetype_fits: ['site'],
   capabilities: {
     when_to_use:
@@ -321,7 +321,7 @@ export const c_page_hero: ComponentCatalogEntry = {
   mobile_responsive: true,
   text_mode: 'adapted',
   reliability_tier: 'core',
-  reliability_notes: 'Custom TextOS component. Static markup, no JS.',
+  reliability_notes: 'Custom Victora component. Static markup, no JS.',
   archetype_fits: ['site'],
   capabilities: {
     when_to_use:
@@ -378,7 +378,7 @@ export const c_map_embed_osm: ComponentCatalogEntry = {
   text_mode: 'adapted',
   reliability_tier: 'core',
   reliability_notes:
-    'Custom TextOS component. No JS and no API key. Third-party iframe: it will not render where the network blocks openstreetmap.org, which is why the caller only composes it when the area has real coordinates.',
+    'Custom Victora component. No JS and no API key. Third-party iframe: it will not render where the network blocks openstreetmap.org, which is why the caller only composes it when the area has real coordinates.',
   archetype_fits: ['site'],
   capabilities: {
     when_to_use:
