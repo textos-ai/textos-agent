@@ -8,7 +8,6 @@ import {
   setUserHandle,
   upsertUser,
 } from "../services/supabase";
-import { createCnameRecord } from "../services/cloudflare";
 import { errBody } from "../lib/errors";
 import { log } from "../lib/logger";
 
@@ -119,30 +118,10 @@ app.post("/", async (c) => {
     return c.json(errBody("upstream_error", msg), 502);
   }
 
-  // Provision DNS. Non-fatal — the wildcard `*.app.textos.ai` CNAME
-  // catches the request anyway, so we tolerate failures here and return
-  // success on the handle reservation. The DNS field in the response
-  // tells the frontend whether the per-handle record was created.
-  let dnsResult: unknown = null;
-  let dnsError: string | null = null;
-  try {
-    const record = await createCnameRecord(
-      c.env,
-      `${handle}.app`,
-      "textos-web.pages.dev",
-    );
-    dnsResult = { id: record.id, name: record.name, proxied: record.proxied };
-  } catch (err) {
-    dnsError = err instanceof Error ? err.message : String(err);
-    log.warn("handle_dns_failed", { err: dnsError, handle });
-  }
-
+  // A handle is a username only — it has no public page or URL.
   return c.json({
     handle,
     user_id: auth.user_id,
-    url: `https://${handle}.app.textos.ai`,
-    dns: dnsResult,
-    dns_error: dnsError,
   });
 });
 

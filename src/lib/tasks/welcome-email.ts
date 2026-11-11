@@ -109,8 +109,17 @@ export async function runWelcomeEmail(tc: TaskCtx): Promise<TaskResult> {
     // Use fallback
   }
 
-  const websiteUrl = `https://${business.slug}.app.textos.ai`;
-  const livePageUrl = `https://app.textos.ai/business/${business.slug}/live`;
+  // All links derive from FRONTEND_URL (per-env in wrangler.toml). No
+  // default: a missing origin or slug would mail the owner a dead link.
+  const frontendUrl = env.FRONTEND_URL?.replace(/\/+$/, "");
+  if (!frontendUrl) {
+    throw new Error("welcome-email: FRONTEND_URL is not set for this environment — refusing to send links to an unknown origin");
+  }
+  if (!business.slug) {
+    throw new Error(`welcome-email: business ${business.id} has no slug — cannot build the site or live-page link`);
+  }
+  const websiteUrl = `${frontendUrl}/sites/${business.slug}`;
+  const livePageUrl = `${frontendUrl}/business/${business.slug}/live`;
 
   // Single link for completion summary email
   const linkMap = {

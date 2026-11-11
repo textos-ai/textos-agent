@@ -8,10 +8,6 @@ export interface Env {
   SUPABASE_SERVICE_ROLE_KEY: string;
   /** Supabase project JWT secret — used to verify `Authorization: Bearer <jwt>` headers. */
   SUPABASE_JWT_SECRET: string;
-  /** Cloudflare API token with DNS:Edit on the textos.ai zone. */
-  CLOUDFLARE_API_TOKEN: string;
-  /** Zone ID of the textos.ai zone. */
-  CLOUDFLARE_ZONE_ID: string;
   ENVIRONMENT: "dev" | "test" | "prod";
   /** Number of paying users required before cold emails auto-send (skipping admin approval). */
   AUTO_APPROVE_AFTER_USER_COUNT: string;
@@ -28,9 +24,9 @@ export interface Env {
   /** Feature flag: enable Google Places API calls in daycycle-connect. */
   DAYCYCLE_PLACES_ENABLED: string;
   /** Base URL of the frontend that should receive Stripe success/cancel redirects.
-   *  Set per-environment in wrangler.toml [vars]. Falls back to "https://app.textos.ai"
-   *  for safety if unset. Examples:
-   *    prod (textos-agent-dev): https://app.textos.ai
+   *  Set per-environment in wrangler.toml [vars]. No default — callers that
+   *  build links halt if it is unset. Examples:
+   *    prod (textos-agent-dev): https://app.victora.ai
    *    test (textos-agent-test): https://textos-web-test.pages.dev          */
   FRONTEND_URL?: string;
   /** KV namespace for anonymous snapshot tokens (C-Lite flow). */

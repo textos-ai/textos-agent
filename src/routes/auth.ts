@@ -16,7 +16,6 @@ import type { AnonymousSnapshot, AnonymousInput } from "../lib/anonymous-researc
 import { errBody } from "../lib/errors";
 import { log } from "../lib/logger";
 import { pickAgentName } from "../lib/agentNames";
-import { createCnameRecord } from "../services/cloudflare";
 import { checkAnonIpLimit } from "../lib/anon-guards";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -61,7 +60,8 @@ async function autoGenerateHandle(
   env: any,
   userId: string,
   email: string
-): Promise<{ handle: string; url: string } | null> {
+): Promise<{ handle: string } | null> {
+  // A handle is a username only — it has no public page or URL.
   const base = suggestHandleFromEmail(email);
 
   // Try the base suggestion first
@@ -86,26 +86,13 @@ async function autoGenerateHandle(
       // Try to claim it
       await setUserHandle(supabase, userId, candidate);
 
-      // Create DNS record (non-fatal if fails)
-      try {
-        await createCnameRecord(env, `${candidate}.app`, "textos-web.pages.dev");
-      } catch (dnsErr) {
-        log.warn("auto_handle_dns_failed", {
-          err: String(dnsErr),
-          handle: candidate
-        });
-      }
-
       log.info("auto_handle_claimed", {
         user_id: userId,
         handle: candidate,
         base_suggestion: base
       });
 
-      return {
-        handle: candidate,
-        url: `https://${candidate}.app.textos.ai`
-      };
+      return { handle: candidate };
 
     } catch (err) {
       // Handle unique violation or other errors - try next candidate

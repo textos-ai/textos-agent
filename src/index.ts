@@ -69,8 +69,6 @@ app.use(
       // Permissive CORS for /xai-fyi/* (Bearer-token protected)
       if (c.req.path.startsWith('/xai-fyi/')) return origin || '*';
       if (!origin) return origin;
-      // Allow textos.ai apex + any subdomain, plus local Astro dev ports.
-      if (/^https:\/\/([a-z0-9-]+\.)*textos\.ai$/.test(origin)) return origin;
       // Allow victora.ai apex + any subdomain (production rebrand).
       if (/^https:\/\/([a-z0-9-]+\.)*victora\.ai$/.test(origin)) return origin;
       // Allow textos-web-test.pages.dev (test frontend) + hash-prefixed previews.

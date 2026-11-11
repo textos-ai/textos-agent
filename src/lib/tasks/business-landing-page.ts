@@ -47,7 +47,10 @@ interface Call2Result {
 export async function runBusinessLandingPage(tc: TaskCtx): Promise<TaskResult> {
   const { business, ctx, anthropic, models, emit, supabase, env } = tc;
 
-  const frontendUrl = env.FRONTEND_URL ?? "https://app.textos.ai";
+  const frontendUrl = env.FRONTEND_URL;
+  if (!frontendUrl) {
+    throw new Error("business-landing-page: FRONTEND_URL is not set for this environment");
+  }
   const plannedUrl = `${frontendUrl}/sites/${business.slug}`;
 
   await emit({ type: "cmd", text: "Building your website — analyzing your business...", ts: Date.now() });

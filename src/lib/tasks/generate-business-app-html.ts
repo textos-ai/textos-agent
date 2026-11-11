@@ -132,7 +132,10 @@ export async function runGenerateBusinessAppHtml(tc: TaskCtx): Promise<TaskResul
   const { business, anthropic, models, emit, supabase, env, taskRunId } = tc;
   const handlerStart = Date.now();
 
-  const frontendUrl = env.FRONTEND_URL ?? "https://app.textos.ai";
+  const frontendUrl = env.FRONTEND_URL;
+  if (!frontendUrl) {
+    throw new Error("generate-business-app-html: FRONTEND_URL is not set for this environment");
+  }
   const agentUrl = resolveAgentUrl(env);
   const plannedUrl = `${frontendUrl}/sites/${business.slug}/app`;
 
