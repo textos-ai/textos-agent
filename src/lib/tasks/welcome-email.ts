@@ -1,5 +1,7 @@
 import type { TaskCtx, TaskResult } from "./types";
 import { extractErrorMessage } from "../extract-error";
+import { sendPlatformEmail } from "../email";
+import { log } from "../logger";
 
 function stripFences(s: string): string {
   return s.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/i, "").trim();
@@ -210,44 +212,37 @@ Return ONLY valid JSON (no markdown, no backticks):
   const htmlBody  = toHtmlBody(parsed.body, linkMap);
   const plainBody = toPlainBody(parsed.body, linkMap);
 
+  // Sent through the shared Cloudflare Email Service sender (src/lib/email.ts).
+  // The sender address comes from the database; a failed send is recorded on
+  // the business_assets row below and then fails this task loudly.
+  if (!user.email) {
+    throw new Error(`welcome-email: user ${user.id} has no email address — nothing to send to`);
+  }
   let sent = false;
   let sendError: string | undefined;
+  let messageId: string | undefined;
+  let fromEmail: string | undefined;
 
-  if (env.SENDGRID_API_KEY && env.SENDGRID_API_KEY !== "PLACEHOLDER") {
-    await emit({ type: "cmd", text: "Sending via SendGrid", ts: Date.now() });
-    try {
-      const res = await fetch("https://api.sendgrid.com/v3/mail/send", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${env.SENDGRID_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          personalizations: [{ to: [{ email: user.email }] }],
-          from: { email: "hello@victora.ai", name: "Victora" },
-          subject: parsed.subject,
-          // SendGrid spec: text/plain MUST come before text/html when both
-          // are present (RFC 1341 — earlier parts are fallbacks).
-          content: [
-            { type: "text/plain", value: plainBody },
-            { type: "text/html",  value: htmlBody  },
-          ],
-        }),
-      });
-      sent = res.ok;
-      if (!res.ok) sendError = `SendGrid ${res.status}`;
-    } catch (err) {
-      sendError = extractErrorMessage(err);
-    }
-  } else {
-    await emit({ type: "cmd", text: "SendGrid not configured — email staged for later", ts: Date.now() });
+  await emit({ type: "cmd", text: "Sending welcome email", ts: Date.now() });
+  try {
+    const res = await sendPlatformEmail(env, supabase, {
+      to: user.email,
+      subject: parsed.subject,
+      text: plainBody,
+      html: htmlBody,
+    }, "welcome-email");
+    sent = true;
+    messageId = res.messageId;
+    fromEmail = res.from;
+  } catch (err) {
+    sendError = extractErrorMessage(err);
   }
 
   // ── Write to business_assets ────────────────────────────────────────
   // Store the token-form body (asset_text) so the dashboard preview can
   // render with the same substitution pipeline if we ever surface it.
   try {
-    await supabase.from("business_assets").insert({
+    const { error: assetErr } = await supabase.from("business_assets").insert({
       business_id: business.id,
       task_run_id: taskRunId,
       asset_type: "email",
@@ -257,14 +252,22 @@ Return ONLY valid JSON (no markdown, no backticks):
         model: models.haiku,
         subject: parsed.subject,
         to: user.email,
+        from: fromEmail ?? null,
+        provider: "cloudflare-email",
+        message_id: messageId ?? null,
         sent,
         send_error: sendError ?? null,
         html_body: htmlBody,
         plain_body: plainBody,
       },
     });
-  } catch {
-    // Non-fatal
+    if (assetErr) log.error("[welcome-email] asset_insert_failed", { business_id: business.id, sent, err: assetErr.message });
+  } catch (err) {
+    log.error("[welcome-email] asset_insert_failed", { business_id: business.id, sent, err: extractErrorMessage(err) });
+  }
+
+  if (!sent) {
+    throw new Error(`welcome-email: send failed — ${sendError}`);
   }
 
   return {
@@ -273,7 +276,7 @@ Return ONLY valid JSON (no markdown, no backticks):
       body: parsed.body,
       preview: parsed.preview,
       sent,
-      send_error: sendError ?? null,
+      message_id: messageId ?? null,
     },
   };
 }

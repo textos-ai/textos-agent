@@ -122,7 +122,8 @@ admin.post("/email-queue/:id/approve", async (c) => {
     return c.json(errBody("upstream_error", error.message), 500);
   }
 
-  // TODO Phase 3: enqueue SendGrid send job via Cloudflare Queue
+  // TODO Phase 3: approving does not send. No email provider is wired to
+  // email_queue; sending approved rows is a future phase.
   log.info("admin_email_approved", { id, approved_by: auth.user_id });
   return c.json({ ok: true });
 });

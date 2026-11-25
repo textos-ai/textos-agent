@@ -18,6 +18,7 @@ import type { Env } from "../env";
 import { requireAuth } from "../lib/jwt";
 import { createSupabaseClient } from "../services/supabase";
 import { errBody } from "../lib/errors";
+import { sendPlatformEmail } from "../lib/email";
 import { log, persistError } from "../lib/logger";
 import { stripeCustomerIdColumn } from "../lib/stripe-mode";
 import { loadUserProfile } from "../lib/user-profile";
@@ -247,8 +248,10 @@ app.post("/me/email-change", async (c) => {
     return c.json(errBody("internal", "email_change_insert_failed"), 500);
   }
 
-  // Send via SendGrid. If send fails, roll back the request row so the user
-  // can retry cleanly (no orphan pending request).
+  // Send through the shared Cloudflare Email Service sender (src/lib/email.ts,
+  // sender address from the database). If the send fails, it is logged with
+  // the provider's error, the request row is rolled back so the user can
+  // retry cleanly (no orphan pending request), and the caller gets a 502.
   const verifyLink = `${frontendUrl(c.env)}/verify-email-change?token=${encodeURIComponent(
     verification_token,
   )}`;
@@ -266,28 +269,13 @@ app.post("/me/email-change", async (c) => {
 
   let sent = false;
   let sendError: string | undefined;
-  if (c.env.SENDGRID_API_KEY && c.env.SENDGRID_API_KEY !== "PLACEHOLDER") {
-    try {
-      const sgRes = await fetch("https://api.sendgrid.com/v3/mail/send", {
-        method: "POST",
-        headers: {
-          Authorization:  `Bearer ${c.env.SENDGRID_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          personalizations: [{ to: [{ email: new_email }] }],
-          from:    { email: "hello@victora.ai", name: "Victora" },
-          subject,
-          content: [{ type: "text/plain", value: body }],
-        }),
-      });
-      sent = sgRes.ok;
-      if (!sgRes.ok) sendError = `SendGrid ${sgRes.status}: ${await sgRes.text()}`;
-    } catch (err) {
-      sendError = err instanceof Error ? err.message : String(err);
-    }
-  } else {
-    sendError = "SendGrid not configured";
+  let messageId: string | undefined;
+  try {
+    const res = await sendPlatformEmail(c.env, supabase, { to: new_email, subject, text: body }, "email-change-verification");
+    sent = true;
+    messageId = res.messageId;
+  } catch (err) {
+    sendError = err instanceof Error ? err.message : String(err);
   }
 
   if (!sent) {
@@ -307,10 +295,10 @@ app.post("/me/email-change", async (c) => {
       .from("email_change_requests")
       .delete()
       .eq("verification_token", verification_token);
-    return c.json(errBody("upstream_error", "email_send_failed"), 502);
+    return c.json(errBody("upstream_error", "email_send_failed", sendError), 502);
   }
 
-  log.info("[users] email_change_initiated", { user_id, new_email });
+  log.info("[users] email_change_initiated", { user_id, new_email, message_id: messageId });
   return c.json({ success: true, expires_at });
 });
 

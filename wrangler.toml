@@ -100,6 +100,12 @@ bucket_name = "textos-assets"
 binding = "SELF"
 service = "textos-agent-dev"
 
+# Cloudflare Email Service — outbound transactional email (src/lib/email.ts).
+# Sender address/name come from the external_apis row 'cloudflare-email', not
+# from here. No recipient restriction: any address (victora.ai is onboarded).
+[[send_email]]
+name = "EMAIL"
+
 # Production environment — same Worker, separate name + secrets.
 # [env.prod]
 # name = "textos-agent-prod"
@@ -170,3 +176,7 @@ queue = "textos-task-queue-test"
 max_batch_size = 1
 max_batch_timeout = 5
 max_retries = 3
+
+# Cloudflare Email Service — test variant (bindings are not inherited).
+[[env.test.send_email]]
+name = "EMAIL"

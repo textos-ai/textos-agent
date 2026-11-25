@@ -1656,18 +1656,21 @@ app.post("/email-approvals/:id/approve", async (c) => {
     return c.json(errBody("internal", "approve_write_failed"), 500);
   }
 
-  // The FROZEN body is sent, never a re-render.
-  const sent = await sendEmail(c.env, {
-    to: String(row.to_email), subject: String(row.subject),
-    text: String(row.body_text), html: String(row.body_html),
-    from: String(row.from_email), fromName, replyTo: String(row.from_email),
-  }, emailEnabled);
-
-  if (!sent.ok) {
+  // The FROZEN body is sent, never a re-render. sendEmail throws when it
+  // cannot send (today: always — no email provider is configured for
+  // TrustLight outreach); the row is then marked failed with the reason.
+  try {
+    await sendEmail(c.env, {
+      to: String(row.to_email), subject: String(row.subject),
+      text: String(row.body_text), html: String(row.body_html),
+      from: String(row.from_email), fromName, replyTo: String(row.from_email),
+    }, emailEnabled);
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
     await supabase.from("coldcall_email_approvals")
-      .update({ status: "failed", send_error: sent.reason.slice(0, 500) }).eq("id", id);
-    log.warn("[campaign] approved_but_not_sent", { approval_id: id, reason: sent.reason, by: auth.email });
-    return c.json(errBody("upstream_error", `approved, but not sent: ${sent.reason}`, {
+      .update({ status: "failed", send_error: reason.slice(0, 500) }).eq("id", id);
+    log.error("[campaign] approved_but_not_sent", { approval_id: id, reason, by: auth.email });
+    return c.json(errBody("upstream_error", `approved, but not sent: ${reason}`, {
       approval_id: id, approved_by: auth.email, approved_at: approvedAt, status: "failed",
     }), 502);
   }

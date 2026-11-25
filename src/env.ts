@@ -17,8 +17,9 @@ export interface Env {
   FAL_API_KEY: string;
   /** Hunter.io API key — used for cold email prospect lookup. */
   HUNTER_API_KEY: string;
-  /** SendGrid API key — used for outbound email dispatch. */
-  SENDGRID_API_KEY: string;
+  /** Cloudflare Email Service `send_email` binding (wrangler.toml, per environment).
+   *  Used only through src/lib/email.ts. */
+  EMAIL: SendEmail;
   /** Google Places API key — used by DayCycle location lookups. */
   GOOGLE_PLACES_API_KEY: string;
   /** Feature flag: enable Google Places API calls in daycycle-connect. */

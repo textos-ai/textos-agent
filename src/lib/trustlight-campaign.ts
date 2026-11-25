@@ -191,111 +191,27 @@ export function senderAllowed(from: string): { ok: true } | { ok: false; reason:
 }
 
 /**
- * Is the sending domain actually authenticated in SendGrid?
+ * TrustLight outreach has NO email provider.
  *
- * Asked before every send rather than assumed from a config flag, so notify
- * HALTS on its own until the domain is really verified — nobody has to
- * remember to flip a switch when it is, and nobody can flip one when it is
- * not. Fails CLOSED: any error, any ambiguity, no send.
+ * The previous provider was removed in the move to Cloudflare Email Service,
+ * and TrustLight outreach was deliberately NOT migrated: Victora's
+ * Cloudflare sender is for Victora's own transactional mail, and TrustLight
+ * mail must never come from victora.ai (see ALLOWED_SENDER_DOMAIN).
+ *
+ * So every send throws, loudly, before any network call. The approval flow,
+ * the frozen bodies and the coldcall_* tables are untouched; wiring a real
+ * provider here is a separate, deliberate decision.
  */
-export async function senderDomainVerified(
-  env: Env,
-  domain = ALLOWED_SENDER_DOMAIN,
-): Promise<{ ok: true } | { ok: false; reason: string }> {
-  if (!env.SENDGRID_API_KEY || env.SENDGRID_API_KEY === "PLACEHOLDER") {
-    return { ok: false, reason: "SENDGRID_API_KEY is not configured" };
-  }
-  try {
-    const res = await fetch(
-      `https://api.sendgrid.com/v3/whitelabel/domains?domain=${encodeURIComponent(domain)}&limit=50`,
-      { headers: { Authorization: `Bearer ${env.SENDGRID_API_KEY}` } },
-    );
-    if (!res.ok) {
-      return { ok: false, reason: `could not check domain authentication (SendGrid ${res.status})` };
-    }
-    const list = (await res.json()) as Array<{ domain?: string; valid?: boolean }>;
-    const match = (Array.isArray(list) ? list : []).find(
-      (d) => String(d.domain ?? "").toLowerCase() === domain.toLowerCase(),
-    );
-    if (!match) return { ok: false, reason: `${domain} is not set up for domain authentication in SendGrid` };
-    if (!match.valid) return { ok: false, reason: `${domain} is present in SendGrid but not yet validated (DNS still pending)` };
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, reason: `domain check failed: ${err instanceof Error ? err.message : String(err)}` };
-  }
-}
+export const NO_TRUSTLIGHT_EMAIL_PROVIDER =
+  "No email provider is configured for TrustLight outreach, so nothing was sent.";
 
-/**
- * Send via SendGrid, matching the call already used by welcome-email.ts.
- *
- * Not extracted into a shared service: the only two existing senders inline
- * this same fetch, and refactoring them is outside this brief. Logged as a
- * candidate rather than done opportunistically.
- *
- * Returns ok:false with a reason instead of throwing, so a failed send never
- * takes down the endpoint that called it — the caller decides what to do.
- */
 export async function sendEmail(
-  env: Env,
+  _env: Env,
   msg: { to: string; subject: string; text: string; html: string; from: string; fromName: string; replyTo?: string },
-  enabled: string | undefined,
-): Promise<{ ok: true } | { ok: false; reason: string }> {
-  // ── SENDING IS STUBBED ──────────────────────────────────────────────
-  // Rob's instruction: build the campaign, but wire nothing that can actually
-  // send — in ANY environment — until the content and a test plan are signed
-  // off. This returns BEFORE any network call is made.
-  //
-  // The gate is a config row rather than a code edit, so enabling it later is
-  // a deliberate, reversible act that leaves a trail. The row is absent by
-  // design, so the default everywhere is "cannot send".
-  // Structural refusal first: never even attempt a send from the wrong domain.
-  const allowed = senderAllowed(msg.from);
-  if (!allowed.ok) {
-    log.error("[trustlight] sender_domain_refused", { from: msg.from });
-    return { ok: false, reason: allowed.reason };
-  }
-  if (enabled !== "true") {
-    log.warn("[trustlight] email_send_stubbed", {
-      to: msg.to, subject: msg.subject,
-      note: "set coldcall_config.trustlight_email_enabled='true' to allow real sends",
-    });
-    return { ok: false, reason: "sending is stubbed — trustlight_email_enabled is not 'true'" };
-  }
-  // HALT until the domain is genuinely authenticated in SendGrid. Checked at
-  // send time, not trusted from config.
-  const verified = await senderDomainVerified(env, msg.from.split("@")[1] ?? "");
-  if (!verified.ok) {
-    log.warn("[trustlight] sender_domain_unverified", { from: msg.from, reason: verified.reason });
-    return { ok: false, reason: verified.reason };
-  }
-  try {
-    const res = await fetch("https://api.sendgrid.com/v3/mail/send", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${env.SENDGRID_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        personalizations: [{ to: [{ email: msg.to }] }],
-        from: { email: msg.from, name: msg.fromName },
-        ...(msg.replyTo ? { reply_to: { email: msg.replyTo } } : {}),
-        subject: msg.subject,
-        // SendGrid spec: text/plain MUST precede text/html when both are
-        // present (RFC 1341 — earlier parts are the fallbacks).
-        content: [
-          { type: "text/plain", value: msg.text },
-          { type: "text/html", value: msg.html },
-        ],
-      }),
-    });
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      log.error("[trustlight] sendgrid_failed", { status: res.status, body: body.slice(0, 300) });
-      return { ok: false, reason: `SendGrid ${res.status}` };
-    }
-    return { ok: true };
-  } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err);
-    log.error("[trustlight] sendgrid_threw", { reason });
-    return { ok: false, reason };
-  }
+  _enabled: string | undefined,
+): Promise<never> {
+  log.error("[trustlight] no_email_provider", { to: msg.to, from: msg.from, subject: msg.subject, error: NO_TRUSTLIGHT_EMAIL_PROVIDER });
+  throw new Error(NO_TRUSTLIGHT_EMAIL_PROVIDER);
 }
 
 /**
