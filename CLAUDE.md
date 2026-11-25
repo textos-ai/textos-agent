@@ -37,7 +37,7 @@ Frontend is `../textos-web` (Astro on Cloudflare Pages).
 - **Supabase Postgres + Auth** — service-role key as a Worker secret.
 - **Cloudflare R2 / KV / Queues** — assets, tokens/cache, async task
   dispatch (apps-gen consumer in `src/queues/`).
-- **Stripe** — subscriptions + tokens; **SendGrid** — email.
+- **Stripe** — subscriptions + tokens; **Cloudflare Email Service** — email.
 
 ### Endpoints (current; route files in `src/routes/`)
 
