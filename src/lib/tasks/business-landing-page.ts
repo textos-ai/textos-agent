@@ -50,7 +50,7 @@ export async function runBusinessLandingPage(tc: TaskCtx): Promise<TaskResult> {
   const frontendUrl = env.FRONTEND_URL ?? "https://app.textos.ai";
   const plannedUrl = `${frontendUrl}/sites/${business.slug}`;
 
-  await emit({ type: "cmd", text: "Building your website — analyzing your business...", ts: Date.now() });
+  await emit({ type: "cmd", text: `Analyzing ${business.name} business context...`, ts: Date.now() });
 
   // ── 1. Fetch business context for prompt substitution ──────────────────────
   const { data: fullCtx } = await supabase
@@ -65,7 +65,7 @@ export async function runBusinessLandingPage(tc: TaskCtx): Promise<TaskResult> {
   const enrichedCtx = fullCtx || ctx;
 
   // ── 2. CALL 1: Design + Structure (45s timeout, 800 tokens) ───────────────
-  await emit({ type: "cmd", text: "Designing structure and visual identity...", ts: Date.now() });
+  await emit({ type: "cmd", text: "Designing your visual identity...", ts: Date.now() });
 
   const call1SystemPrompt = `You are a creative director for ${business.name}, a ${enrichedCtx.industry} business. ${enrichedCtx.business_summary}. Value prop: ${enrichedCtx.value_proposition}. Target customer: ${JSON.stringify(enrichedCtx.target_customer)}. Brand voice: ${enrichedCtx.brand_voice}. Return ONLY valid JSON. No preamble. First character must be {.`;
 
@@ -98,37 +98,34 @@ export async function runBusinessLandingPage(tc: TaskCtx): Promise<TaskResult> {
 
   let call1Result: Call1Result;
   try {
-    const call1Promise = anthropic.messages.create({
+    const msg1 = await anthropic.messages.create({
       model: "claude-sonnet-4-20250514",
       max_tokens: 2000,
       stream: false,
       system: call1SystemPrompt,
       messages: [{ role: "user", content: call1UserPrompt }],
     });
-
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error("content_generation_timeout")), 45000)
-    );
-
-    const msg1 = await Promise.race([call1Promise, timeoutPromise]);
     const block1 = msg1.content[0];
     const text1 = block1 && block1.type === "text" ? (block1 as { text: string }).text : "";
     const raw1 = stripFences(text1.trim());
 
     try {
       call1Result = JSON.parse(raw1) as Call1Result;
+      await emit({ type: "cmd", text: `Identity locked — ${call1Result.accent_color} palette, ${call1Result.hero_font} typography...`, ts: Date.now() });
+      await emit({ type: "cmd", text: `Hero: "${call1Result.hero_headline}"`, ts: Date.now() });
+      await emit({ type: "cmd", text: "Writing your copy — ICP, pain points, founder story...", ts: Date.now() });
     } catch (err) {
       throw new Error(`Call 1 returned invalid JSON: ${err instanceof Error ? err.message : String(err)}`);
     }
   } catch (err) {
     if (err instanceof Error && err.message === "content_generation_timeout") {
-      throw new Error("content_generation_timeout: Design call exceeded 45 seconds");
+      throw new Error("content_generation_timeout: Design call failed");
     }
     throw err;
   }
 
   // ── 3. CALL 2: Prose Copy (45s timeout, 1200 tokens) ──────────────────────
-  await emit({ type: "cmd", text: "Writing compelling copy...", ts: Date.now() });
+  await emit({ type: "cmd", text: "Crafting your content...", ts: Date.now() });
 
   const call2SystemPrompt = `You are writing copy for ${business.name}, a ${enrichedCtx.industry} business. ${enrichedCtx.business_summary}. Value prop: ${enrichedCtx.value_proposition}. Target customer: ${JSON.stringify(enrichedCtx.target_customer)}. Tone: ${enrichedCtx.brand_voice}. The site headline is: ${call1Result.hero_headline}. The ICP headline is: ${call1Result.icp_headline}. The three pain headlines are: ${call1Result.pain_points.map(p => p.headline).join(", ")}. Write copy that matches this established voice and direction. Return ONLY valid JSON. No preamble. First character must be {.`;
 
@@ -145,36 +142,31 @@ export async function runBusinessLandingPage(tc: TaskCtx): Promise<TaskResult> {
 
   let call2Result: Call2Result;
   try {
-    const call2Promise = anthropic.messages.create({
+    const msg2 = await anthropic.messages.create({
       model: "claude-sonnet-4-20250514",
       max_tokens: 1500,
       stream: false,
       system: call2SystemPrompt,
       messages: [{ role: "user", content: call2UserPrompt }],
     });
-
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error("content_generation_timeout")), 45000)
-    );
-
-    const msg2 = await Promise.race([call2Promise, timeoutPromise]);
     const block2 = msg2.content[0];
     const text2 = block2 && block2.type === "text" ? (block2 as { text: string }).text : "";
     const raw2 = stripFences(text2.trim());
 
     try {
       call2Result = JSON.parse(raw2) as Call2Result;
+      await emit({ type: "cmd", text: "Copy complete — assembling your website...", ts: Date.now() });
     } catch (err) {
       throw new Error(`Call 2 returned invalid JSON: ${err instanceof Error ? err.message : String(err)}`);
     }
   } catch (err) {
     if (err instanceof Error && err.message === "content_generation_timeout") {
-      throw new Error("content_generation_timeout: Copy call exceeded 45 seconds");
+      throw new Error("content_generation_timeout: Copy call failed");
     }
     throw err;
   }
 
-  await emit({ type: "cmd", text: "Saving your website...", ts: Date.now() });
+  await emit({ type: "cmd", text: "Saving your website to the database...", ts: Date.now() });
 
   // ── 4. Merge results and sanitize eyebrow_vocab ───────────────────────────
   const EYEBROW_VOCAB_MAP: Record<string, string> = {
@@ -258,6 +250,8 @@ export async function runBusinessLandingPage(tc: TaskCtx): Promise<TaskResult> {
     throw new Error(`Failed to update businesses table: ${updateErr.message}`);
   }
 
+  await emit({ type: "cmd", text: "Website saved — writing site record...", ts: Date.now() });
+
   // ── 6. Write to business_assets ───────────────────────────────────────────
   const mergedData = {
     call1: call1Result,
@@ -285,7 +279,7 @@ export async function runBusinessLandingPage(tc: TaskCtx): Promise<TaskResult> {
     throw new Error(`Failed to write business_assets: ${assetErr.message}`);
   }
 
-  await emit({ type: "cmd", text: "Your website is live →", ts: Date.now() });
+  await emit({ type: "cmd", text: `Your website is live → ${plannedUrl}`, ts: Date.now() });
 
   return {
     output_data: {

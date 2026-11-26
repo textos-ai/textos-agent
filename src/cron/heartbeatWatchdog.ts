@@ -28,15 +28,13 @@ export async function runHeartbeatWatchdog(supabase: SupabaseClient): Promise<vo
     return;
   }
 
-  // Sweep paid task_runs that have been 'running' > 3 min. Paid tasks
-  // should complete in <90s in the happy path; anything past 3 min is
-  // almost always a crashed worker (waitUntil cancellation, Anthropic
-  // timeout, OOM). Extended from 2min to 3min for two-call Sonnet tasks
-  // like business-landing-page. The catch block in the run endpoint flips
-  // status to 'failed' for any caught exception, so still-'running' rows
-  // past the timeout are orphaned — they need this sweep to unstick. The
-  // UPDATE gates on status='running' so it can't overwrite a user cancellation.
-  const taskTimeoutCutoff = new Date(Date.now() - 180_000).toISOString();
+  // Sweep paid task_runs that have been 'running' > 5 min. Extended from 3min
+  // to 5min to accommodate long-running tasks like business-landing-page.
+  // The catch block in the run endpoint flips status to 'failed' for any caught
+  // exception, so still-'running' rows past the timeout are orphaned — they need
+  // this sweep to unstick. UPDATE gates on status='running' so it can't overwrite
+  // a user cancellation.
+  const taskTimeoutCutoff = new Date(Date.now() - 300_000).toISOString();
   const { data: stalePaidTasks, error: paidErr } = await supabase
     .from("task_runs")
     .update({
@@ -47,6 +45,7 @@ export async function runHeartbeatWatchdog(supabase: SupabaseClient): Promise<vo
     .eq("status", "running")
     .lt("started_at", taskTimeoutCutoff)
     .select("id, business_id");
+
   if (paidErr) {
     log.error("watchdog_paid_sweep_failed", { err: paidErr.message });
   } else if (stalePaidTasks && stalePaidTasks.length > 0) {

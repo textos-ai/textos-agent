@@ -31,6 +31,7 @@ import {
 import { buildBundleSuggestions } from "../lib/withTokenDeduction";
 import { genericDocumentRunner } from "../lib/tasks/generic-document-runner";
 import type { TaskCtx, TaskFn } from "../lib/tasks/types";
+import type { StreamEvent } from "../lib/stream-events";
 
 // Import task-specific handlers for free build tasks
 import { runWelcomeEmail } from "../lib/tasks/welcome-email";
@@ -441,23 +442,29 @@ app.get("/:slug/task_runs/:id", async (c) => {
   // watchdog cron a safety net rather than the only line of defense.
   // Polls happen every 2s while a task is in flight, so a stuck row
   // clears within seconds instead of waiting for the next cron tick.
-  // Threshold: 2 min — tasks that go past that are crashed, not slow.
-  const timeoutCutoff = new Date(Date.now() - 120_000).toISOString();
-  await supabase
+  // Threshold: 5 min — extended for long-running tasks like business-landing-page.
+  const now = new Date().toISOString();
+  const timeoutCutoff = new Date(Date.now() - 300_000).toISOString();
+  const { data: timedOut, error: sweepErr } = await supabase
     .from("task_runs")
     .update({
       status: "failed",
       error: "timeout_2min",
-      completed_at: new Date().toISOString(),
+      completed_at: now,
     })
     .eq("business_id", business.id)
     .eq("status", "running")
-    .lt("started_at", timeoutCutoff);
+    .lt("started_at", timeoutCutoff)
+    .select("id");
+
+  if (sweepErr) {
+    log.warn("timeout_sweep_failed", { err: sweepErr.message });
+  }
 
   const { data: row, error } = await supabase
     .from("task_runs")
     .select(
-      "id, task_id, status, started_at, completed_at, output_data, error",
+      "id, task_id, status, started_at, completed_at, output_data, error, work_log",
     )
     .eq("id", taskRunId)
     .eq("business_id", business.id)
@@ -474,7 +481,12 @@ app.get("/:slug/task_runs/:id", async (c) => {
     return c.json(errBody("not_found", `task_run '${taskRunId}' not found`), 404);
   }
 
-  return c.json(row);
+  // Include work_log events for console display
+  const response = {
+    ...row,
+    work_log: row.work_log || []
+  };
+  return c.json(response);
 });
 
 // ── Background runner ────────────────────────────────────────────────────
@@ -520,8 +532,16 @@ async function runTaskInBackground(
       runId: taskRunId,
       taskRunId,
       nextSeq: () => ++seq,
-      emit: async () => {
-        /* no-op: paid V1 tasks don't stream SSE */
+      emit: async (evt: StreamEvent) => {
+        // Save emit event to task_runs.work_log for paid tasks
+        try {
+          await supabase.rpc('append_work_log_event', {
+            p_task_run_id: taskRunId,
+            p_event: evt
+          });
+        } catch (err) {
+          log.warn('emit_failed', { task_run_id: taskRunId, err: String(err) });
+        }
       },
       cfLocation: null,
     };
