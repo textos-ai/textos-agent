@@ -19,6 +19,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createClient } from "@supabase/supabase-js";
 import { HOME as HOME_TRADES_SET } from "./home-trades.mjs";
+import { repoPath, webPath } from "../lib/repo-paths.mjs";
 
 const MODE = process.argv.includes("--run") ? "run" : "plan";
 
@@ -46,10 +47,10 @@ const RATE_PER_1000 = { basic: 17, contact: 3, atmosphere: 5 };
 const RATE = (RATE_PER_1000.basic + RATE_PER_1000.contact + RATE_PER_1000.atmosphere) / 1000;
 
 const env = {};
-for (const l of fs.readFileSync("C:/code/textos-agent/.dev.vars", "utf8").split(/\r?\n/)) {
+for (const l of fs.readFileSync(repoPath(".dev.vars"), "utf8").split(/\r?\n/)) {
   const m = l.match(/^\s*([A-Za-z0-9_]+)\s*=\s*(.*)$/); if (m) env[m[1]] = m[2].trim().replace(/^["']|["']$/g, "");
 }
-for (const l of fs.readFileSync("C:/code/textos-web/.env", "utf8").split(/\r?\n/)) {
+for (const l of fs.readFileSync(webPath(".env"), "utf8").split(/\r?\n/)) {
   const m = l.match(/^\s*(PUBLIC_SUPABASE_ANON_KEY)\s*=\s*(.*)$/); if (m) env.SUPABASE_ANON_KEY = m[2].trim().replace(/^["']|["']$/g, "");
 }
 env.SUPABASE_URL = (env.SUPABASE_URL || "").replace(/\/+$/, "").replace(/\/rest\/v1$/, "");

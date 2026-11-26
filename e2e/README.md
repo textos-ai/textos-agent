@@ -7,7 +7,8 @@ not leak, and that verification should not live on one machine.
 
 ## Running them
 
-Credentials are read at runtime from `C:/code/textos-agent/.dev.vars`. Nothing
+Credentials are read at runtime from this repo's `.dev.vars`, located from
+the script's own path (`scripts/lib/repo-paths.mjs`). Nothing
 here embeds a key, and nothing should ever be added that does.
 
 ```bash

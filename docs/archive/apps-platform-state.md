@@ -24,7 +24,7 @@ This document is the reconciliation between the apps-platform PRD intent
 knowledge) and what is actually shipped in code today. Read it before
 any apps-platform work; update it after any apps-platform commit.
 
-Authoritative catalog: `C:\code\textos-web\.homer-reference\catalog-recon-report.md`
+Authoritative catalog: `C:\code\victora\victora-web\.homer-reference\catalog-recon-report.md`
 (Homer v3.2.0 recon — 42 catalog entries). See also
 `docs/backlog-v2-architectural-debt.md` (items #1–#6) for the per-defect
 backlog this drift summary points at.

@@ -7,11 +7,13 @@
 //   Strategy result recipe → factory-v2 assembler → 100% catalog-composed
 //   HTML → shell + container frame → static /dev/ page.
 //
-// Writes ../textos-web/public/dev/factory-strategy-live.html (NEW file).
+// Writes <VICTORA_WEB_DIR>/public/dev/factory-strategy-live.html (NEW file);
+// the web repo's location comes from the VICTORA_WEB_DIR setting.
 // The throw-on-unknown-id guard in assemble.ts stays active as the safety net.
 
 import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { webPath } from '../../../scripts/lib/repo-paths.mjs';
 import { generateStrategyContent } from './strategy-content-generator';
 import { buildStrategyResultComposition } from './strategy-result-recipe';
 import { assembleComposition } from './assemble';
@@ -40,7 +42,7 @@ const { html: inner, rendered_ids } = assembleComposition(composition);
 
 // 4. Wrap in shell + container frame; write the static page.
 const doc = wrapProofDocument(inner);
-const outPath = resolve(process.cwd(), '..', 'textos-web', 'public', 'dev', 'factory-strategy-live.html');
+const outPath = webPath('public', 'dev', 'factory-strategy-live.html');
 mkdirSync(dirname(outPath), { recursive: true });
 writeFileSync(outPath, doc, 'utf8');
 

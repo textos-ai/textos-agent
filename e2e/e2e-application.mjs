@@ -15,11 +15,12 @@
 // are deleted; records it MATCHES are restored column by column.
 import fs from "node:fs";
 import { createClient } from "@supabase/supabase-js";
+import { repoPath } from "../scripts/lib/repo-paths.mjs";
 
 const AGENT = "https://textos-agent-test.rgaudet2023.workers.dev";
 const PROTECTED = ["Pat Bryant Electric", "Kwik Service Electric Inc", "Trinity Home Services", "Vinyltech"];
 const env = {};
-for (const l of fs.readFileSync("C:/code/textos-agent/.dev.vars", "utf8").split(/\r?\n/)) {
+for (const l of fs.readFileSync(repoPath(".dev.vars"), "utf8").split(/\r?\n/)) {
   const m = l.match(/^\s*([A-Za-z0-9_]+)\s*=\s*(.*)$/); if (m) env[m[1]] = m[2].trim().replace(/^["']|["']$/g, "");
 }
 env.SUPABASE_URL = (env.SUPABASE_URL || "").replace(/\/+$/, "").replace(/\/rest\/v1$/, "");

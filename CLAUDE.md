@@ -6,8 +6,8 @@ rituals, and the directory-level CLAUDE.md files below own the deep
 rules for their area. Read the directory file when you work in that
 directory — it auto-loads.
 
-**Product PRD:** `../textos-web/PRD.md` (canonical). Roadmap changes go
-in `../textos-web/ROADMAP.md`. Deviation log: `../textos-web/CHANGES.md`.
+**Product PRD:** `../victora-web/PRD.md` (canonical). Roadmap changes go
+in `../victora-web/ROADMAP.md`. Deviation log: `../victora-web/CHANGES.md`.
 
 ---
 
@@ -21,8 +21,8 @@ service-role key (bypasses RLS by design — the frontend uses anon key
 May 2026; see `CHANGES.md` for history (the old Sprint-2 framing in
 prior versions of this file was stale).
 
-Frontend is `../textos-web` (Astro on Cloudflare Pages).
-**Founder:** Rob Gaudet — full context in `../textos-web/CLAUDE.md`.
+Frontend is `../victora-web` (Astro on Cloudflare Pages).
+**Founder:** Rob Gaudet — full context in `../victora-web/CLAUDE.md`.
 
 ---
 
@@ -52,6 +52,18 @@ apps platform (`apps-catalog`, `apps-businesses`, `apps-instances`,
 `src/index.ts` for the live mount.
 
 ---
+
+## Local paths (scripts, e2e, factory-v2 proof builders)
+
+No script hardcodes where a repo lives. Paths inside THIS repo resolve
+from the script's own location via `scripts/lib/repo-paths.mjs`
+(`repoPath(...)`; PowerShell twin: `scripts/lib/RepoPaths.ps1`). The
+sibling web repo comes from ONE setting, `VICTORA_WEB_DIR` (Windows user
+environment variable, e.g. `C:\code\victora\victora-web`), read only by
+that helper (`webPath(...)` / `Get-SiblingDir`). Missing or not a folder →
+it throws and names the setting; there is no default and no `../` guess.
+The web repo uses the mirror setting `VICTORA_AGENT_DIR` to find this one.
+Moving a repo = change the setting, open a new terminal; no code change.
 
 ## Directory rules (auto-load when you work there)
 
@@ -147,7 +159,7 @@ Adding a premium task = a DB insert (a migration), no Worker deploy.
 Never diagnose a Worker-side failure from screenshots, memory, or
 inference. Pull logs first:
 ```powershell
-Set-Location "C:\code\textos-agent"
+Set-Location "C:\code\victora\victora-agent"
 $env:CLOUDFLARE_API_TOKEN = [System.Environment]::GetEnvironmentVariable('CLOUDFLARE_API_TOKEN', 'User')
 npx wrangler tail --env test
 ```
@@ -181,7 +193,7 @@ explicit "deploy to prod" from Rob.
 > Recurring trap — **test frontend → prod agent**: if "code deployed but
 > didn't run," FIRST confirm which agent the frontend calls (DevTools
 > Network: host must be `textos-agent-test`, not `-dev`). Full
-> diagnostic in `../textos-web/CLAUDE.md`. This is hypothesis #1.
+> diagnostic in `../victora-web/CLAUDE.md`. This is hypothesis #1.
 
 ---
 

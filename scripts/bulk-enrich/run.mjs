@@ -37,6 +37,7 @@ import path from "node:path";
 import { createClient } from "@supabase/supabase-js";
 import { enrichSite, siteUrlOf, ENRICH_UA } from "./enrich.mjs";
 import { scoreDti, DTI_CONFIG_KEYS } from "./dti.mjs";
+import { repoPath } from "../lib/repo-paths.mjs";
 // The ONE home-trade vocabulary, shared with slugs.mjs, places-run.mjs,
 // verify-all.mjs and (via trustlight-public.ts) the worker itself.
 import { HOME } from "./home-trades.mjs";
@@ -91,7 +92,7 @@ if (!/TrustLightBot/.test(ENRICH_UA)) {
 }
 
 const env = {};
-for (const l of fs.readFileSync("C:/code/textos-agent/.dev.vars", "utf8").split(/\r?\n/)) {
+for (const l of fs.readFileSync(repoPath(".dev.vars"), "utf8").split(/\r?\n/)) {
   const m = l.match(/^\s*([A-Za-z0-9_]+)\s*=\s*(.*)$/);
   if (m) env[m[1]] = m[2].trim().replace(/^["']|["']$/g, "");
 }

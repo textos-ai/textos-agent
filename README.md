@@ -134,6 +134,6 @@ the (commented) `[env.prod]` section there — uncomment + create a
 ## See also
 
 - `CLAUDE.md` — operating context for AI coding assistants
-- `../textos-web/PRD.md` — full product PRD (locked for Sprint 2)
-- `../textos-web/CHANGES.md` — architectural deviation log
-- `../textos-web/ROADMAP.md` — V2/V3 features deferred from V1
+- `../victora-web/PRD.md` — full product PRD (locked for Sprint 2)
+- `../victora-web/CHANGES.md` — architectural deviation log
+- `../victora-web/ROADMAP.md` — V2/V3 features deferred from V1

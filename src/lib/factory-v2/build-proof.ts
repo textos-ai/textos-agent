@@ -4,15 +4,16 @@
 //
 // Assembles the hardcoded Strategy composition 100% from the existing Homer
 // catalog, wraps it in the minimal shell, and writes the result as a NEW
-// static file in the textos-web repo:
-//   ../textos-web/public/dev/factory-strategy-proof.html
+// static file in the web repo (location from the VICTORA_WEB_DIR setting):
+//   <VICTORA_WEB_DIR>/public/dev/factory-strategy-proof.html
 // Cloudflare Pages serves that file directly — no routing/config change.
 //
 // It also runs a self-check proving that an unknown component_id THROWS
 // (no silent skip / fallback), which is the other half of the proof.
 
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { dirname } from 'node:path';
+import { webPath } from '../../../scripts/lib/repo-paths.mjs';
 import { assembleComposition, UnknownComponentError } from './assemble';
 import { STRATEGY_PROOF_COMPOSITION } from './strategy-composition';
 import { wrapProofDocument } from './document-shell';
@@ -33,8 +34,8 @@ try {
   }
 }
 
-// 3. Write the static page into textos-web/public/dev/.
-const outPath = resolve(process.cwd(), '..', 'textos-web', 'public', 'dev', 'factory-strategy-proof.html');
+// 3. Write the static page into the web repo's public/dev/.
+const outPath = webPath('public', 'dev', 'factory-strategy-proof.html');
 mkdirSync(dirname(outPath), { recursive: true });
 writeFileSync(outPath, doc, 'utf8');
 

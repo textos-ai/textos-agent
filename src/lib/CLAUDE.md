@@ -92,7 +92,7 @@ raw. **Never** put unescaped LLM output into a template by hand.
    - `../../docs/textos-homer-platform-prd.md` (platform-UI companion;
      note: platform chrome lives in **textos-web**, generated apps here
      are chrome-less landing pages)
-3. **`../../../textos-web/.homer-reference/catalog-recon-report.md`** —
+3. **`../../../victora-web/.homer-reference/catalog-recon-report.md`** —
    verbatim Homer recon (42 entries, html_template, archetype_fits,
    js_dependencies, reliability_tier).
 4. The existing `component-catalog/*.ts` entry for any component you're

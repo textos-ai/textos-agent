@@ -5,15 +5,16 @@
 // would be unreachable code.
 import fs from "node:fs";
 import { createClient } from "@supabase/supabase-js";
+import { repoPath, webPath } from "../scripts/lib/repo-paths.mjs";
 
 // Distinct lead window (20-21) so this suite cannot fight another
 // running back to back over the same records.
 const AGENT = "https://textos-agent-test.rgaudet2023.workers.dev";
 const env = {};
-for (const l of fs.readFileSync("C:/code/textos-agent/.dev.vars", "utf8").split(/\r?\n/)) {
+for (const l of fs.readFileSync(repoPath(".dev.vars"), "utf8").split(/\r?\n/)) {
   const m = l.match(/^\s*([A-Za-z0-9_]+)\s*=\s*(.*)$/); if (m) env[m[1]] = m[2].trim().replace(/^["']|["']$/g, "");
 }
-for (const l of fs.readFileSync("C:/code/textos-web/.env", "utf8").split(/\r?\n/)) {
+for (const l of fs.readFileSync(webPath(".env"), "utf8").split(/\r?\n/)) {
   const m = l.match(/^\s*(PUBLIC_SUPABASE_ANON_KEY)\s*=\s*(.*)$/); if (m) env.ANON = m[2].trim().replace(/^["']|["']$/g, "");
 }
 env.SUPABASE_URL = (env.SUPABASE_URL || "").replace(/\/+$/, "").replace(/\/rest\/v1$/, "");

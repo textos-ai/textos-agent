@@ -11,14 +11,15 @@
 import fs from "node:fs";
 import { createClient } from "@supabase/supabase-js";
 import { ENRICHMENT_COLUMNS } from "./enrichment-columns.mjs";
+import { repoPath, webPath } from "../scripts/lib/repo-paths.mjs";
 
 const AGENT = "https://textos-agent-test.rgaudet2023.workers.dev";
 const env = {};
-for (const l of fs.readFileSync("C:/code/textos-agent/.dev.vars", "utf8").split(/\r?\n/)) {
+for (const l of fs.readFileSync(repoPath(".dev.vars"), "utf8").split(/\r?\n/)) {
   const m = l.match(/^\s*([A-Za-z0-9_]+)\s*=\s*(.*)$/);
   if (m) env[m[1]] = m[2].trim().replace(/^["']|["']$/g, "");
 }
-for (const l of fs.readFileSync("C:/code/textos-web/.env", "utf8").split(/\r?\n/)) {
+for (const l of fs.readFileSync(webPath(".env"), "utf8").split(/\r?\n/)) {
   const m = l.match(/^\s*(PUBLIC_SUPABASE_ANON_KEY)\s*=\s*(.*)$/);
   if (m) env.SUPABASE_ANON_KEY = m[2].trim().replace(/^["']|["']$/g, "");
 }

@@ -7,8 +7,9 @@
 // Restores everything it touches.
 import fs from "node:fs";
 import { createClient } from "@supabase/supabase-js";
+import { repoPath } from "../scripts/lib/repo-paths.mjs";
 const env = {};
-for (const l of fs.readFileSync("C:/code/textos-agent/.dev.vars", "utf8").split(/\r?\n/)) {
+for (const l of fs.readFileSync(repoPath(".dev.vars"), "utf8").split(/\r?\n/)) {
   const m = l.match(/^\s*([A-Za-z0-9_]+)\s*=\s*(.*)$/);
   if (m) env[m[1]] = m[2].trim().replace(/^["']|["']$/g, "");
 }

@@ -56,6 +56,14 @@ scripts/bulk-enrich/*
 # this change exists to fix. Regenerate them from src/, never hand-edit.
 !scripts/bulk-enrich/enrich.mjs
 !scripts/bulk-enrich/dti.mjs
+
+# Shared local-path helper (repo root + the VICTORA_WEB_DIR setting). Tracked
+# because tracked scripts and src/lib/factory-v2/build-*proof.ts import it.
+!scripts/lib/
+scripts/lib/*
+!scripts/lib/repo-paths.mjs
+!scripts/lib/repo-paths.d.mts
+!scripts/lib/RepoPaths.ps1
 test-fetch.js
 
 # scratch / debug scripts

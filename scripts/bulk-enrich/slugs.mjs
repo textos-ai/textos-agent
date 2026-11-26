@@ -22,10 +22,11 @@
 import fs from "node:fs";
 import { createClient } from "@supabase/supabase-js";
 import { HOME as HOME_TRADES_SET } from "./home-trades.mjs";
+import { repoPath } from "../lib/repo-paths.mjs";
 
 const RUN = process.argv.includes("--run");
 const env = {};
-for (const l of fs.readFileSync("C:/code/textos-agent/.dev.vars", "utf8").split(/\r?\n/)) {
+for (const l of fs.readFileSync(repoPath(".dev.vars"), "utf8").split(/\r?\n/)) {
   const m = l.match(/^\s*([A-Za-z0-9_]+)\s*=\s*(.*)$/); if (m) env[m[1]] = m[2].trim().replace(/^["']|["']$/g, "");
 }
 env.SUPABASE_URL = (env.SUPABASE_URL || "").replace(/\/+$/, "").replace(/\/rest\/v1$/, "");

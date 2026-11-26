@@ -29,13 +29,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createClient } from "@supabase/supabase-js";
+import { repoPath } from "../lib/repo-paths.mjs";
 
 const RUN = process.argv.includes("--run");
 const HERE = path.dirname(new URL(import.meta.url).pathname).replace(/^\//, "");
 const GAZ = JSON.parse(fs.readFileSync(path.join(HERE, "parish-gazetteer.json"), "utf8"));
 
 const env = {};
-for (const l of fs.readFileSync("C:/code/textos-agent/.dev.vars", "utf8").split(/\r?\n/)) {
+for (const l of fs.readFileSync(repoPath(".dev.vars"), "utf8").split(/\r?\n/)) {
   const m = l.match(/^\s*([A-Za-z0-9_]+)\s*=\s*(.*)$/);
   if (m) env[m[1]] = m[2].trim().replace(/^["']|["']$/g, "");
 }
