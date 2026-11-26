@@ -70,3 +70,6 @@ docs/trustlight-south-louisiana-mission.html
 victora_leads*.csv
 *_COLUMN_MAP.csv
 coldcall_leads_*.csv
+
+# Claude Code per-user settings (permission allowlist; may embed local commands/secrets)
+.claude/settings.local.json
